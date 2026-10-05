@@ -1,0 +1,75 @@
+site_name: Sugarloaf
+site_description: Platform-neutral graphs for quantitative trading research
+docs_dir: docs
+site_dir: artifacts/docs/site
+watch:
+  - README.md
+  - sugarloaf
+  - examples
+  - deployments
+  - tests
+  - pyproject.toml
+theme:
+  name: mkdocs
+  navigation_depth: 3
+hooks:
+  - tools/docs.py
+plugins:
+  - search
+  - mermaid2
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [ . ]
+          options:
+            allow_inspection: false
+            docstring_style: google
+            members_order: source
+            show_root_heading: true
+            show_signature_annotations: true
+            show_source: true
+            filters: ["!^_"]
+markdown_extensions:
+  - admonition
+  - tables
+  - toc:
+      permalink: true
+validation:
+  links:
+    not_found: warn
+    anchors: warn
+    unrecognized_links: warn
+nav:
+  - Home: index.md
+  - Get started: docs/GUIDE.md
+  - Architecture: docs/ARCHITECTURE.md
+  - Components:
+      - Core: docs/technical/CORE.md
+      - Market data: docs/technical/MARKET.md
+      - Runtime: docs/technical/RUNTIME.md
+      - Portfolio: docs/technical/PORTFOLIO.md
+      - Execution: docs/technical/EXECUTION.md
+      - Adapters: docs/technical/ADAPTERS.md
+      - Research: docs/technical/RESEARCH.md
+      - Deployment: docs/technical/DEPLOYMENT.md
+  - API reference:
+      - Overview: docs/api/index.md
+      - Core: docs/api/core.md
+      - Market data: docs/api/market.md
+      - Runtime: docs/api/runtime.md
+      - Nodes and portfolio: docs/api/portfolio.md
+      - Execution: docs/api/execution.md
+      - Adapters: docs/api/adapters.md
+      - Research: docs/api/research.md
+      - Deployment: docs/api/deployment.md
+  - Examples:
+      - Overview: examples/README.md
+      - EMA research: examples/EMA_RESEARCH.md
+      - Technical indicators: examples/technical/README.md
+  - Providers:
+      - Memory: sugarloaf/adapters/memory/README.md
+      - QuantConnect: sugarloaf/adapters/quantconnect/README.md
+  - Built-in nodes: sugarloaf/nodes/README.md
+  - External strategies: docs/EXTERNAL_STRATEGIES.md
+  - Maintenance: docs/MAINTENANCE.md
+  - Validation: docs/VALIDATION.md

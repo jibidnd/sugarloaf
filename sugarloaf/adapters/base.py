@@ -1,0 +1,665 @@
+"""Provider-neutral declaration checks, snapshots, readiness and ownership."""
+
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime, timedelta
+from math import isfinite
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from sugarloaf.core.errors import CapabilityError, ContractError, NotReady, SnapshotError
+from sugarloaf.core.events import Event, EventBatch, LifecycleEvent
+from sugarloaf.core.services import Context, PortfolioConstraints
+from sugarloaf.core.types import InstrumentId
+from sugarloaf.market.contracts import (
+    BarsRequirement,
+    ETFConstituentsUniverse,
+    IndicatorRequirement,
+    InstrumentRequirement,
+    LiquidityUniverse,
+    PortfolioRequirement,
+    QuotesRequirement,
+    ResourceUpdate,
+    Schedule,
+    SeriesRequirement,
+    UniverseMembership,
+    UniverseRequirement,
+)
+
+
+@dataclass(frozen=True)
+class SelectionRow:
+    """Available selection inputs for one stable instrument identity."""
+
+    instrument: InstrumentId
+    price: float | None = None
+    volume: float | None = None
+    dollar_volume: float | None = None
+    weight: float | None = None
+
+
+def select(definition, rows):
+    """Select point-in-time members with stable identity breaking ranking ties.
+
+    Args:
+        definition (LiquidityUniverse | ETFConstituentsUniverse): Liquidity or historical ETF
+            constituent selection rule.
+        rows (Sequence[SelectionRow]): Available SelectionRow values at the selection boundary.
+
+    Returns:
+        (tuple[InstrumentId, ...]): Ordered selected identities.
+
+    Raises:
+        NotReady: Required selection inputs are missing.
+        CapabilityError: The universe definition is unsupported.
+    """
+    # Consume only supplied selection rows; never fetch future constituents or
+    # substitute guessed values for missing ranking inputs.
+    if isinstance(definition, LiquidityUniverse):
+        if any(r.price is None or r.volume is None or r.dollar_volume is None for r in rows):
+            raise NotReady("Liquidity selection fields missing")
+        rows = [
+            r
+            for r in rows
+            if all(isfinite(v) for v in (r.price, r.volume, r.dollar_volume))
+            and r.price >= definition.min_price
+            and r.volume >= definition.min_volume
+        ]
+        # Stable identity makes ties independent of provider iteration order.
+        rows.sort(key=lambda r: (-r.dollar_volume, r.instrument.value))
+        return tuple(r.instrument for r in rows[: definition.count])
+    if isinstance(definition, ETFConstituentsUniverse):
+        if definition.missing_weight == "error" and any(r.weight is None for r in rows):
+            raise NotReady("ETF constituent weight missing")
+        rows = [
+            r
+            for r in rows
+            if (r.weight is not None and isfinite(r.weight))
+            or definition.missing_weight == "include"
+        ]
+        if definition.min_weight is not None:
+            rows = [r for r in rows if r.weight is not None and r.weight >= definition.min_weight]
+        rows.sort(key=lambda r: (-(r.weight if r.weight is not None else -1), r.instrument.value))
+        return tuple(r.instrument for r in rows[: definition.count])
+    raise CapabilityError("Unsupported universe definition")
+
+
+def resource_key(req, instrument):
+    """Identify backing data by kind/instrument/settings, excluding lookback and freshness."""
+    # Compatible readers share storage. Their individual lookbacks/freshness
+    # limits are enforced after reading, not encoded into this backing identity.
+    return (
+        type(req).__name__,
+        instrument,
+        req.interval,
+        req.session,
+        getattr(req, "normalization", None),
+        req.fill_forward,
+    )
+
+
+class ProviderServices:
+    """Reusable declaration, snapshot, readiness, and ownership machinery.
+
+    Args:
+        constraints (PortfolioConstraints | None): Portfolio safety limits exposed through Context.
+        account_services (bool): Expose account, valuation, and cost hooks when true.
+
+    Subclasses supply backing reads and native capabilities. Requirements authorize
+    reads; triggers control activation. Provider mutations invalidate old Contexts.
+    """
+
+    def __init__(self, constraints=None, account_services=False):
+        self.instruments = {}
+        self.constraints = constraints or PortfolioConstraints()
+        self.account_services = account_services
+        # Complete declarations grant node read permissions; triggers separately
+        # determine when eligible nodes evaluate.
+        self.resources = {}
+        self.readiness = {}
+        self.memberships = {}
+        self.selection_inputs = {}
+        self.owners = {}
+        # Contexts bind to this version. Mutations invalidate their lazy reads
+        # rather than allowing cached state to cross an admission boundary.
+        self.version = 0
+        self.batch = None
+        self.read_counts = {}
+        self._snapshot_cache = {}
+        self.additional_events = []
+        # Exposure/residence retention is separate from graph read permission.
+        # Keeping a resource alive does not authorize an undeclared node access.
+        self.retained_resources = set()
+        self._residence_until = {}
+
+    def _changed(self):
+        # Invalidate existing Contexts and all shared memoized backing reads.
+        # Providers call this for account/data/resource mutations as well as batches.
+        self.version += 1
+        self._snapshot_cache.clear()
+
+    def install(self, node_id: str, update: ResourceUpdate) -> None:
+        """Replace complete declarations, rebuild ownership, and invalidate prior Contexts.
+
+        Args:
+            node_id: Registered owner of these resources.
+            update: Complete replacement of requirements and triggers.
+
+        Raises:
+            CapabilityError: A declaration or requested service is unsupported.
+            ContractError: Owners give conflicting definitions for a shared universe.
+        """
+        # Validate before publishing a complete declaration replacement. Concrete
+        # providers can reject capabilities beyond this shared supported vocabulary.
+        supported = (
+            BarsRequirement,
+            IndicatorRequirement,
+            QuotesRequirement,
+            SeriesRequirement,
+            PortfolioRequirement,
+            InstrumentRequirement,
+            UniverseRequirement,
+        )
+        for req in update.requirements:
+            if not isinstance(req, supported):
+                raise CapabilityError(f"Unsupported requirement: {type(req).__name__}")
+            if isinstance(req, IndicatorRequirement):
+                self._validate_indicator(req)
+            if isinstance(req, PortfolioRequirement):
+                if not self.account_services:
+                    raise CapabilityError("Provider has no portfolio service")
+                supported_fields = {
+                    "holdings",
+                    "nav",
+                    "cash",
+                    "prices",
+                    "open_orders",
+                    "buying_power",
+                    "borrow",
+                }
+                if set(req.fields) - supported_fields:
+                    raise CapabilityError("Unsupported portfolio field capability")
+            if isinstance(req, UniverseRequirement):
+                # A shared universe name must mean the same rule for every owner.
+                # Conflicting definitions must not depend on installation order.
+                previous = [
+                    r.definition
+                    for other, u in self.resources.items()
+                    if other != node_id
+                    for r in u.requirements
+                    if isinstance(r, UniverseRequirement)
+                    and r.definition.name == req.definition.name
+                ]
+                if previous and any(p != req.definition for p in previous):
+                    raise ContractError("Conflicting definitions for a shared universe")
+        # Replacement is complete, not a union. Removed requirements lose their
+        # permission and backing ownership when this map is rebuilt.
+        self.resources[node_id] = update
+        self.readiness[node_id] = "requested"
+        self._rebuild_owners()
+        self._changed()
+
+    def _rebuild_owners(self):
+        # Expand dynamic membership at the current admitted boundary and collect
+        # every node sharing each compatible backing source.
+        owners = {}
+        residence = {
+            r.definition.name: r.definition.minimum_residence
+            for u in self.resources.values()
+            for r in u.requirements
+            if isinstance(r, UniverseRequirement)
+        }
+        for node, update in self.resources.items():
+            for req in update.requirements:
+                # An indicator owns its underlying input source as well.
+                if isinstance(req, IndicatorRequirement):
+                    req = req.source
+                if isinstance(req, (BarsRequirement, QuotesRequirement)):
+                    members = (
+                        self.memberships.get(req.selection.universe)
+                        if req.selection.universe
+                        else None
+                    )
+                    ids = members.members if members else req.selection.instruments
+                    for instrument in ids:
+                        key = resource_key(req, instrument)
+                        owners.setdefault(key, set()).add(node)
+                        # Start residence on first ownership at a known boundary;
+                        # repeated refreshes do not restart the minimum period.
+                        if key not in self.owners and self.batch:
+                            self._residence_until[key] = self.batch.cutoff + residence.get(
+                                req.selection.universe, timedelta(0)
+                            )
+        # Holdings/orders can outlive selection. Retain their bookkeeping without
+        # treating those instruments as members of a node's declared selection.
+        needed = self._retained_instruments()
+        self.retained_resources = {
+            key
+            for key in set(self.owners) | self.retained_resources
+            if key not in owners
+            and (
+                key[1] in needed
+                or self.batch
+                and self._residence_until.get(key, self.batch.cutoff) > self.batch.cutoff
+            )
+        }
+        self.owners = owners
+
+    def apply(self, batch: EventBatch) -> None:
+        """Admit a runtime boundary, refresh membership and recompute resource owners."""
+        # Establish graph/receipt boundaries, then refresh membership and resource
+        # ownership before nodes create Contexts for this admission.
+        self.batch = batch
+        self.additional_events = []
+        for update in self.resources.values():
+            for req in update.requirements:
+                if not isinstance(req, UniverseRequirement):
+                    continue
+                definition = req.definition
+                trigger = definition.refresh
+                if not any(
+                    trigger.kind == e.kind
+                    and (trigger.key is None or trigger.key == e.key)
+                    and (trigger.instrument is None or trigger.instrument == e.instrument)
+                    and (trigger.interval is None or trigger.interval == e.interval)
+                    for e in batch.events
+                ):
+                    continue
+                # A matching trigger still needs selection rows whose own cutoff
+                # is available at this graph boundary.
+                source = self.selection_inputs.get(definition.name)
+                if source is not None and source[1] <= batch.cutoff:
+                    old = self.memberships.get(definition.name)
+                    try:
+                        members = select(definition, list(source[0]))
+                        self.memberships[definition.name] = UniverseMembership(
+                            definition.name, members, source[1]
+                        )
+                    except NotReady:
+                        # Missing inputs are explicitly unready, not a valid empty
+                        # universe that a strategy can interpret as its selection.
+                        self.memberships[definition.name] = UniverseMembership(
+                            definition.name, (), source[1], False
+                        )
+                    # Runtime can react to membership changes discovered during
+                    # provider admission through these additional facts.
+                    if old != self.memberships[definition.name]:
+                        self.additional_events.append(Event("universe", key=definition.name))
+        # Update metadata under stable identities. This does not apply simulated
+        # cash/quantity corporate-action adjustments to a broker account.
+        for event in batch.events:
+            life = event.payload
+            if isinstance(life, LifecycleEvent) and life.instrument in self.instruments:
+                instrument = self.instruments[life.instrument]
+                if life.kind == "delisting":
+                    self.instruments[life.instrument] = replace(instrument, tradable=False)
+                elif life.kind == "symbol_change":
+                    self.instruments[life.instrument] = replace(instrument, ticker=life.new_ticker)
+        self._rebuild_owners()
+        self._changed()
+
+    def context(self, batch: EventBatch | None = None, node_id: str = "") -> Context:
+        """Bind lazy declaration-guarded reads to the current provider version.
+
+        Args:
+            batch: Snapshot time boundaries; defaults to the latest admitted batch.
+            node_id: Registered reader; empty ID permits execution account access.
+
+        Returns:
+            Context sharing compatible cached reads while retaining per-node guards.
+
+        Raises:
+            SnapshotError: No batch establishes a snapshot.
+        """
+        batch = batch or self.batch
+        if batch is None:
+            raise SnapshotError("No snapshot established")
+        # Capture the provider version now; every later lazy read checks that the
+        # underlying admitted state still belongs to this Context.
+        version = self.version
+
+        def guard():
+            if self.version != version:
+                raise SnapshotError("Adapter state changed after Context creation")
+
+        ctx = Context(batch, {}, guard, node_id)
+        # Service roles share reader identity/time guards. Creating the facade
+        # itself does not fetch market observations or account state.
+        facade = _ContextServices(self, ctx, node_id)
+        factories = {
+            k: (lambda: facade)
+            for k in (
+                ("market", "instruments", "portfolio", "costs", "valuation")
+                if self.account_services
+                else ("market", "instruments")
+            )
+        }
+        factories["constraints"] = lambda: self.constraints
+        ctx._factories = factories
+        # Compatible Contexts share backing work, but each node still passes its
+        # own declaration guard before seeing any cached value.
+        ctx._cache = self._snapshot_cache
+        return ctx
+
+    def ready(self, node_id: str, ctx: Context) -> None:
+        """Check declared market data and instrument readiness and record the result.
+
+        Raises:
+            NotReady: History, freshness, membership, or indicator readiness is incomplete.
+            CapabilityError: A declared resource is unsupported.
+        """
+        # Probe readiness through the same guarded services that node evaluation
+        # uses. Missing inputs mean warming; unsupported requests stay visible.
+        try:
+            self._ready(node_id, ctx)
+        except NotReady:
+            self.readiness[node_id] = "warming"
+            raise
+        except CapabilityError:
+            self.readiness[node_id] = "unsupported"
+            raise
+        else:
+            self.readiness[node_id] = "ready"
+
+    def _ready(self, node_id, ctx):
+        # Require every requested selected instrument rather than silently shrinking
+        # a declared universe to the subset whose history happens to be ready.
+        for req in self.resources[node_id].requirements:
+            if isinstance(req, (BarsRequirement, QuotesRequirement)):
+                for instrument in ctx.market.resolve(req.selection):
+                    reader = (
+                        ctx.market.bars if isinstance(req, BarsRequirement) else ctx.market.quotes
+                    )
+                    reader(req, instrument)
+            elif isinstance(req, IndicatorRequirement):
+                for instrument in ctx.market.resolve(req.selection):
+                    if not ctx.market.indicator(req, instrument).ready:
+                        raise NotReady("Indicator or requested output window not ready")
+            elif isinstance(req, SeriesRequirement):
+                ctx.market.series(req)
+            elif isinstance(req, UniverseRequirement):
+                ctx.market.membership(req.definition.name)
+            elif isinstance(req, InstrumentRequirement):
+                for instrument in ctx.market.resolve(req.selection):
+                    ctx.instruments.get(instrument)
+
+    def _retained_instruments(self):
+        return set()
+
+    # Concrete providers implement these backing hooks. There is no implicit
+    # formula fallback or invented data when a provider lacks the capability.
+    def _validate_indicator(self, requirement):
+        raise CapabilityError("Provider has no native indicator implementation")
+
+    def _indicator(self, requirement, instrument, cutoff):
+        raise CapabilityError("Provider has no native indicator implementation")
+
+    def _data(self, requirement, instrument, cutoff):
+        raise CapabilityError("Market data source unavailable")
+
+    def _series(self, requirement):
+        raise CapabilityError("Scalar series source unavailable")
+
+    def _session_times(self, instrument, day):
+        raise CapabilityError("Provider calendar unavailable")
+
+    def schedule_due(self, schedule: Schedule, after: datetime | None, through: datetime) -> bool:
+        """Check a local scheduled occurrence against a data-clock interval.
+
+        Args:
+            schedule: Wall time or exchange-session anchor plus optional offset.
+            after: Exclusive prior graph time; None checks the startup local day.
+            through: Inclusive current graph time.
+
+        Returns:
+            Whether at least one occurrence was crossed; missed occurrences coalesce.
+        """
+        try:
+            zone = UTC if schedule.timezone == "UTC" else ZoneInfo(schedule.timezone)
+        except ZoneInfoNotFoundError as error:
+            raise CapabilityError("Schedule timezone unavailable") from error
+        local = through.astimezone(zone)
+        after = after or datetime.combine(local.date(), datetime.min.time(), zone)
+        # Offsets can cross midnight; include neighboring days when looking for a
+        # scheduled occurrence crossed by this observation-clock interval.
+        day = (after.astimezone(zone) - abs(schedule.offset)).date()
+        last = (local + abs(schedule.offset)).date()
+        while day <= last:
+            session = self._session_times(schedule.calendar, day) if schedule.calendar else None
+            if schedule.calendar and session is None:
+                day += timedelta(days=1)
+                continue
+            if schedule.anchor:
+                occurrence = session[0 if schedule.anchor == "open" else 1] + schedule.offset
+            else:
+                occurrence = datetime.combine(day, schedule.at, zone) + schedule.offset
+            # Open-left/closed-right prevents duplicate boundary activation.
+            # Several crossed occurrences coalesce into one decision opportunity.
+            if after < occurrence.astimezone(UTC) <= through:
+                return True
+            day += timedelta(days=1)
+        return False
+
+
+class _ContextServices:
+    """Declaration-guarded facade shared by the Context's lazy service properties."""
+
+    def __init__(self, owner, ctx, node):
+        self.owner, self.ctx, self.node = owner, ctx, node
+
+    def _check(self, requirement=None):
+        # Lifetime validation precedes permission/cache checks: authorization does
+        # not make a Context valid after a provider mutation.
+        self.ctx.check()
+        if self.node and requirement is not None:
+            if requirement not in self.owner.resources[self.node].requirements:
+                raise CapabilityError("Undeclared requirement access")
+
+    def _declares(self, kind, instrument=None):
+        self._check()
+        # Empty reader identity permits execution account access. Named graph
+        # nodes need an explicit matching declaration.
+        if not self.node:
+            return
+        requests = [r for r in self.owner.resources[self.node].requirements if isinstance(r, kind)]
+        if instrument is not None:
+            requests = [
+                r
+                for r in requests
+                if not r.selection.instruments
+                and r.selection.universe is None
+                or instrument in self.resolve(r.selection)
+            ]
+        if not requests:
+            raise CapabilityError(f"Undeclared {kind.__name__} access")
+
+    def resolve(self, selection):
+        self._check()
+        if self.node and not any(
+            getattr(r, "selection", None) == selection
+            for r in self.owner.resources[self.node].requirements
+        ):
+            raise CapabilityError("Undeclared selection access")
+        # Resolve the admitted dynamic membership, not current/future constituents
+        # from an external source or the contents of a previous selection.
+        return (
+            self.membership(selection.universe).members
+            if selection.universe
+            else selection.instruments
+        )
+
+    def membership(self, name):
+        self._check()
+        if self.node and not any(
+            (isinstance(r, UniverseRequirement) and r.definition.name == name)
+            or getattr(getattr(r, "selection", None), "universe", None) == name
+            for r in self.owner.resources[self.node].requirements
+        ):
+            raise CapabilityError("Undeclared universe access")
+        # A valid empty membership can be ready; absent, explicitly unready or
+        # future-dated membership cannot support this decision boundary.
+        value = self.owner.memberships.get(name)
+        if value is None or not value.ready or value.cutoff > self.ctx.now:
+            raise NotReady(f"Universe unavailable: {name}")
+        return value
+
+    def _read(self, req, instrument):
+        self._check(req)
+        if instrument not in self.resolve(req.selection):
+            raise CapabilityError("Instrument outside declared selection")
+        # Cache compatible backing values, not the per-reader slice. The same
+        # retrieval can serve different declared depths and freshness limits.
+        key = resource_key(req, instrument)
+        values = self.ctx.compute(
+            "market",
+            (key,),
+            (),
+            "1",
+            lambda: tuple(self.owner._data(req, instrument, self.ctx.now)),
+        )
+        # Two clocks gate visibility: observation end <= graph time and content
+        # receipt <= available_at. A stored future bar and a late revision fail
+        # different halves of this causal admission check.
+        values = tuple(
+            x
+            for x in values
+            if x.available_at <= self.ctx.available_at
+            and (x.end if isinstance(req, BarsRequirement) else x.time) <= self.ctx.now
+            and (req.fill_forward or not getattr(x, "fill_forward", False))
+        )
+        # Apply lookback after filtering. Missing/stale history raises NotReady;
+        # no padding or nearby sample is invented to satisfy the requirement.
+        values = values[-req.lookback :]
+        if len(values) < req.lookback:
+            raise NotReady(f"Insufficient history: {instrument.value}")
+        last = values[-1].end if isinstance(req, BarsRequirement) else values[-1].time
+        if self.ctx.now - last > req.max_age:
+            raise NotReady(f"Stale data: {instrument.value}")
+        return values
+
+    def bars(self, requirement, instrument):
+        return self._read(requirement, instrument)
+
+    def quotes(self, requirement, instrument):
+        return self._read(requirement, instrument)
+
+    def indicator(self, requirement, instrument):
+        self._check(requirement)
+        if instrument not in self.resolve(requirement.selection):
+            raise CapabilityError("Instrument outside declared selection")
+        result = self.ctx.compute(
+            "indicator",
+            (requirement, instrument),
+            (),
+            "1",
+            lambda: self.owner._indicator(requirement, instrument, self.ctx.now),
+        )
+        # Native state belongs to the provider, but shared reads still reject
+        # future indicator outputs and enforce source freshness.
+        if any(point.time > self.ctx.now for point in result.points):
+            raise SnapshotError("Indicator contains unadmitted future values")
+        if result.ready and (
+            not result.points or self.ctx.now - result.points[-1].time > requirement.source.max_age
+        ):
+            raise NotReady("Indicator is stale")
+        return result
+
+    def series(self, requirement):
+        self._check(requirement)
+        values = self.owner._series(requirement)
+        if values is None:
+            raise CapabilityError("Scalar series source unavailable")
+        # Scalar observations have the same two-clock visibility gate as bars.
+        # Presence in backing storage does not make information available to a node.
+        result = tuple(
+            v for v in values if v.available_at <= self.ctx.available_at and v.time <= self.ctx.now
+        )[-requirement.lookback :]
+        if (
+            len(result) < requirement.lookback
+            or self.ctx.now - result[-1].time > requirement.max_age
+        ):
+            raise NotReady("Scalar series incomplete or stale")
+        return result
+
+    def anchor(self, instrument, at, convention):
+        self._check()
+        # Anchors need an authorized source with the requested return convention.
+        # This method neither manufactures adjustments nor shifts target horizons.
+        normalization = {
+            "price_return": ("raw", "split_adjusted"),
+            "total_return": ("total_return", "adjusted"),
+        }.get(convention)
+        if normalization is None:
+            raise CapabilityError("Unsupported anchor convention")
+        reqs = [
+            r
+            for u in (
+                [self.owner.resources[self.node]] if self.node else self.owner.resources.values()
+            )
+            for r in u.requirements
+            if isinstance(r, BarsRequirement) and r.normalization in normalization
+        ]
+        for req in reqs:
+            if instrument in self.resolve(req.selection):
+                for bar in self._read(req, instrument):
+                    # A nearby close names a different target: require this exact
+                    # observation end and its receipt within the current Context.
+                    if bar.end == at and bar.available_at <= self.ctx.available_at:
+                        return bar.close
+        raise NotReady("No exact convention-compatible anchor observation")
+
+    def snapshot(self):
+        self._declares(PortfolioRequirement)
+        # Cache the authoritative account read once, then restrict what a named
+        # node receives. Shared retrieval must not expand node authorization.
+        snapshot = self.ctx.compute("account", (), (), "1", self.owner._account)
+        if not self.node:
+            return snapshot
+        reqs = [
+            r
+            for r in self.owner.resources[self.node].requirements
+            if isinstance(r, PortfolioRequirement)
+        ]
+        if any(not r.selection.instruments and r.selection.universe is None for r in reqs):
+            return snapshot
+        # Filter instrument-specific holdings/marks/orders by declared selection.
+        # NAV/cash keep their account-wide meaning, not a selected-asset subtotal.
+        ids = {i for r in reqs for i in self.resolve(r.selection)}
+        return replace(
+            snapshot,
+            holdings={i: q for i, q in snapshot.holdings.items() if i in ids},
+            prices={i: p for i, p in snapshot.prices.items() if i in ids},
+            open_orders=tuple(o for o in snapshot.open_orders if o.instrument in ids),
+        )
+
+    def get(self, instrument):
+        self._declares(InstrumentRequirement, instrument)
+        return self.owner._instrument(instrument)
+
+    def is_open(self, instrument, at, session):
+        self._declares(InstrumentRequirement, instrument)
+        return self.owner._open(instrument, at, session)
+
+    def buying_power(self, instrument, quantity):
+        self._declares(PortfolioRequirement, instrument)
+        return self.owner._buying_power(instrument, quantity)
+
+    def borrow(self, instrument, quantity):
+        self._declares(PortfolioRequirement, instrument)
+        return self.owner._borrow(instrument, quantity)
+
+    def estimate(self, instrument, quantity, price):
+        self._declares(InstrumentRequirement, instrument)
+        return self.owner._cost_estimate(instrument, quantity, price)
+
+    def unit_value(self, instrument):
+        self._declares(InstrumentRequirement, instrument)
+        self._declares(PortfolioRequirement, instrument)
+        account = self.ctx.compute("account", (), (), "1", self.owner._account)
+        item = self.owner._instrument(instrument)
+        # Unit valuation needs account-currency prices here. Cross-currency assets
+        # require an explicit FX capability rather than an assumed conversion rate.
+        if item.currency != account.currency:
+            raise CapabilityError("FX valuation source unavailable")
+        price = account.prices.get(instrument)
+        if price is None or price <= 0:
+            raise NotReady("No valid instrument valuation")
+        return price * item.multiplier

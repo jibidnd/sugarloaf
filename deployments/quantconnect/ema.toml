@@ -1,0 +1,27 @@
+# Deployment manifest: TOML selects sources/factory and supplies QC parameters.
+# Field reference: ../../docs/EXTERNAL_STRATEGIES.md#manifest-fields
+# Keep deployment fields above [parameters]; subsequent keys belong to that table.
+
+# Required string: default QC project/backtest name, not the artifact folder name.
+name = "Sugarloaf public EMA example"
+# Optional path (default "."): source root relative to this TOML's directory.
+# Here ../.. is the Sugarloaf checkout; outputs go to <root>/artifacts/ema/.
+root = "../.."
+# Required in factory mode: importable module:function returning Deployment.
+# This example's config.py contains ema_definition(parameter), the factory code.
+# sugarloaf/deployment/config.py separately defines Deployment/Environment classes.
+# Use exactly one of factory or entrypoint; do not set entrypoint here.
+factory = "deployments.quantconnect.config:ema_definition"
+# Root-relative dependencies: files or directories (recursive Python files only).
+# The factory module must be selected. Notebooks require explicit file entries.
+include = ["examples/ema.py", "examples/ema_research.ipynb", "deployments/quantconnect/config.py"]
+
+# Optional integer: project_id = <existing QC project ID> (not a credential).
+# Omitted here: run requires a saved project; use `sugarloaf create --adapter quantconnect --manifest
+# deployments/quantconnect/ema.toml` once if no project is selected.
+
+# Optional flat parameter table; use strings. The factory reads supported keys.
+# CLI --parameter NAME VALUE overrides these defaults for that upload/run.
+[parameters]
+# USA equity ticker read by ema_definition; missing/empty defaults to "SPY".
+ticker = "SPY"
