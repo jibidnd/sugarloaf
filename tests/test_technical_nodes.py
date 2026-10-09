@@ -7,12 +7,13 @@ import pytest
 
 from sugarloaf.core.errors import ContractError, NotReady
 from sugarloaf.core.node import NodeInputs
-from sugarloaf.core.types import InstrumentId
+from sugarloaf.core.primitives import InstrumentId
 from sugarloaf.nodes.simple import PositiveSignalPositions
 from sugarloaf.nodes.technical import EMASpread, RSIReversion, SMATrend
 
 A = InstrumentId("SPY")
-NOW = datetime(2025, 1, 2, 21, tzinfo=UTC)
+NOW = datetime(2025, 1, 3, 21, tzinfo=UTC)  # Friday's 16:00 New York close.
+NEXT_CLOSE = datetime(2025, 1, 6, 21, tzinfo=UTC)  # Monday's close, one session later.
 
 
 def context(values, *, bar_close=110, time=NOW):
@@ -27,6 +28,9 @@ def context(values, *, bar_close=110, time=NOW):
         node_id="signal",
         snapshot_id=1,
         market=NS(indicator=indicator, bars=lambda *args: (NS(end=time, close=bar_close),)),
+        # A stand-in exchange calendar: whatever is asked, the next regular close
+        # is Monday's.
+        instruments=NS(session_close=lambda instrument, after, count=1: NEXT_CLOSE),
     )
 
 
@@ -45,7 +49,22 @@ def test_signal_to_naive_positions_without_return_calibration(node, values, posi
     ctx.node_id = "positions"
     result = PositiveSignalPositions((A,), budget=0.8).evaluate(NodeInputs({"views": views}), ctx)
     assert result.by_port["positions"][0].positions[A] == (0.8 if positive else 0)
-    assert views[0].metadata.expires_at == NOW + timedelta(days=1)
+    # The default horizon is one trading session, so a Friday-close score targets
+    # and expires at Monday's close rather than on Saturday.
+    assert views[0].metadata.expires_at == NEXT_CLOSE
+    assert views[0].target.time.end == NEXT_CLOSE
+
+
+def test_calendar_horizon_is_still_available_and_needs_no_calendar():
+    node = EMASpread(A, fast=2, slow=3, horizon=timedelta(days=1))
+    # Only a session horizon declares calendar access.
+    assert len(node.requirements) == 2
+    assert len(EMASpread(A, fast=2, slow=3).requirements) == 3
+    views = node.evaluate(NodeInputs({}), context({("ema", 2): 110, ("ema", 3): 100}))
+    assert views.by_port["views"][0].metadata.expires_at == NOW + timedelta(days=1)
+    for invalid in (0, -1, True, 1.5, timedelta(0)):
+        with pytest.raises(ContractError, match="[Hh]orizon"):
+            EMASpread(A, fast=2, slow=3, horizon=invalid)
 
 
 def test_indicator_clock_alignment_and_invalid_periods_fail_explicitly():

@@ -20,7 +20,14 @@ alpha or a fitted world model. More specialized models belong in external packag
 Each node takes one instrument and emits a `ScoreView` on completed bars. The
 adapter supplies native EMA, RSI or SMA values using adjusted prices. No node
 implements its own rolling indicator. Defaults: EMA 20/50, RSI 14 with threshold
-30, SMA 210; daily bars and a one-calendar-day forecast horizon.
+30, SMA 210; daily bars and a forecast horizon of one trading session.
+
+`horizon` is either an `int` number of regular trading sessions or a `timedelta`
+of elapsed calendar time. Sessions are the default because a daily signal issued
+at Friday's close should end at Monday's close: one calendar day later is a
+Saturday, where no price exists to score the forecast and the target would expire
+before the market reopens. A session horizon declares an `InstrumentRequirement`
+so the node may read the exchange calendar.
 
 Scores indicate direction, not calibrated expected returns. RSI is deliberately
 stateless: positive below 30, zero at 30, negative above it. It does not hold until
@@ -28,7 +35,7 @@ a separate exit threshold. SMA trend emits on every bar; it does not include mon
 
 ```python
 from sugarloaf.core.graph import Graph
-from sugarloaf.core.types import InstrumentId
+from sugarloaf.core.primitives import InstrumentId
 from sugarloaf.nodes.technical import EMASpread
 from sugarloaf.nodes.simple import PositiveSignalPositions
 

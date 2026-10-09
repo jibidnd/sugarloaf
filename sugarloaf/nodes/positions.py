@@ -7,11 +7,11 @@ from typing import Mapping
 # Shared arithmetic keeps quantity valuation and feasibility consistent between position nodes.
 from sugarloaf.core.errors import ContractError, NotReady
 from sugarloaf.core.node import InputSpec, NodeInputs, NodeOutputs, OutputSpec
-from sugarloaf.core.services import Context, PortfolioConstraints
-from sugarloaf.core.types import Metadata
+from sugarloaf.core.primitives import Metadata
+from sugarloaf.core.services import Context
 from sugarloaf.core.views import PositionView
 from sugarloaf.market.contracts import InstrumentRequirement, PortfolioRequirement, Selection
-from sugarloaf.portfolio.constraints import position_weights, violations
+from sugarloaf.portfolio.constraints import PortfolioConstraints, position_weights, violations
 
 
 class PositionNetter:

@@ -5,7 +5,7 @@ from dataclasses import dataclass, fields, is_dataclass, replace
 from datetime import datetime, timedelta
 
 from sugarloaf.core.errors import ContractError
-from sugarloaf.core.types import InstrumentId, aware, finite, frozen_map
+from sugarloaf.core.primitives import InstrumentId, aware, finite, frozen_map
 
 
 def _immutable_payload(value):

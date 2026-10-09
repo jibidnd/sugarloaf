@@ -7,11 +7,12 @@ from math import isfinite
 from sugarloaf.core.errors import ContractError
 from sugarloaf.core.graph import Graph
 from sugarloaf.core.node import NodeInputs, NodeOutputs, OutputSpec
-from sugarloaf.core.services import Context, PortfolioConstraints
-from sugarloaf.core.types import Metadata
+from sugarloaf.core.primitives import Metadata
+from sugarloaf.core.services import Context
 from sugarloaf.core.views import PositionView
 from sugarloaf.market.contracts import Bar, BarsRequirement, Selection, Trigger
 from sugarloaf.nodes.positions import PortfolioConstraintNode
+from sugarloaf.portfolio.constraints import PortfolioConstraints
 
 # These are portable batch references, separate from adapter-owned streaming indicators.
 from .indicators import ema, rsi

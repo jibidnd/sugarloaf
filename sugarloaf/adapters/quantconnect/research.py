@@ -12,7 +12,7 @@ from heapq import heappop, heappush
 
 from sugarloaf.core.errors import CapabilityError, ContractError
 from sugarloaf.core.events import Event, EventBatch, LifecycleEvent
-from sugarloaf.core.types import InstrumentId, aware
+from sugarloaf.core.primitives import InstrumentId, aware
 from sugarloaf.market.contracts import (
     BarsRequirement,
     IndicatorRequirement,
@@ -55,7 +55,7 @@ class QuantBookServices(QuantConnectDataServices):
         """Install explicit instrument, bar, and indicator declarations.
 
         Raises:
-            CapabilityError: A universe, quote, portfolio, or scalar-series read is requested.
+            CapabilityError: A universe, quote, or portfolio read is requested.
         """
         # Reject unsupported dynamic membership and account reads explicitly;
         # research must not substitute today's universe or a synthetic portfolio.
@@ -249,17 +249,22 @@ class QuantBookServices(QuantConnectDataServices):
             # replacements must not replay inputs already admitted into indicators.
             admitted_through = at
 
-    def apply(self, batch: EventBatch) -> None:
-        """Admit the staged native inputs and effective lifecycle facts before node reads."""
+    def apply(self, batch: EventBatch) -> list[Event]:
+        """Admit the staged native inputs and effective lifecycle facts before node reads.
+
+        Returns:
+            Facts discovered during admission, such as completed consolidated bars.
+        """
         if self._staged is None or self._staged[0] != batch.sequence:
             raise ContractError("Research batch has no staged native input")
         # Consolidator completion callbacks now stamp receipts using this replay
         # boundary rather than the QuantBook host's unrelated present-time clock.
         self._replay_receipt = batch.received_at
         lifecycle = any(isinstance(event.payload, LifecycleEvent) for event in batch.events)
+        events: list[Event] = []
         if lifecycle:
             # Rebuild native state before feeding the first post-action observation.
-            super().apply(batch)
+            events = super().apply(batch)
         # Feed only this staged batch into matching native consolidators. Future
         # iterator values remain outside graph-visible windows and indicators.
         for instrument, _, bar in self._staged[1]:
@@ -278,14 +283,14 @@ class QuantBookServices(QuantConnectDataServices):
         if lifecycle:
             # Base apply already performed lifecycle/resource work above. Admit
             # post-action completions without resetting those resources again.
-            self.additional_events.extend(self.pending_events)
+            events.extend(self.pending_events)
             self.pending_events.clear()
             self._admit_pending_data()
             self._changed()
-        else:
-            # With no lifecycle reset, ordinary base admission handles all queued
-            # completions and resource ownership in one pass.
-            super().apply(batch)
+            return events
+        # With no lifecycle reset, ordinary base admission handles all queued
+        # completions and resource ownership in one pass.
+        return super().apply(batch)
 
     def anchor_observation(
         self, instrument: InstrumentId, at: datetime, convention: str, as_of: datetime

@@ -11,9 +11,52 @@ from math import isfinite
 # Nodes depend on neutral contracts; adapters supply actual native indicator objects.
 from sugarloaf.core.errors import ContractError, NotReady
 from sugarloaf.core.node import NodeOutputs, OutputSpec
-from sugarloaf.core.types import Interval, Metadata
+from sugarloaf.core.primitives import Interval, Metadata
 from sugarloaf.core.views import Score, ScoreView, return_target
-from sugarloaf.market.contracts import BarsRequirement, IndicatorRequirement, Selection, Trigger
+from sugarloaf.market.contracts import (
+    BarsRequirement,
+    IndicatorRequirement,
+    InstrumentRequirement,
+    Selection,
+    Trigger,
+)
+
+# A forecast horizon is either elapsed calendar time or a count of trading sessions.
+Horizon = timedelta | int
+
+
+def check_horizon(horizon: Horizon) -> None:
+    """Reject a horizon that is neither a positive duration nor a positive session count."""
+    # bool is a subclass of int in Python; reject it so True is not read as "1 session".
+    if isinstance(horizon, bool) or not isinstance(horizon, (timedelta, int)):
+        raise ContractError("Horizon must be a timedelta or a whole number of sessions")
+    if horizon <= (timedelta(0) if isinstance(horizon, timedelta) else 0):
+        raise ContractError("Positive forecast horizon required")
+
+
+def horizon_end(ctx, instrument, horizon: Horizon):
+    """Return when a forecast issued now, over this horizon, ends.
+
+    Args:
+        ctx: Evaluation Context supplying graph time and the exchange calendar.
+        instrument: Instrument whose exchange sessions are counted.
+        horizon: A ``timedelta`` is elapsed calendar time. An ``int`` counts
+            regular trading sessions and ends at the close of the last one.
+
+    The two differ around weekends and holidays. From Friday's 16:00 close:
+
+    * ``timedelta(days=1)`` ends Saturday 16:00. No price exists there to score
+      the forecast, and a position target with that expiry lapses before the
+      market reopens, so the Friday signal can never trade.
+    * ``1`` (one session) ends Monday 16:00, the next daily close.
+
+    Issued during a session, a horizon of one session ends at that same day's close.
+    A node using a session horizon must declare an InstrumentRequirement for the
+    instrument, because the calendar is read through ``ctx.instruments``.
+    """
+    if isinstance(horizon, timedelta):
+        return ctx.now + horizon
+    return ctx.instruments.session_close(instrument, ctx.now, horizon)
 
 
 def _period(value):
@@ -29,12 +72,19 @@ class _IndicatorScore:
     outputs = {"views": OutputSpec((ScoreView,))}
 
     def __init__(self, instrument, interval, horizon):
-        if interval <= timedelta(0) or horizon <= timedelta(0):
-            raise ContractError("Positive bar interval and forecast horizon required")
+        if interval <= timedelta(0):
+            raise ContractError("Positive bar interval required")
+        check_horizon(horizon)
         self.instrument, self.horizon = instrument, horizon
         # One declared input convention backs every indicator this node requests.
         self.source = BarsRequirement(Selection((instrument,)), interval, normalization="adjusted")
         self.triggers = (Trigger("bar_close", instrument, interval),)
+        # Counting sessions reads the exchange calendar, which needs its own
+        # declaration. Subclasses append this to their requirements; it is empty
+        # for a calendar-time horizon, which needs no calendar at all.
+        self._calendar = (
+            (InstrumentRequirement(Selection((instrument,))),) if isinstance(horizon, int) else ()
+        )
 
     def _point(self, requirement, ctx):
         # Snapshot reads enforce declared ownership/readiness; never retain Context across batches.
@@ -45,8 +95,8 @@ class _IndicatorScore:
         return point
 
     def _output(self, value, ctx):
-        # Target interval and authority expiry share the chosen calendar horizon.
-        end = ctx.now + self.horizon
+        # The target interval and this View's authority end together, at the horizon.
+        end = horizon_end(ctx, self.instrument, self.horizon)
         view = ScoreView(
             return_target(self.instrument, Interval(ctx.now, end)),
             Score(value, self.calibration_id),
@@ -64,19 +114,18 @@ class EMASpread(_IndicatorScore):
         fast (int): Fast EMA period in bars; positive and below slow.
         slow (int): Slow EMA period in bars.
         interval (timedelta): Completed bar duration for both averages.
-        horizon (timedelta): Calendar duration of the score target and expiry.
+        horizon (timedelta | int): Length of the score target and its expiry: elapsed
+            calendar time, or a count of trading sessions (see ``horizon_end``).
     """
 
-    def __init__(
-        self, instrument, fast=20, slow=50, *, interval=timedelta(days=1), horizon=timedelta(days=1)
-    ):
+    def __init__(self, instrument, fast=20, slow=50, *, interval=timedelta(days=1), horizon=1):
         if _period(fast) >= _period(slow):
             raise ContractError("EMA fast period must be below slow period")
         super().__init__(instrument, interval, horizon)
         # Periods are measured in declared source bars; the provider owns seeding and updates.
         self.fast = IndicatorRequirement(self.source, "ema", (("period", fast),))
         self.slow = IndicatorRequirement(self.source, "ema", (("period", slow),))
-        self.requirements = (self.fast, self.slow)
+        self.requirements = (self.fast, self.slow, *self._calendar)
         # Include rule settings in identity so aggregation cannot mix different score meanings.
         self.calibration_id = f"ema-spread:{fast}:{slow}:{interval.total_seconds()}:v1"
 
@@ -98,7 +147,8 @@ class RSIReversion(_IndicatorScore):
         period (int): Positive RSI period in bars.
         threshold (float): RSI level in [0, 100]; no holding hysteresis is applied.
         interval (timedelta): Completed bar duration.
-        horizon (timedelta): Calendar duration of the score target and expiry.
+        horizon (timedelta | int): Length of the score target and its expiry: elapsed
+            calendar time, or a count of trading sessions (see ``horizon_end``).
     """
 
     def __init__(
@@ -108,7 +158,7 @@ class RSIReversion(_IndicatorScore):
         threshold=30,
         *,
         interval=timedelta(days=1),
-        horizon=timedelta(days=1),
+        horizon=1,
     ):
         _period(period)
         if not isfinite(threshold) or not 0 <= threshold <= 100:
@@ -117,7 +167,7 @@ class RSIReversion(_IndicatorScore):
         self.threshold = threshold
         # No alternate local RSI formula is substituted when native readiness is unavailable.
         self.rsi = IndicatorRequirement(self.source, "rsi", (("period", period),))
-        self.requirements = (self.rsi,)
+        self.requirements = (self.rsi, *self._calendar)
         self.calibration_id = f"rsi-reversion:{period}:{threshold}:{interval.total_seconds()}:v1"
 
     def evaluate(self, inputs, ctx):
@@ -136,17 +186,16 @@ class SMATrend(_IndicatorScore):
         instrument (InstrumentId): Stable instrument identity.
         period (int): Positive SMA period in bars.
         interval (timedelta): Completed bar duration for price and average.
-        horizon (timedelta): Calendar duration of the score target and expiry.
+        horizon (timedelta | int): Length of the score target and its expiry: elapsed
+            calendar time, or a count of trading sessions (see ``horizon_end``).
     """
 
-    def __init__(
-        self, instrument, period=210, *, interval=timedelta(days=1), horizon=timedelta(days=1)
-    ):
+    def __init__(self, instrument, period=210, *, interval=timedelta(days=1), horizon=1):
         _period(period)
         super().__init__(instrument, interval, horizon)
         self.average = IndicatorRequirement(self.source, "sma", (("period", period),))
         # This rule reads adjusted bars as well as their native average, so declare both.
-        self.requirements = (self.source, self.average)
+        self.requirements = (self.source, self.average, *self._calendar)
         self.calibration_id = f"sma-trend:{period}:{interval.total_seconds()}:v1"
 
     def evaluate(self, inputs, ctx):
@@ -154,6 +203,7 @@ class SMATrend(_IndicatorScore):
         # Use the latest admitted completed close, rather than a live mark or partial bar.
         bar = ctx.market.bars(self.source, self.instrument)[-1]
         average = self._point(self.average, ctx)
+        # Bars may carry non-positive prices, so the denominator is checked here.
         if bar.end != average.time or average.values["value"] <= 0:
             raise NotReady("Trend needs aligned completed bars and a positive SMA")
         # Price above its average is positive; allocation/scheduling belongs to downstream nodes.

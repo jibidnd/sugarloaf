@@ -7,8 +7,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sugarloaf.core.errors import CapabilityError, ContractError, NotReady, SnapshotError
 from sugarloaf.core.events import Event, EventBatch, LifecycleEvent
-from sugarloaf.core.services import Context, PortfolioConstraints
-from sugarloaf.core.types import InstrumentId
+from sugarloaf.core.primitives import InstrumentId
+from sugarloaf.core.services import Context
 from sugarloaf.market.contracts import (
     BarsRequirement,
     ETFConstituentsUniverse,
@@ -19,10 +19,10 @@ from sugarloaf.market.contracts import (
     QuotesRequirement,
     ResourceUpdate,
     Schedule,
-    SeriesRequirement,
     UniverseMembership,
     UniverseRequirement,
 )
+from sugarloaf.portfolio.constraints import PortfolioConstraints
 
 
 @dataclass(frozen=True)
@@ -124,7 +124,6 @@ class ProviderServices:
         self.batch = None
         self.read_counts = {}
         self._snapshot_cache = {}
-        self.additional_events = []
         # Exposure/residence retention is separate from graph read permission.
         # Keeping a resource alive does not authorize an undeclared node access.
         self.retained_resources = set()
@@ -153,7 +152,6 @@ class ProviderServices:
             BarsRequirement,
             IndicatorRequirement,
             QuotesRequirement,
-            SeriesRequirement,
             PortfolioRequirement,
             InstrumentRequirement,
             UniverseRequirement,
@@ -163,20 +161,8 @@ class ProviderServices:
                 raise CapabilityError(f"Unsupported requirement: {type(req).__name__}")
             if isinstance(req, IndicatorRequirement):
                 self._validate_indicator(req)
-            if isinstance(req, PortfolioRequirement):
-                if not self.account_services:
-                    raise CapabilityError("Provider has no portfolio service")
-                supported_fields = {
-                    "holdings",
-                    "nav",
-                    "cash",
-                    "prices",
-                    "open_orders",
-                    "buying_power",
-                    "borrow",
-                }
-                if set(req.fields) - supported_fields:
-                    raise CapabilityError("Unsupported portfolio field capability")
+            if isinstance(req, PortfolioRequirement) and not self.account_services:
+                raise CapabilityError("Provider has no portfolio service")
             if isinstance(req, UniverseRequirement):
                 # A shared universe name must mean the same rule for every owner.
                 # Conflicting definitions must not depend on installation order.
@@ -243,25 +229,25 @@ class ProviderServices:
         }
         self.owners = owners
 
-    def apply(self, batch: EventBatch) -> None:
-        """Admit a runtime boundary, refresh membership and recompute resource owners."""
+    def apply(self, batch: EventBatch) -> list[Event]:
+        """Admit a runtime boundary, refresh membership and recompute resource owners.
+
+        Returns:
+            Facts this admission itself discovered, currently one ``universe``
+            event per named universe whose membership changed. The runtime adds
+            them to the batch so the nodes reading that universe activate now.
+        """
         # Establish graph/receipt boundaries, then refresh membership and resource
         # ownership before nodes create Contexts for this admission.
         self.batch = batch
-        self.additional_events = []
+        discovered: list[Event] = []
         for update in self.resources.values():
             for req in update.requirements:
                 if not isinstance(req, UniverseRequirement):
                     continue
                 definition = req.definition
-                trigger = definition.refresh
-                if not any(
-                    trigger.kind == e.kind
-                    and (trigger.key is None or trigger.key == e.key)
-                    and (trigger.instrument is None or trigger.instrument == e.instrument)
-                    and (trigger.interval is None or trigger.interval == e.interval)
-                    for e in batch.events
-                ):
+                # A universe refreshes only when its declared trigger fired in this batch.
+                if not any(definition.refresh.matches(event) for event in batch.events):
                     continue
                 # A matching trigger still needs selection rows whose own cutoff
                 # is available at this graph boundary.
@@ -282,7 +268,7 @@ class ProviderServices:
                     # Runtime can react to membership changes discovered during
                     # provider admission through these additional facts.
                     if old != self.memberships[definition.name]:
-                        self.additional_events.append(Event("universe", key=definition.name))
+                        discovered.append(Event("universe", key=definition.name))
         # Update metadata under stable identities. This does not apply simulated
         # cash/quantity corporate-action adjustments to a broker account.
         for event in batch.events:
@@ -295,6 +281,7 @@ class ProviderServices:
                     self.instruments[life.instrument] = replace(instrument, ticker=life.new_ticker)
         self._rebuild_owners()
         self._changed()
+        return discovered
 
     def context(self, batch: EventBatch | None = None, node_id: str = "") -> Context:
         """Bind lazy declaration-guarded reads to the current provider version.
@@ -320,23 +307,25 @@ class ProviderServices:
             if self.version != version:
                 raise SnapshotError("Adapter state changed after Context creation")
 
-        ctx = Context(batch, {}, guard, node_id)
-        # Service roles share reader identity/time guards. Creating the facade
-        # itself does not fetch market observations or account state.
-        facade = _ContextServices(self, ctx, node_id)
-        factories = {
-            k: (lambda: facade)
-            for k in (
-                ("market", "instruments", "portfolio", "costs", "valuation")
-                if self.account_services
-                else ("market", "instruments")
-            )
-        }
+        # One facade object plays every service role (market, instruments, ...)
+        # for this Context. The facade needs the Context for its time boundaries,
+        # and the Context needs factories that return the facade. The one-element
+        # list below breaks that circle: it is filled in just after the Context is
+        # built, and the factories only run later, on first service access.
+        facade: list[_ContextServices] = []
+        names = (
+            ("market", "instruments", "portfolio", "costs", "valuation")
+            if self.account_services
+            else ("market", "instruments")
+        )
+        factories = {name: (lambda: facade[0]) for name in names}
         factories["constraints"] = lambda: self.constraints
-        ctx._factories = factories
-        # Compatible Contexts share backing work, but each node still passes its
-        # own declaration guard before seeing any cached value.
-        ctx._cache = self._snapshot_cache
+        # Contexts of one provider version share the provider's cache, so two nodes
+        # reading the same bars fetch them once. Each node still passes its own
+        # declaration guard before it sees any cached value.
+        ctx = Context(batch, factories, guard, node_id, cache=self._snapshot_cache)
+        # Creating the facade does not fetch market observations or account state.
+        facade.append(_ContextServices(self, ctx, node_id))
         return ctx
 
     def ready(self, node_id: str, ctx: Context) -> None:
@@ -360,9 +349,19 @@ class ProviderServices:
             self.readiness[node_id] = "ready"
 
     def _ready(self, node_id, ctx):
-        # Require every requested selected instrument rather than silently shrinking
+        # By default require every selected instrument rather than silently shrinking
         # a declared universe to the subset whose history happens to be ready.
         for req in self.resources[node_id].requirements:
+            if (
+                isinstance(req, (BarsRequirement, QuotesRequirement, IndicatorRequirement))
+                and not req.require_all
+            ):
+                # The node has taken responsibility for a partial selection: it
+                # evaluates and asks ctx.market.ready(req) which members it can use.
+                # Resolving still proves that a named universe itself is available,
+                # which no node can work without.
+                ctx.market.resolve(req.selection)
+                continue
             if isinstance(req, (BarsRequirement, QuotesRequirement)):
                 for instrument in ctx.market.resolve(req.selection):
                     reader = (
@@ -373,8 +372,6 @@ class ProviderServices:
                 for instrument in ctx.market.resolve(req.selection):
                     if not ctx.market.indicator(req, instrument).ready:
                         raise NotReady("Indicator or requested output window not ready")
-            elif isinstance(req, SeriesRequirement):
-                ctx.market.series(req)
             elif isinstance(req, UniverseRequirement):
                 ctx.market.membership(req.definition.name)
             elif isinstance(req, InstrumentRequirement):
@@ -395,10 +392,10 @@ class ProviderServices:
     def _data(self, requirement, instrument, cutoff):
         raise CapabilityError("Market data source unavailable")
 
-    def _series(self, requirement):
-        raise CapabilityError("Scalar series source unavailable")
-
     def _session_times(self, instrument, day):
+        raise CapabilityError("Provider calendar unavailable")
+
+    def _session_close(self, instrument, after, count):
         raise CapabilityError("Provider calendar unavailable")
 
     def schedule_due(self, schedule: Schedule, after: datetime | None, through: datetime) -> bool:
@@ -541,6 +538,30 @@ class _ContextServices:
     def quotes(self, requirement, instrument):
         return self._read(requirement, instrument)
 
+    def ready(self, requirement):
+        """Return the selected instruments whose declared read works right now.
+
+        For example, a momentum node over a 500-name universe declares its bars
+        with ``require_all=False``. A stock listed last week lacks the history,
+        so it is simply absent from this result and the node ranks the rest.
+        """
+        usable = []
+        for instrument in self.resolve(requirement.selection):
+            try:
+                if isinstance(requirement, IndicatorRequirement):
+                    # An indicator read succeeds while still warming up; it reports
+                    # that through its ready flag rather than by raising.
+                    if not self.indicator(requirement, instrument).ready:
+                        continue
+                else:
+                    self._read(requirement, instrument)
+            except NotReady:
+                # Too little or stale history for this one instrument. Undeclared
+                # or unsupported reads raise CapabilityError and are not hidden.
+                continue
+            usable.append(instrument)
+        return tuple(usable)
+
     def indicator(self, requirement, instrument):
         self._check(requirement)
         if instrument not in self.resolve(requirement.selection):
@@ -560,23 +581,6 @@ class _ContextServices:
             not result.points or self.ctx.now - result.points[-1].time > requirement.source.max_age
         ):
             raise NotReady("Indicator is stale")
-        return result
-
-    def series(self, requirement):
-        self._check(requirement)
-        values = self.owner._series(requirement)
-        if values is None:
-            raise CapabilityError("Scalar series source unavailable")
-        # Scalar observations have the same two-clock visibility gate as bars.
-        # Presence in backing storage does not make information available to a node.
-        result = tuple(
-            v for v in values if v.available_at <= self.ctx.available_at and v.time <= self.ctx.now
-        )[-requirement.lookback :]
-        if (
-            len(result) < requirement.lookback
-            or self.ctx.now - result[-1].time > requirement.max_age
-        ):
-            raise NotReady("Scalar series incomplete or stale")
         return result
 
     def anchor(self, instrument, at, convention):
@@ -637,6 +641,13 @@ class _ContextServices:
     def is_open(self, instrument, at, session):
         self._declares(InstrumentRequirement, instrument)
         return self.owner._open(instrument, at, session)
+
+    def session_close(self, instrument, after, count=1):
+        self._declares(InstrumentRequirement, instrument)
+        # bool is a subclass of int in Python; reject it so True is not read as 1.
+        if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+            raise ContractError("Session count must be a positive integer")
+        return self.owner._session_close(instrument, after, count)
 
     def buying_power(self, instrument, quantity):
         self._declares(PortfolioRequirement, instrument)

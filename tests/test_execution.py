@@ -7,12 +7,13 @@ from sugarloaf.adapters.memory.gateway import MemoryGateway
 from sugarloaf.adapters.memory.services import MemoryServices
 from sugarloaf.core.errors import ContractError, NotReady, SnapshotError
 from sugarloaf.core.events import EventBatch
-from sugarloaf.core.services import AccountSnapshot, OpenOrder, PortfolioConstraints
-from sugarloaf.core.types import InstrumentId, Metadata
+from sugarloaf.core.primitives import InstrumentId, Metadata
+from sugarloaf.core.services import AccountSnapshot, OpenOrder
 from sugarloaf.core.views import PositionView
 from sugarloaf.execution import ExecutionEngine, ExecutionPolicy, OrderIntent, OrderUpdate, RiskGate
 from sugarloaf.execution.engine import ExecutionState, IntentState
 from sugarloaf.market.contracts import Capability, Instrument
+from sugarloaf.portfolio.constraints import PortfolioConstraints
 
 NOW = datetime(2024, 1, 2, 15, tzinfo=timezone.utc)
 A, B = InstrumentId("A"), InstrumentId("B")
@@ -127,8 +128,9 @@ def test_pending_external_orders_are_in_risk_envelope():
 
 def test_cover_needs_no_new_borrow_but_cannot_worsen_pending_net_exposure():
     services, _, engine = setup({A: -50, B: 50})
+    # A negative min_weight is what permits the short; no separate switch exists.
     services.constraints = PortfolioConstraints(
-        allow_short=True, min_weight=-1, budget=2, gross_limit=2, net_min=-1, net_max=0.5
+        min_weight=-1, gross_limit=2, net_min=-1, net_max=0.5
     )
     intent = OrderIntent("cover", "t1", A, 50, NOW, NOW + timedelta(minutes=5))
     RiskGate().check(intent, target(1, {A: 0}), services.context(), ExecutionPolicy(), engine.state)
@@ -176,6 +178,59 @@ def test_explicit_minimum_rebalance_value_preserves_zero_exit():
     services.set_account(replace(services.account, holdings={A: 1}, cash={"USD": 9900}))
     engine.accept(target(2, {A: 0}))
     assert gateway.orders["1"].quantity == -1
+
+
+def test_rebalance_band_ignores_weight_drift_but_not_entries_exits_or_quantities():
+    # Holding 20 of A at 100 is 20% of a 10,000 account; the band is 0.25% = USD25.
+    services, gateway, engine = setup({A: 20}, cash=8000)
+    weight = replace(target(1, {A: 0.2}), units="weight")
+    engine.accept(weight)
+    assert not gateway.orders  # Already on target.
+    # The price drifts up 0.5%: holding 20 is now a 20.08% weight and exactly
+    # 19.92 shares are wanted. Whole lots would say "sell one share" (1% of NAV),
+    # but the account is really only 0.08 shares (USD8) off, inside the band.
+    services.set_account(replace(services.account, nav=10010, prices={A: 100.5, B: 100}))
+    engine.reconcile()
+    assert not gateway.orders
+    # A real gap of 1.08 shares (about 1.1% of NAV) is outside the band and trades...
+    services.set_account(replace(services.account, holdings={A: 21}))
+    engine.reconcile()
+    assert gateway.orders["1"].quantity == -2
+    gateway.fill("1", -2)
+    # ...while a gap smaller than the band is left alone for a weight target.
+    wide = ExecutionEngine(gateway, ExecutionPolicy(rebalance_band=0.05))
+    gateway.on_update = wide.on_order_update
+    services.set_account(replace(services.account, holdings={A: 21}))
+    wide.accept(replace(target(2, {A: 0.2}), units="weight"))
+    assert len(gateway.orders) == 1
+    # A quantity target is an exact instruction: the same small gap is traded.
+    wide.accept(target(3, {A: 19}))
+    assert gateway.orders["2"].quantity == -2
+    gateway.fill("2", -2)
+    # An exit to zero weight is never suppressed, however small the position.
+    services.set_account(replace(services.account, holdings={A: 1}))
+    wide.accept(replace(target(4, {A: 0}), units="weight"))
+    assert gateway.orders["3"].quantity == -1
+
+
+def test_missing_price_skips_only_that_instrument():
+    # B has no mark, as a newly added universe member might not. Before this was
+    # handled, the missing price raised out of reconciliation and stopped the run.
+    services, gateway, engine = setup()
+    services.set_account(replace(services.account, prices={A: 100}))
+    engine.accept(target(1, {A: 10, B: 10}))
+    assert [order.instrument for order in gateway.orders.values()] == [A]
+    skipped = [d for d in engine.diagnostics if d["code"] == "VALUATION_UNAVAILABLE"]
+    assert skipped and skipped[0]["instrument"] == "B"
+
+
+def test_finished_intents_of_superseded_targets_leave_the_ledger():
+    _, gateway, engine = setup()
+    for number in range(1, 4):
+        engine.accept(target(number, {A: number}))
+        gateway.fill(str(number), 1)
+    # Only the current target's intent remains, however many targets came before.
+    assert [entry.intent.target_id for entry in engine.state.intents.values()] == ["t3"]
 
 
 def test_positive_minimum_net_does_not_deadlock_entry_from_cash():
@@ -306,6 +361,9 @@ def test_order_feedback_checks_sign_limits_completion_and_delayed_status(quantit
     intent = OrderIntent(identity, "t1", A, quantity, NOW, NOW + timedelta(minutes=5))
     entry = IntentState(intent, order_id="1", status="open")
     engine.state.intents[identity] = entry
+    # The intent belongs to the current target, so it stays in the ledger after
+    # it finishes and its late feedback can still be checked below.
+    engine.state.target = target(1, {A: quantity})
 
     for status, filled, message in (
         ("partial", -quantity / 2, "wrong sign"),
@@ -363,7 +421,8 @@ def test_execution_releases_gateway_snapshots_after_every_reconciliation_route(r
         assert gateway.orders["1"].quantity == 30
     else:
         engine.reconcile()
-    assert len(snapshots) == (1 if route == "no_target" else 2)
+    # With no target there is nothing to size, so no broker snapshot is taken.
+    assert len(snapshots) == (0 if route == "no_target" else 2)
     for ctx in snapshots:
         with pytest.raises(SnapshotError, match="released"):
             ctx.check()

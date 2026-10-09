@@ -11,3 +11,7 @@
 ## `research.evaluation`
 
 ::: sugarloaf.research.evaluation
+
+## `research.inference`
+
+::: sugarloaf.research.inference

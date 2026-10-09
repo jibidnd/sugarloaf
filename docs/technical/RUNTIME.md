@@ -48,11 +48,12 @@ boundary. Expiry also takes effect when processing reaches its boundary.
 
 1. Validate arrival identity/order and normalize the monotonic clock.
 2. Install pending resource replacements; call `services.apply(batch)`; append
-   provider-generated `additional_events`.
+   the facts it returns (for example a changed universe).
 3. Expire Views with expiry ≤ now. Activate their downstream consumers/descendants,
    resource-changed owners, matching triggers and changed-universe readers/owners.
-4. On lifecycle facts, advance affected-instrument basis watermarks, invalidate
-   active identities, withdraw the whole graph and activate every node.
+4. On lifecycle facts, withdraw and re-activate only the affected nodes and their
+   descendants, retire their View identities, and advance basis watermarks
+   (see [ViewStore and lifecycle](#viewstore-and-lifecycle)).
 5. Visit activated nodes once in topological order. Assemble input ports, create
    Context, validate input cardinality/semantics and readiness, then evaluate.
 6. Validate output source, cutoff, expiry and port semantics; atomically replace
@@ -74,14 +75,31 @@ arbitrary provider or node state.
 replaces it with empty output; `expire` removes expired Views and reports changed
 owners. Omitted output ports are withdrawn, not retained.
 
-The store keeps a run-long identity ledger. Reusing an ID with different content
-or duplicating an ID within a snapshot fails. Unactivated nodes retain active
+The store keeps a ledger of the most recently issued identities (100,000 by
+default). Reusing a remembered ID with different content, or duplicating an ID
+within a snapshot, fails. The bound keeps a long minute-level run from retaining
+every View it ever issued. Unactivated nodes retain active
 outputs subject to expiry/invalidation. The ledger is not a forecast archive:
 [ForecastArchive](RESEARCH.md#issued-forecasts) separately retains issued predictions.
 
-Lifecycle events invalidate existing View IDs. A new View concerning an affected
-instrument must have an information cutoff at or after the latest effective
-lifecycle boundary. Even a late older action cannot lower that watermark.
+A lifecycle event affects a node when either:
+
+- the node declares bar, quote or indicator data for that instrument whose price
+  basis the event changes. A split changes every basis. A dividend changes only
+  `adjusted` and `total_return` history; raw and split-adjusted prices stay
+  valid. A named-universe selection is assumed to contain the instrument;
+- for any event other than a dividend, one of the node's active Views names the
+  instrument (as a target subject or a position).
+
+Affected nodes and all their descendants are withdrawn, their View IDs retired,
+and they are re-evaluated in the same batch. Everything else is untouched: a
+dividend on one stock of a 500-name universe no longer withdraws the other 499
+forecasts or cancels every order.
+
+A new View concerning an affected instrument must have an information cutoff at
+or after the latest effective lifecycle boundary. After a non-dividend event that
+holds for every node; after a dividend, for the affected nodes. Even a late
+older action cannot lower that watermark.
 The provider resets affected resources; broker holdings adjustments remain native.
 The runtime neither transforms old Views nor liquidates holdings.
 
@@ -111,8 +129,7 @@ bar:
 | `SnapshotError` | Context no longer represents readable provider state |
 
 Diagnostics use bounded retention; `diagnostic_count` counts all readiness/numerical
-failures. View identity retention is unbounded within a run. Durable restart is
-unsupported.
+failures. The identity ledger is bounded. Durable restart is unsupported.
 
 [Clock tests](../../tests/test_data_clock.py),
 [runtime tests](../../tests/test_runtime.py) and

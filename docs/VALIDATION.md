@@ -67,6 +67,11 @@ See [the guide](GUIDE.md#4-deploy-and-inspect) for retrieval and inspection.
   above; injected-boundary tests establish the additional local causal contracts.
 - The EMA run contains no partial fills or cancellations. Native cancellation
   rejection/retry and partial-fill sequences remain separate acceptance checks.
-- No live-deployment/restart recovery, durable state or bounded identity/intent
-  retention. Memory fixtures are not a market simulator.
+- No live-deployment/restart recovery or durable state. Memory fixtures are not a
+  market simulator.
+- Not yet exercised natively: session-count horizons (`LeanAPI.session_close`),
+  the rebalance band, scoped lifecycle invalidation (including the dividend
+  exemption for raw prices), partial-universe readiness, and shorting under
+  LEAN's default shortable provider. Local tests cover them through injected
+  boundaries only; the cloud evidence above predates these changes.
 - No independent-sample inference is justified for overlapping forecast revisions.

@@ -5,14 +5,19 @@ from dataclasses import dataclass
 from datetime import datetime, time, timedelta
 
 from sugarloaf.core.errors import CapabilityError, ContractError
-from sugarloaf.core.types import InstrumentId, aware, finite, frozen_map
+from sugarloaf.core.primitives import InstrumentId, aware, finite, frozen_map
 
 
 @dataclass(frozen=True)
 class Capability:
-    """An explicit support decision with a reason when an operation is unavailable."""
-    # Unsupported features carry an explicit reason. Adapters must not silently
-    # substitute a different data source or order/session interpretation.
+    """An explicit support decision with a reason when an operation is unavailable.
+
+    Adapters report unsupported features this way instead of silently substituting
+    a different data source or order/session interpretation.
+    """
+
+    # `reason` explains a refusal to a human reading a diagnostic; it is unused
+    # when supported is True.
     supported: bool
     reason: str = ""
 
@@ -29,16 +34,23 @@ class Instrument:
     Lot size and multiplier must be positive. Optional derivative fields describe
     metadata only; they do not establish adapter or execution support.
     """
-    # Neutral metadata supports valuation/risk; derivative fields are descriptive
-    # and do not by themselves imply executable derivative support in an adapter.
+
+    # `id` is the stable identity used everywhere in the graph; `ticker` is only
+    # the current display name and may change (for example FB -> META).
     id: InstrumentId
     ticker: str
     asset_class: str = "equity"
     market: str = "USA"
     currency: str = "USD"
+    # Orders are placed in whole multiples of lot_size. One unit is worth
+    # price * multiplier in the instrument's currency: 1 for a share, 50 for an
+    # E-mini S&P 500 future.
     lot_size: float = 1
     multiplier: float = 1
+    # False after a delisting or halt: execution refuses to open or change a position.
     tradable: bool = True
+    # The remaining fields describe derivatives. They are carried as information
+    # only; no adapter trades derivatives yet.
     underlying: InstrumentId | None = None
     strike: float | None = None
     expiry: datetime | None = None
@@ -55,13 +67,19 @@ class Instrument:
 
 @dataclass(frozen=True)
 class Selection:
-    """Explicit unique instrument identities or one named universe, never both."""
-    # A named universe resolves to its current members through Context; it is not
-    # a fixed ticker list. An empty explicit selection has service-specific semantics.
+    """Explicit unique instrument identities or one named universe, never both.
+
+    A named universe resolves to its current members through Context; it is not a
+    fixed ticker list. An empty explicit selection has service-specific semantics.
+    """
+
+    # Use exactly one of the two. `universe` is the name a UniverseRequirement
+    # defined, for example Selection(universe="liquid-500").
     instruments: tuple[InstrumentId, ...] = ()
     universe: str | None = None
 
     def __post_init__(self):
+        # Accept any iterable from the caller but store an immutable tuple.
         object.__setattr__(self, "instruments", tuple(self.instruments))
         if self.instruments and self.universe is not None:
             raise ContractError("Select explicit instruments or one universe")
@@ -71,14 +89,22 @@ class Selection:
 
 @dataclass(frozen=True)
 class Schedule:
-    """A local wall time or exchange-session anchor, checked on data-clock ticks."""
+    """A local wall time or exchange-session anchor, checked on data-clock ticks.
 
-    # A declaration names a wall time or exchange-session anchor. The provider
-    # uses calendars/timezones when graph data ticks cross that time; no node timer runs.
+    The provider resolves calendars and timezones when graph data ticks cross the
+    declared time; no per-node timer runs.
+    """
+
+    # Two ways to say "when", of which exactly one is used:
+    #   Schedule(at=time(10, 30), timezone="America/New_York")   a wall-clock time
+    #   Schedule(calendar=spy, anchor="open", offset=timedelta(minutes=1))
+    #       one minute after that instrument's exchange opens, on trading days only
     at: time | None = None
     timezone: str = "UTC"
+    # The instrument whose exchange calendar defines sessions and holidays.
     calendar: InstrumentId | None = None
     anchor: str | None = None
+    # Added to the wall time or session anchor; may be negative ("before the close").
     offset: timedelta = timedelta(0)
 
     def __post_init__(self):
@@ -94,10 +120,17 @@ class Schedule:
 
 @dataclass(frozen=True)
 class Trigger:
-    """Event kind with optional filters, or a schedule checked on data-clock ticks."""
+    """Event kind with optional filters, or a schedule checked on data-clock ticks.
 
-    # These filters request evaluation, not guaranteed new decisions. A node may
-    # also activate when upstream output, lifecycle facts or universe membership changes.
+    A trigger requests evaluation; it does not guarantee a new decision. A node may
+    also activate when upstream output, lifecycle facts or universe membership changes.
+    """
+
+    # Examples:
+    #   Trigger()                                  any batch that carries data
+    #   Trigger("bar_close", spy, timedelta(minutes=5))   each completed 5-minute SPY bar
+    #   Trigger("scheduled", schedule=Schedule(...))      a crossed wall/session time
+    # A filter left as None matches anything.
     kind: str = "data"
     instrument: InstrumentId | None = None
     interval: timedelta | None = None
@@ -108,15 +141,26 @@ class Trigger:
         if self.schedule is not None and self.kind != "scheduled":
             raise ContractError("A schedule belongs to a scheduled trigger")
 
+    def matches(self, event) -> bool:
+        """Whether an Event has this kind and passes every filter that is set.
+
+        Scheduled triggers are not matched here: the provider checks whether their
+        occurrence was crossed between two graph times.
+        """
+        return (
+            self.kind == event.kind
+            and (self.instrument is None or self.instrument == event.instrument)
+            and (self.interval is None or self.interval == event.interval)
+            and (self.key is None or self.key == event.key)
+        )
+
 
 class Requirement:
     """Marker for a node's declared service requirements."""
-    pass
 
 
 class DataRequirement(Requirement):
     """Marker for declarations that authorize market-data reads."""
-    pass
 
 
 @dataclass(frozen=True)
@@ -131,18 +175,29 @@ class BarsRequirement(DataRequirement):
         normalization: Raw, adjusted, split_adjusted, or total_return pricing.
         fill_forward: Permit provider-generated fill-forward bars.
         max_age: Maximum age relative to graph time after causal filtering.
+        require_all: Withdraw the node unless every selected instrument is ready.
+            False lets evaluation proceed with a partial selection; the node then
+            calls ``ctx.market.ready(requirement)`` and decides what that means.
+
+    The declaration both requests resources and authorizes a matching read: a node
+    passes this same object to ``ctx.market.bars``.
     """
-    # This declaration both requests resources and authorizes a matching read.
-    # A node must use this same request when calling ctx.market.bars.
+
     selection: Selection
     interval: timedelta = timedelta(days=1)
     lookback: int = 1
     session: str = "regular"
+    # "adjusted" restates history for splits and dividends, "split_adjusted" for
+    # splits only, "total_return" reinvests dividends, "raw" is as traded.
     normalization: str = "adjusted"
     fill_forward: bool = False
+    # The default of four days lets a daily bar from Friday stay usable over a
+    # long weekend; an intraday strategy should set something much shorter.
     max_age: timedelta = timedelta(days=4)
+    require_all: bool = True
 
     def __post_init__(self):
+        # Reject impossible settings here, before any provider subscribes to data.
         if self.interval <= timedelta(0) or self.lookback < 1 or self.max_age < timedelta(0):
             raise ContractError("Invalid bar interval, lookback, or freshness")
         if self.session not in {"regular", "extended"}:
@@ -151,20 +206,41 @@ class BarsRequirement(DataRequirement):
             raise ContractError("Unknown normalization")
 
 
+def restates_history(kind: str, normalization: str | None) -> bool:
+    """Whether a lifecycle fact changes the basis of prices already retained.
+
+    Args:
+        kind: LifecycleEvent kind, such as ``"split"`` or ``"dividend"``.
+        normalization: The BarsRequirement normalization the prices were read
+            under, or None for data that has none (quotes).
+
+    A cash dividend only restates history that is adjusted for dividends
+    (``adjusted`` and ``total_return``). Raw and split-adjusted prices before and
+    after the ex-date are still on one basis, so windows, indicators and Views
+    built from them stay valid. Every other lifecycle fact is treated as changing
+    the basis: a split rescales raw prices and restates every adjusted series.
+
+    The runtime uses this to decide which Views to withdraw and the adapter uses
+    it to decide which windows and indicators to rebuild, so both always agree.
+    """
+    return kind != "dividend" or normalization in {"adjusted", "total_return"}
+
+
 @dataclass(frozen=True)
 class IndicatorRequirement(DataRequirement):
     """Provider-native indicator declaration; no portable formula fallback.
 
     Attributes:
         source: Backing bar declaration with lookback=1; grants no raw-bar read.
+            Its ``require_all`` also governs this indicator's readiness.
         kind: Provider-supported indicator name.
         parameters: Unique scalar settings normalized into immutable sorted pairs.
         window: Required number of valid native output points.
         outputs: Unique requested output names, such as value or upper/lower.
     """
 
-    # Ask the provider for its native indicator and warmup/readiness metadata.
-    # This does not authorize a raw-bar read unless a BarsRequirement is declared too.
+    # Example: a 20-bar EMA of 5-minute SPY bars, keeping the last two values:
+    #   IndicatorRequirement(bars, "ema", (("period", 20),), window=2)
     source: BarsRequirement
     kind: str
     parameters: tuple[tuple[str, int | float | str], ...] = ()
@@ -172,6 +248,8 @@ class IndicatorRequirement(DataRequirement):
     outputs: tuple[str, ...] = ("value",)
 
     def __post_init__(self):
+        # Sorting makes two requirements with the same settings compare equal
+        # whatever order the caller listed them in, so they share one indicator.
         object.__setattr__(self, "parameters", tuple(sorted(self.parameters)))
         object.__setattr__(self, "outputs", tuple(self.outputs))
         if not self.kind or self.window < 1 or self.source.lookback != 1:
@@ -186,14 +264,22 @@ class IndicatorRequirement(DataRequirement):
             elif not isinstance(value, str):
                 raise ContractError("Indicator parameters must be scalar")
 
+    # An indicator covers the same instruments, with the same readiness rule, as
+    # the bars it is computed from. Exposing both lets shared code treat bar,
+    # quote and indicator requirements alike.
     @property
-    def selection(self):
+    def selection(self) -> Selection:
         return self.source.selection
+
+    @property
+    def require_all(self) -> bool:
+        return self.source.require_all
 
 
 @dataclass(frozen=True)
 class IndicatorPoint:
     """Timestamped finite named outputs from one admitted native indicator update."""
+
     time: datetime
     values: Mapping[str, float]
 
@@ -206,6 +292,7 @@ class IndicatorPoint:
 @dataclass(frozen=True)
 class IndicatorSnapshot:
     """Chronological indicator points, native readiness, and initialization provenance."""
+
     points: tuple[IndicatorPoint, ...]
     ready: bool
     provenance: Mapping[str, object]
@@ -217,15 +304,20 @@ class IndicatorSnapshot:
 
 @dataclass(frozen=True)
 class QuotesRequirement(DataRequirement):
-    """Bid/ask history declaration with explicit session, lookback, and freshness."""
-    # Quotes are timestamped bid/ask observations, not an OHLC close fallback.
-    # The provider rejects unsupported quote subscriptions rather than synthesizing them.
+    """Bid/ask history declaration with explicit session, lookback, and freshness.
+
+    Quotes are timestamped bid/ask observations, never an OHLC close fallback; a
+    provider rejects quote subscriptions it cannot supply. ``require_all`` has the
+    same meaning as on BarsRequirement.
+    """
+
     selection: Selection
     interval: timedelta = timedelta(minutes=1)
     lookback: int = 1
     session: str = "regular"
     max_age: timedelta = timedelta(minutes=5)
     fill_forward: bool = False
+    require_all: bool = True
 
     def __post_init__(self):
         if self.interval <= timedelta(0) or self.lookback < 1 or self.max_age < timedelta(0):
@@ -235,51 +327,42 @@ class QuotesRequirement(DataRequirement):
 
 
 @dataclass(frozen=True)
-class SeriesRequirement(DataRequirement):
-    """Named scalar history with an explicit availability convention and freshness."""
-    # Availability convention is part of identity: published data and observation
-    # time must not be interchangeable inputs in a causal calculation.
-    name: str
-    lookback: int = 1
-    availability: str = "published"
-    max_age: timedelta = timedelta(days=4)
-
-    def __post_init__(self):
-        if not self.name or self.lookback < 1 or self.max_age < timedelta(0):
-            raise ContractError("Invalid scalar series requirement")
-
-
-@dataclass(frozen=True)
 class PortfolioRequirement(Requirement):
-    """Declare account-service capabilities and optional instrument selection.
+    """Declare account-service access and an optional instrument selection.
 
-    Empty selection permits the whole account. Restricted snapshots filter
-    holdings, marks, and open orders; NAV and cash remain account-wide.
+    Empty selection permits the whole account, not a zero-asset account. A
+    restricted snapshot filters holdings, marks, and open orders; NAV and cash
+    remain account-wide.
     """
-    # A selected snapshot filters holdings, marks and orders, while NAV/cash stay
-    # account-wide. Empty selection grants account scope rather than a zero-asset account.
-    fields: tuple[str, ...] = ("holdings", "nav", "open_orders")
+
     selection: Selection = Selection()
 
 
 @dataclass(frozen=True)
 class InstrumentRequirement(Requirement):
     """Declare metadata and calendar access; does not subscribe to price data."""
-    # Metadata/session permission does not create a price-data permission.
-    # Declare bars/quotes separately if evaluation also needs prices.
+
     selection: Selection
 
 
 @dataclass(frozen=True)
 class LiquidityUniverse:
-    """Point-in-time price/volume filtering followed by descending dollar-volume selection."""
-    # Filtering/ranking rules are neutral. The provider supplies candidate rows
-    # and owns native refresh callbacks; selection ranks eligible dollar volume.
+    """Point-in-time price/volume filtering followed by descending dollar-volume selection.
+
+    The rule is neutral; the provider supplies candidate rows and owns native
+    refresh callbacks.
+    """
+
+    # Example: the 500 most liquid stocks priced at USD5 or more:
+    #   LiquidityUniverse("liquid-500", 500, min_price=5)
     name: str
     count: int
     min_price: float = 0
     min_volume: float = 0
+    # Membership is recomputed only when this trigger fires.
     refresh: Trigger = Trigger("universe")
+    # How long a member's data resources are kept after it drops out, so a brief
+    # exit and re-entry does not discard and re-warm its history.
     minimum_residence: timedelta = timedelta(0)
     source: str = "us_equity_liquidity"
 
@@ -296,13 +379,19 @@ class LiquidityUniverse:
 
 @dataclass(frozen=True)
 class ETFConstituentsUniverse:
-    """Historical ETF constituents selected by weights and explicit missing-weight policy."""
-    # The ETF is a stable anchor identity needing a provider binding; discovered
-    # constituents are bound separately. Historical membership avoids a current-list shortcut.
+    """Historical ETF constituents selected by weights and explicit missing-weight policy.
+
+    The ETF is a stable anchor identity needing a provider binding; discovered
+    constituents are bound separately.
+    """
+
     name: str
     etf: InstrumentId
+    # Keep the `count` largest weights, and/or those of at least `min_weight`.
     count: int | None = None
     min_weight: float | None = None
+    # What to do with a constituent whose weight the data source omits:
+    # "exclude" it, "include" it (ranked last), or "error" (membership not ready).
     missing_weight: str = "exclude"
     refresh: Trigger = Trigger("universe")
     minimum_residence: timedelta = timedelta(0)
@@ -325,26 +414,36 @@ class ETFConstituentsUniverse:
 
 @dataclass(frozen=True)
 class UniverseRequirement(Requirement):
-    """Declare ownership of a named universe selection source."""
-    # This node owns the named selection source; other readers may reference
-    # the same name. Owners must agree on its definition to avoid conflicting membership.
+    """Declare ownership of a named universe selection source.
+
+    Other nodes may read the same name. Every owner must give the same definition.
+    """
+
     definition: LiquidityUniverse | ETFConstituentsUniverse
 
 
 @dataclass(frozen=True)
 class ResourceUpdate:
-    """Complete replacement of node requirements and triggers, effective next batch."""
-    # Emit this through NodeOutputs to change all declarations at the next batch.
-    # It is a complete replacement, not an incremental subscription patch.
+    """Complete replacement of node requirements and triggers, effective next batch.
+
+    Emitted through NodeOutputs. It replaces every declaration; it is not an
+    incremental subscription patch.
+    """
+
     requirements: tuple[Requirement, ...]
     triggers: tuple[Trigger, ...]
 
 
 @dataclass(frozen=True)
 class Bar:
-    """Completed positive-price OHLCV observation with distinct end and availability times."""
-    # end is the completed observation boundary; available_at is when it became
-    # usable knowledge. Fill-forward observations are explicitly labeled.
+    """Completed OHLCV observation with distinct end and availability times.
+
+    ``end`` is the completed observation boundary; ``available_at`` is when it
+    became usable knowledge. Prices may be zero or negative (some futures and
+    back-adjusted series are), so a consumer that divides by a price checks its
+    sign itself.
+    """
+
     instrument: InstrumentId
     start: datetime
     end: datetime
@@ -354,17 +453,19 @@ class Bar:
     low: float
     close: float
     volume: float
+    # True when the provider repeated the previous bar because nothing traded.
     fill_forward: bool = False
 
     def __post_init__(self):
         for t in (self.start, self.end, self.available_at):
             aware(t)
         finite(self.open, self.high, self.low, self.close, self.volume)
+        # A bar cannot be known before it ends, and its range must contain its
+        # open and close. Price sign is deliberately not checked (see docstring).
         if (
             self.start >= self.end
             or self.available_at < self.end
             or self.volume < 0
-            or self.low <= 0
             or self.low > min(self.open, self.close)
             or self.high < max(self.open, self.close)
         ):
@@ -374,8 +475,9 @@ class Bar:
 @dataclass(frozen=True)
 class Quote:
     """Positive bid/ask observation with ask at least bid and explicit availability."""
-    # Bid and ask may determine executable-side valuation; time and availability
-    # remain distinct so delayed quotes cannot enter an earlier knowledge snapshot.
+
+    # `time` is when the quote was observed and `available_at` when it became
+    # known, so a delayed quote cannot enter an earlier decision.
     instrument: InstrumentId
     time: datetime
     available_at: datetime
@@ -395,8 +497,10 @@ class Quote:
 @dataclass(frozen=True)
 class Observation:
     """Finite scalar value with aware observation and availability timestamps."""
-    # Scalar series also need explicit availability time; historical indexing by
-    # observation date alone can accidentally expose future publications.
+
+    # Used for exact price anchors in outcome evaluation. Indexing history by
+    # observation date alone can expose a value before it was published, so the
+    # availability time is carried explicitly.
     time: datetime
     available_at: datetime
     value: float
@@ -411,11 +515,16 @@ class Observation:
 
 @dataclass(frozen=True)
 class UniverseMembership:
-    """Named selection snapshot; ready empty membership differs from unavailable membership."""
-    # An empty but ready tuple means the rule selected no assets. Not-ready or
-    # missing membership means selection evidence is unavailable, not a zero target.
+    """Named selection snapshot; ready empty membership differs from unavailable membership.
+
+    An empty but ready tuple means the rule selected no assets. Not-ready or
+    missing membership means selection evidence is unavailable, not a zero target.
+    """
+
     name: str
     members: tuple[InstrumentId, ...]
+    # The time the selection was made from; a node may not read membership whose
+    # cutoff is later than its own decision time.
     cutoff: datetime
     ready: bool = True
 

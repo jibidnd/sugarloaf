@@ -15,8 +15,8 @@ import numpy as np
 from sugarloaf.adapters.memory.gateway import MemoryGateway
 from sugarloaf.adapters.memory.services import MemoryServices
 from sugarloaf.core.events import Event, EventBatch
+from sugarloaf.core.primitives import InstrumentId
 from sugarloaf.core.services import AccountSnapshot
-from sugarloaf.core.types import InstrumentId
 from sugarloaf.execution import ExecutionEngine, TradingSession
 from sugarloaf.market.contracts import Bar, Instrument
 

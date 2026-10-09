@@ -97,16 +97,15 @@ def build_bundle(spec: BundleSpec) -> dict:
         spec: Manifest selecting a factory/native entrypoint and strategy dependencies.
 
     Returns:
-        Transformed files, content hashes, manifest text, parameters, and source revisions.
+        Files, content hashes, manifest text, parameters, and source revisions.
 
     Raises:
         ValueError: Selection escapes its root, shadows infrastructure, has an
-            unsupported suffix, omits the factory, or creates a cloud filename collision.
+            unsupported suffix, or omits the factory.
         FileNotFoundError: An explicitly selected source does not exist.
 
-    Directories include Python only; notebooks require explicit selection. The
-    cloud-only types.py rename and import rewrite leave local source unchanged.
-    Hashes identify actual contents, including uncommitted edits.
+    Directories include Python only; notebooks require explicit selection.
+    Files upload unmodified; hashes identify actual contents, including uncommitted edits.
     """
     # Locate the actual installed Sugarloaf checkout, not a fixed sibling directory.
     # A bundle is a file list plus provenance; it is not an executed Deployment.
@@ -170,21 +169,13 @@ def build_bundle(spec: BundleSpec) -> dict:
         for parent in Path(name).parents:
             if parent != Path("."):
                 sources.setdefault(parent.as_posix() + "/__init__.py", "")
-    # QC disallows the basename types.py; keep this transformation at deployment.
-    transformed = {}
-    for name, content in sources.items():
-        mapped = name.replace("sugarloaf/core/types.py", "sugarloaf/core/primitives.py")
-        if mapped in transformed:
-            raise ValueError(f"Cloud filename collision: {mapped}")
-        transformed[mapped] = content.replace("sugarloaf.core.types", "sugarloaf.core.primitives")
-    # Hash the transformed cloud bytes because they are the exact submitted files;
-    # the untransformed local source is not the provider-visible bundle.
+    # Hash the exact submitted files: these bytes, not a Git revision, identify the bundle.
     manifest = {
         name: hashlib.sha256(content.encode()).hexdigest()
-        for name, content in sorted(transformed.items())
+        for name, content in sorted(sources.items())
     }
     return {
-        "files": [{"name": name, "content": transformed[name]} for name in sorted(transformed)],
+        "files": [{"name": name, "content": sources[name]} for name in sorted(sources)],
         "source_manifest": manifest,
         "source_hash": hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest(),
         "manifest_hash": hashlib.sha256(spec.path.read_bytes()).hexdigest(),

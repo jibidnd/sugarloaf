@@ -8,8 +8,8 @@ from sugarloaf.core.errors import ContractError
 from sugarloaf.core.events import Event, EventBatch
 from sugarloaf.core.graph import Graph
 from sugarloaf.core.node import InputSpec, NodeInputs, OutputSpec
+from sugarloaf.core.primitives import InstrumentId, Interval, Metadata
 from sugarloaf.core.services import AccountSnapshot
-from sugarloaf.core.types import InstrumentId, Interval, Metadata
 from sugarloaf.core.views import (
     Distribution,
     DistributionView,
@@ -162,3 +162,17 @@ def test_netter_shared_instrument_budgets_and_explicit_exits():
         NodeInputs({"left": (zero,), "right": (right,)}), services.context(node_id="net")
     ).by_port["positions"][0]
     assert result.positions[A] == 0.3
+
+
+def test_bar_permits_nonpositive_prices_but_not_inconsistent_ranges():
+    from sugarloaf.market.contracts import Bar
+
+    start = datetime(2020, 4, 20, 13, 30, tzinfo=timezone.utc)
+    end = start + timedelta(days=1)
+    # Front-month crude settled below zero on this date; back-adjusted continuous
+    # futures can be negative too. Such a bar is valid data, not a contract error.
+    bar = Bar(InstrumentId("CL"), start, end, end, 18.0, 18.5, -40.0, -37.6, 1000)
+    assert bar.low < 0 and bar.close < 0
+    # The range itself must still be coherent: the low cannot exceed the close.
+    with pytest.raises(ContractError, match="OHLCV"):
+        Bar(InstrumentId("CL"), start, end, end, 18.0, 18.5, -30.0, -37.6, 1000)

@@ -14,7 +14,7 @@ from statistics import fmean
 
 from sugarloaf.core.errors import ContractError, NotReady
 from sugarloaf.core.node import InputSpec, NodeOutputs, OutputSpec
-from sugarloaf.core.types import InstrumentId, Interval, Metadata
+from sugarloaf.core.primitives import InstrumentId, Interval, Metadata
 from sugarloaf.core.views import PositionView, ProbabilityView, ReturnEvent, ReturnView, ScoreView
 
 SUPPORTED = (ReturnView, ScoreView, ProbabilityView)

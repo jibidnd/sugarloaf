@@ -62,7 +62,7 @@ Sources: [examples](../../../../examples/README.md),
   different contents is invalid; expiry and withdrawal are not liquidation.
 
 Sources: [core contracts](../../../../docs/technical/CORE.md),
-`sugarloaf/core/types.py`, `views.py`, `events.py`, and `tests/test_contracts.py`.
+`sugarloaf/core/primitives.py`, `views.py`, `events.py`, and `tests/test_contracts.py`.
 Here and below, adjacent bare filenames share the preceding component directory.
 
 ## 4 Nodes and graph compilation
@@ -105,7 +105,7 @@ Sources: `sugarloaf/runtime/runtime.py`, `sugarloaf/core/events.py`,
   costs/valuation/constraints; admitted information, snapshot lifetime and version
   invalidation, declared reads, exact anchors, and snapshot-local ctx.compute.
 - **6.2 Readiness, freshness, windows, and indicators:** BarsRequirement,
-  QuotesRequirement, SeriesRequirement, IndicatorRequirement, and account/instrument
+  QuotesRequirement, IndicatorRequirement, and account/instrument
   requirements. Distinguish source lookback, indicator period, output window,
   normalization, sessions, fill-forward, and max_age.
 - **6.3 Resource ownership, universes, and deferred updates:**
@@ -146,7 +146,7 @@ Sources: `sugarloaf/adapters/quantconnect/README.md`, `main.py`, `launcher.py`,
   instruments, explicit scopes, account-level weight contributions, and branch
   attribution. Walk contributions of 20% plus 5% in one asset.
 - **8.3 Constraints, explicit exits, weights, and quantities:**
-  PortfolioConstraintNode and PortfolioConstraints; gross/net limits, cash reserve,
+  PortfolioConstraintNode and PortfolioConstraints; gross/net limits, position bounds,
   turnover, feasibility rejection, holdings retained outside explicit targets,
   explicit zeros, and active weights versus frozen quantities. Graph constraints
   and execution constraints are independently configured.

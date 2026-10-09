@@ -8,7 +8,7 @@ import pytest
 from examples.ema import EMAConfig, EMAScore
 from sugarloaf.core.errors import NotReady
 from sugarloaf.core.node import NodeInputs
-from sugarloaf.core.types import InstrumentId
+from sugarloaf.core.primitives import InstrumentId
 from sugarloaf.nodes.simple import MeanViewAggregator
 
 NOW = datetime(2024, 1, 2, 15, tzinfo=UTC)
@@ -24,6 +24,10 @@ def context(points):
         node_id="signal",
         snapshot_id=1,
         market=SimpleNamespace(indicator=indicator),
+        # A stand-in exchange calendar: every session closes one day after the last.
+        instruments=SimpleNamespace(
+            session_close=lambda instrument, after, count=1: after + timedelta(days=count)
+        ),
     )
 
 

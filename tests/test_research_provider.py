@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 from sugarloaf.adapters.memory import MemoryServices
 from sugarloaf.core.events import Event, EventBatch
 from sugarloaf.core.node import NodeOutputs, OutputSpec
-from sugarloaf.core.types import InstrumentId, Interval, Metadata
+from sugarloaf.core.primitives import InstrumentId, Interval, Metadata
 from sugarloaf.core.views import Score, ScoreView, return_target
 from sugarloaf.market.contracts import Bar, BarsRequirement, Instrument, Selection, Trigger
 from sugarloaf.research import ResearchProvider, run_node

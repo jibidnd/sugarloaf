@@ -9,8 +9,8 @@ from examples.technical.memory import run
 from sugarloaf.core.errors import NotReady
 from sugarloaf.core.events import EventBatch
 from sugarloaf.core.node import NodeInputs
+from sugarloaf.core.primitives import InstrumentId
 from sugarloaf.core.services import Context
-from sugarloaf.core.types import InstrumentId
 from sugarloaf.market.contracts import Bar
 
 A = InstrumentId("fixture:A")

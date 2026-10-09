@@ -64,8 +64,8 @@ are preserved. Sources cannot escape the root or shadow generated infrastructure
 Local cloud tooling and the shared CLI are excluded from the uploaded
 framework bundle. They execute in the caller's authenticated Python environment.
 
-QC Cloud rejects `types.py`; bundling maps `core/types.py` to `core/primitives.py`
-and rewrites Python/notebook imports. Local imports remain unchanged.
+Files upload unmodified. QC Cloud rejects a module named `types.py`, so no
+bundled source may use that basename.
 SHA-256 manifests identify actual uploaded contents, including local edits;
 a Git revision or package version alone is insufficient.
 

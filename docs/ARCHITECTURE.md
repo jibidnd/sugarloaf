@@ -124,7 +124,7 @@ path and its execution assumptions.
 | --- | --- |
 | Model/calibration/strategy memory | Node instance, one run |
 | Subscriptions, buffers, native indicators | Provider, shared by declared owners |
-| Active Views and immutable identity ledger | Runtime, one run |
+| Active Views and bounded identity ledger | Runtime, one run |
 | Issued forecasts | Research archive, independent of active View expiry |
 | Actual holdings and platform orders | Broker/platform |
 | Intent reservations and current target | Execution engine, one run |
@@ -132,8 +132,10 @@ path and its execution assumptions.
 
 Change a signal in its node; add provider behavior in the adapter; change order
 semantics in the gateway/engine. Keep cross-component contracts explicit.
-Lifecycle events conservatively invalidate graph outputs and execution authority;
-native holdings adjustments remain the platform's responsibility.
+A lifecycle event invalidates the graph outputs that depend on the affected
+instrument, and execution authority with them when the terminal target is among
+those outputs; the rest of the graph carries on. Native holdings adjustments
+remain the platform's responsibility.
 
 Contexts cannot survive provider mutations or the batch that created them.
 Runtime, identity and intent state are not durably persisted; restart recovery is

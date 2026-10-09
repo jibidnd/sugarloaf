@@ -15,8 +15,8 @@ from sugarloaf.core.errors import CapabilityError, ContractError, NotReady, Snap
 from sugarloaf.core.events import Event, EventBatch, LifecycleEvent
 from sugarloaf.core.graph import Graph
 from sugarloaf.core.node import NodeOutputs, OutputSpec
+from sugarloaf.core.primitives import InstrumentId, Metadata
 from sugarloaf.core.services import AccountSnapshot
-from sugarloaf.core.types import InstrumentId, Metadata
 from sugarloaf.core.views import PositionView
 from sugarloaf.market.contracts import (
     Bar,
@@ -181,6 +181,10 @@ class API:
 
     def is_open(self, security, at, extended):
         return security.exchange.hours.is_open(at, extended)
+
+    def session_close(self, security, after, count):
+        # Stand-in calendar: one regular session closes each day.
+        return after + timedelta(days=count)
 
     def submit(self, algorithm, symbol, intent):
         self.submissions.append(intent)
@@ -392,7 +396,7 @@ def test_universe_owner_release_defers_collection_and_preserves_held_members():
     assert services._retired_universes == []
 
 
-def test_universe_refresh_rejects_unimplemented_dimensions_and_clr_window_type():
+def test_universe_refresh_rejects_unimplemented_dimensions():
     services = QuantConnectServices(algorithm(), api=API())
     for refresh in (
         Trigger("scheduled", key="daily"),
@@ -406,16 +410,7 @@ def test_universe_refresh_rejects_unimplemented_dimensions_and_clr_window_type()
                     (UniverseRequirement(LiquidityUniverse("u", 1, refresh=refresh)),), ()
                 ),
             )
-    marker = type("LeanBaseData", (), {})
 
-    class StrictCLRGeneric:
-        def __getitem__(self, item):
-            assert item is marker  # Python object is not a CLR generic type argument.
-            return Window
-
-    api = object.__new__(LeanAPI)
-    api.lean = NS(BaseData=marker, RollingWindow=StrictCLRGeneric())
-    assert api.window(3).size == 3
 
 
 def test_manual_data_ownership_released_only_after_last_consumer_without_liquidation():
@@ -928,7 +923,8 @@ def test_qc_order_status_mapping_surfaces_unknown_platform_state():
 
 
 @pytest.mark.parametrize("available", [None, float("inf"), float("nan"), 1, 10])
-def test_qc_borrow_requires_finite_confirmed_quantity(available):
+def test_qc_borrow_follows_the_platform_shortable_contract(available):
+    # LEAN documents None as "shortable without restrictions"; a number is a limit.
     platform = algorithm()
     services = QuantConnectServices(platform, api=API())
     services.register(A, "A")
@@ -937,4 +933,83 @@ def test_qc_borrow_requires_finite_confirmed_quantity(available):
     services.apply(EventBatch(0, NOW))
     security = platform.securities[services.symbols[A]]
     security.shortable_provider.shortable_quantity = lambda *_: available
-    assert services.context().portfolio.borrow(A, 2).supported == (available == 10)
+    assert services.context().portfolio.borrow(A, 2).supported == (available in (None, 10))
+
+
+def test_dividend_rebuilds_only_dividend_adjusted_resources():
+    b = InstrumentId("USA:B")
+    api, platform = API(), algorithm()
+    services = QuantConnectServices(platform, api=api)
+    services.register(A, "A")
+    services.register(b, "B")
+    raw = BarsRequirement(Selection((A,)), timedelta(minutes=1), normalization="raw")
+    adjusted = BarsRequirement(Selection((b,)), timedelta(minutes=1), normalization="adjusted")
+    services.install("n", ResourceUpdate((raw, adjusted), ()))
+    services.apply(EventBatch(0, NOW))
+    assert api.history_reads == 2  # One warmup history request per window.
+
+    def dividend(sequence, instrument):
+        event = LifecycleEvent("dividend", instrument, NOW, amount=1.0)
+        return EventBatch(sequence, NOW, (Event("lifecycle", instrument, payload=event),))
+
+    # Raw prices on either side of an ex-date are on one basis: nothing is rebuilt.
+    services.apply(dividend(1, A))
+    assert api.history_reads == 2
+    # Dividend-adjusted history is restated, so that window is re-read.
+    services.apply(dividend(2, b))
+    assert api.history_reads == 3
+
+
+def test_window_keeps_first_receipt_for_repeats_and_orders_late_arrivals():
+    api, platform = API(), algorithm()
+    services = QuantConnectServices(platform, api=api)
+    services.register(A, "A")
+    request = BarsRequirement(Selection((A,)), timedelta(minutes=1), lookback=3)
+    services.install("n", ResourceUpdate((request,), ()))
+    services.apply(EventBatch(0, NOW))
+    consolidator = next(iter(services.consolidators.values()))
+
+    def admit(bar, received):
+        platform.utc_time = received
+        consolidator.update(bar)
+        services.apply(EventBatch(services.batch.sequence + 1, NOW, received_at=received))
+        return services.context(node_id="n").market.bars(request, A)
+
+    later = NOW + timedelta(minutes=5)
+    # An identical repeat of the newest bar keeps the receipt time it first had.
+    bars = admit(native_bar(NOW, 100), later)
+    assert bars[-1].available_at == NOW
+    # A revision of that bar carries the receipt time of the revised content.
+    bars = admit(native_bar(NOW, 105), later)
+    assert (bars[-1].close, bars[-1].available_at) == (105, later)
+    # A late older bar is slotted in chronologically and cannot evict newer bars.
+    late = native_bar(NOW - timedelta(seconds=90), 90)
+    bars = admit(late, later + timedelta(minutes=1))
+    assert [bar.end for bar in bars] == sorted(bar.end for bar in bars)
+    assert bars[-1].close == 105 and any(bar.close == 90 for bar in bars)
+
+
+def test_session_close_steps_whole_regular_sessions_through_the_native_calendar():
+    closes = [datetime(2025, 1, 10, 16), datetime(2025, 1, 13, 16), datetime(2025, 1, 14, 16)]
+    requests = []
+
+    def get_next_market_close(local, extended):
+        # Like LEAN: the search is non-inclusive of the instant it is given.
+        requests.append(extended)
+        return next(close for close in closes if close > local)
+
+    api = object.__new__(LeanAPI)
+    # This fixture's exchange zone is UTC, so the conversions are identities.
+    api.lean = NS(
+        Extensions=NS(
+            convert_from_utc=lambda value, zone: value, convert_to_utc=lambda value, zone: value
+        )
+    )
+    security = NS(
+        exchange=NS(time_zone="UTC", hours=NS(get_next_market_close=get_next_market_close))
+    )
+    friday_close = datetime(2025, 1, 10, 16, tzinfo=UTC)
+    # Asked at Friday's close, one session later is Monday's close, not Friday's.
+    assert api.session_close(security, friday_close, 1) == datetime(2025, 1, 13, 16, tzinfo=UTC)
+    assert api.session_close(security, friday_close, 2) == datetime(2025, 1, 14, 16, tzinfo=UTC)
+    assert requests == [False] * 3  # Regular sessions only, never extended hours.

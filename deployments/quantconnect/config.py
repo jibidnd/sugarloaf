@@ -6,7 +6,7 @@ from datetime import timedelta
 # This deployment composes the public teaching graph; private factories select their own nodes.
 from examples.ema import EMAConfig
 from examples.ema import build_graph as ema_graph
-from sugarloaf.core.types import InstrumentId
+from sugarloaf.core.primitives import InstrumentId
 from sugarloaf.deployment import Deployment
 from sugarloaf.execution import ExecutionPolicy
 

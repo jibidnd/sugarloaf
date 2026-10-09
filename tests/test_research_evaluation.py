@@ -9,7 +9,7 @@ from scipy.stats import multivariate_normal
 from sugarloaf.core.errors import ContractError
 from sugarloaf.core.events import EventBatch
 from sugarloaf.core.node import NodeOutputs
-from sugarloaf.core.types import InstrumentId, Interval, Metadata
+from sugarloaf.core.primitives import InstrumentId, Interval, Metadata
 from sugarloaf.core.views import (
     Distribution,
     DistributionView,

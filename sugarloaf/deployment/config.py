@@ -6,9 +6,9 @@ from datetime import date
 
 from sugarloaf.core.errors import ContractError
 from sugarloaf.core.graph import CompiledGraph
-from sugarloaf.core.services import PortfolioConstraints
-from sugarloaf.core.types import InstrumentId, finite
+from sugarloaf.core.primitives import InstrumentId, finite
 from sugarloaf.execution import ExecutionPolicy
+from sugarloaf.portfolio.constraints import PortfolioConstraints
 
 from .reporting import ReportContext
 

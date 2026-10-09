@@ -1,7 +1,7 @@
 """Deterministic fixture provider; no local indicator calculation fallback."""
 
 from sugarloaf.adapters.base import ProviderServices, SelectionRow, resource_key, select
-from sugarloaf.core.errors import CapabilityError
+from sugarloaf.core.errors import CapabilityError, NotReady
 from sugarloaf.core.services import AccountSnapshot
 from sugarloaf.market.contracts import Capability
 
@@ -44,21 +44,32 @@ class MemoryServices(ProviderServices):
         # Buffers store supplied neutral observations, not simulated market ticks.
         # Their observation and availability timestamps determine later visibility.
         self.buffers = {}
-        self.scalar_series = {}
 
     def _retained_instruments(self):
         # Resource retention follows explicit account exposure even when dynamic
         # selection no longer includes the instrument. This does not create trades.
         return set(self.account.holdings) | {o.instrument for o in self.account.open_orders}
 
-    def _series(self, requirement):
-        return self.scalar_series.get((requirement.name, requirement.availability))
-
     def _session_times(self, instrument, day):
         # A fixture supplies actual session boundaries; no weekday/holiday rule
         # is invented when the requested trading day has no configured session.
         sessions = self.calendars.get(instrument, {}).get("regular", ())
         return next(((start, end) for start, end in sessions if start.date() == day), None)
+
+    def _session_close(self, instrument, after, count):
+        if instrument not in self.calendars:
+            raise CapabilityError("An explicit exchange calendar fixture is required")
+        # Closes strictly after the given instant, earliest first. The count-th one
+        # is the end of a horizon of that many sessions. For example, with sessions
+        # closing Friday and Monday, one session after Friday's close is Monday's.
+        closes = sorted(
+            end for _, end in self.calendars[instrument].get("regular", ()) if end > after
+        )
+        if len(closes) < count:
+            # The fixture simply does not extend that far. That is missing
+            # evidence, not a reason to guess a weekday rule.
+            raise NotReady("Calendar fixture has no such later session")
+        return closes[count - 1]
 
     def set_account(self, account: AccountSnapshot) -> None:
         """Replace the account snapshot and invalidate previously created contexts."""
@@ -86,12 +97,6 @@ class MemoryServices(ProviderServices):
             self.buffers[key] = tuple(merged[t] for t in sorted(merged))
         self._changed()
 
-    def put_series(self, requirement, observations):
-        """Replace a named availability-specific scalar series and invalidate Contexts."""
-        # Availability semantics are part of series identity. Shared reads still
-        # reject observations received after their Context's availability boundary.
-        self.scalar_series[(requirement.name, requirement.availability)] = tuple(observations)
-        self._changed()
 
     def set_selection(self, name, rows, cutoff):
         """None means unchanged; an empty iterable is an explicit empty selection."""

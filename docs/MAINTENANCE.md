@@ -109,7 +109,7 @@ checks and executable checks for runnable examples.
 ## Current operational limits
 
 There is no live restart/recovery, durable runtime/intent checkpoint or transaction
-rollback after arbitrary failures. View identity, forecast archive and intent
-retention are unbounded within a run. Keep credentials and generated data outside
+rollback after arbitrary failures. The forecast archive is unbounded within a
+run; the View identity ledger and intent ledger are bounded. Keep credentials and generated data outside
 source; ignored evidence requires backup. These constraints affect long-running
 operation and are not fixed by reconnecting a host.

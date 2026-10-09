@@ -10,7 +10,7 @@ from sugarloaf.core.errors import ContractError
 from sugarloaf.core.events import Event, EventBatch, LifecycleEvent
 from sugarloaf.core.graph import Graph
 from sugarloaf.core.node import NodeOutputs, OutputSpec
-from sugarloaf.core.types import InstrumentId, Interval, Metadata
+from sugarloaf.core.primitives import InstrumentId, Interval, Metadata
 from sugarloaf.core.views import ReturnView
 from sugarloaf.market.contracts import Schedule, Trigger
 from sugarloaf.runtime import GraphRuntime
@@ -112,12 +112,15 @@ def test_late_lifecycle_event_cannot_lower_adjustment_basis_watermark():
     split = LifecycleEvent("split", A, START, factor=0.5)
     runtime.process(EventBatch(1, START, (Event("lifecycle", A, payload=split),)))
     assert not runtime.store.get("forecast", "forecast")
-    dividend = LifecycleEvent("dividend", A, START - timedelta(hours=2), amount=1)
+    # A second, older split arrives late. Its effective time (START - 2h) is
+    # before the forecast's information cutoff (START - 1h), so if it lowered the
+    # watermark the stale forecast below would wrongly be accepted.
+    earlier = LifecycleEvent("split", A, START - timedelta(hours=2), factor=2)
     runtime.process(
         EventBatch(
             2,
             START,
-            (Event("lifecycle", A, payload=dividend),),
+            (Event("lifecycle", A, payload=earlier), Event("data")),
             received_at=START + timedelta(seconds=1),
         )
     )

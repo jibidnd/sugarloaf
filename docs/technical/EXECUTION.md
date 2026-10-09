@@ -14,16 +14,18 @@ valuation, branch netting, attribution, explicit exits and graph constraints.
 The engine separately protects order execution with fresh broker state.
 
 `TradingSession(graph,services,execution,on_output=None)` requires a position output.
-It ignores identical replay, invalidates before lifecycle processing, runs the graph
-and accepts exactly one terminal PositionView. Missing/multiple terminal Views or
-an exception invalidate execution. Withdrawal cancels intentions and holds filled
+It ignores identical replay, runs the graph and accepts exactly one terminal
+PositionView. Missing/multiple terminal Views or an exception invalidate
+execution. A corporate action therefore cancels orders only when the runtime
+withdrew the terminal target because of it; a target that does not involve the
+affected instrument carries on. Withdrawal cancels intentions and holds filled
 positions; only explicit zero is an exit instruction.
 
 ## Interfaces and state
 
 | Interface | Semantics |
 | --- | --- |
-| `ExecutionPolicy` | Order type/session/time-in-force, intent lifetime, maximum target age, minimum trade value in account currency |
+| `ExecutionPolicy` | Order type/session/time-in-force, intent lifetime, maximum target age, minimum trade value in account currency, rebalance band as a NAV fraction |
 | `ExecutionGateway.capability(policy)` | Explicitly accept/reject platform order semantics |
 | `context()` | Fresh account, instruments, valuation, costs and constraints |
 | `submit(intent) -> order_id` | Translate one signed quantity request; reserve local identity first |
@@ -34,7 +36,10 @@ positions; only explicit zero is an exit instruction.
 | `on_order_update(update)` | Apply/queue signed cumulative feedback; does not initiate reconciliation |
 | `reconcile()` | Re-read platform state and submit outstanding target deltas |
 
-`ExecutionState` holds target, intent ledger, sequence and kill switch.
+`ExecutionState` holds the target, the intent ledger and the intent sequence.
+The ledger keeps every intent of the current target plus older intents that are
+not yet terminal; finished intents of superseded targets are dropped, so it
+does not grow with the length of the run.
 `IntentState` holds immutable OrderIntent, platform ID, status, cumulative filled
 quantity and cancel-request flag. The ledger supplements broker state; it never
 becomes authoritative holdings. Terminal statuses: filled, canceled, rejected,
@@ -79,17 +84,22 @@ run in a native QC kernel or cloud deployment.
 
 ## Reconciliation algorithm
 
-1. Obtain fresh Context. No target/kill switch requests cancellation; an expired or
+1. With no target, request cancellation of outstanding orders and stop; no
+   broker snapshot is taken. Otherwise obtain a fresh Context; an expired or
    over-age target is invalidated. Cancel expired/superseded intents, retry failed
    requests, and check outstanding request responses. Wait while any known
    nonterminal intent has cancellation requested.
 2. Translate each named target into lot-rounded quantities (truncate toward zero).
-   Sort by desired-minus-held quantity, then instrument ID: sells submit first.
+   An instrument without a usable mark is skipped with a `VALUATION_UNAVAILABLE`
+   diagnostic; the others still trade. Sort by desired-minus-held quantity, then
+   instrument ID: sells submit first.
 3. For each instrument, obtain another fresh Context and recompute target quantity
    using current NAV/valuation. Pending quantity includes platform remaining orders
    and nonterminal local reservations absent from the platform snapshot, by order ID.
-4. Delta = desired − held − pending. Skip zero, subthreshold trades except zero
-   targets, and a target/instrument already rejected by the platform.
+4. Delta = desired − held − pending. Skip zero, a target/instrument already
+   rejected by the platform, and orders below a threshold: `min_trade_value` in
+   account currency, or for a weight target `rebalance_band` × NAV. Neither
+   threshold suppresses an exit to zero.
 5. Create a unique intent with policy expiry; run RiskGate. A readiness rejection
    is diagnosed without submission. Reserve identity, submit, then bind platform ID.
    Submission exceptions retain `unknown` exposure and propagate; never blindly retry.
@@ -97,6 +107,13 @@ run in a native QC kernel or cloud deployment.
 All gateway Contexts created for a reconciliation are closed when that pass
 finishes, including early returns and exceptions. Risk gates must not retain
 readable snapshot handles between passes.
+
+**Rebalance band.** A weight target's desired quantity moves with every mark.
+Holding 20 shares against a 20% target, a 0.5% price rise makes the exact desired
+quantity 19.92: the account is 0.08 shares off target, yet whole lots would say
+"sell one". The band compares that exact drift, in account currency, with
+`rebalance_band` × NAV (default 0.25%) and trades only beyond it. Quantity
+targets are exact instructions and are not banded.
 
 Changing target identity requests cancellation of old intents. Reaccepting identical
 content may reconcile again; changed content under the same active identity fails.
@@ -110,20 +127,22 @@ filled shares could count once in holdings and again in the local pending ledger
 
 ## RiskGate
 
-Before each submission, check kill switch, target cutoff/expiry/age, supported
+Before each submission, check target cutoff/expiry/age, supported
 equity instrument, tradability, session, finite nonzero whole-lot quantity, positive
 NAV and executable valuation.
 
 Construct two weight vectors from authoritative holdings plus pending orders:
 lower adds only possible sells; upper adds only possible buys. Include local intents
 missing from platform state once. Add the proposed order to these bounds. Check
-worst gross ∑max(|lowerᵢ|,|upperᵢ|), minimum/maximum net, cash reserve, shorting and
-position bounds. This assumes no favorable fill ordering.
+worst gross ∑max(|lowerᵢ|,|upperᵢ|), minimum/maximum net and per-position
+bounds. This assumes no favorable fill ordering. The arithmetic is
+`portfolio.constraints.breaches`, the same function graph nodes use.
 
-Existing breaches may be remediated: compare before/after violation magnitudes in
-the same sorted instrument coordinates. Allow the order only if no magnitude
-increases and no new breach appears. Turnover separately includes remaining target
-distance plus cumulative fills for that target identity. Borrow permission is
+Existing breaches may be remediated: compare each limit's violation size before
+and after adding the order. Allow the order only if no size increases, which also
+rules out a new breach. Turnover separately includes remaining target distance
+plus cumulative fills for that target identity; an instrument that cannot be
+valued is left out of that sum until it can trade. Borrow permission is
 required when a sell can leave a short position; covers are not blocked by a borrow
 test. Finally request platform buying-power approval.
 
@@ -138,7 +157,8 @@ its engine explicitly; there is no configuration-level custom-engine loader.
 Current executable scope is US equities, regular-session day market orders. Native
 holdings adjustments belong to the platform. Unknown submission outcomes require
 authoritative resolution; restart/recovery and durable intent retention are not
-implemented. Intent history is unbounded. Tests: [execution](../../tests/test_execution.py),
+implemented. `max_target_age` defaults to four days so a Friday-close decision can
+trade on Monday; the target's own expiry is the precise control. Tests: [execution](../../tests/test_execution.py),
 [QC callbacks](../../tests/test_adapter_quantconnect.py),
 [graph integration](../../tests/test_execution.py).
 

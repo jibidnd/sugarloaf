@@ -7,11 +7,13 @@ from sugarloaf.core.errors import ContractError, NumericalError
 from sugarloaf.core.events import Event, EventBatch, LifecycleEvent
 from sugarloaf.core.graph import Graph
 from sugarloaf.core.node import InputSpec, NodeOutputs, OutputSpec
-from sugarloaf.core.types import InstrumentId, Metadata
-from sugarloaf.core.views import PositionView
+from sugarloaf.core.primitives import InstrumentId, Interval, Metadata
+from sugarloaf.core.views import PositionView, Score, ScoreView, return_target
 from sugarloaf.market.contracts import (
+    BarsRequirement,
     LiquidityUniverse,
     ResourceUpdate,
+    Selection,
     Trigger,
     UniverseRequirement,
 )
@@ -184,3 +186,105 @@ def test_membership_change_rechecks_node_without_its_ordinary_trigger():
     services.set_selection("u", [], NOW + timedelta(seconds=1))
     runtime.process(EventBatch(1, NOW + timedelta(seconds=1), (Event("scheduled", key="select"),)))
     assert source.calls == 2
+
+
+class Reader:
+    """Emit one score about an instrument, read under a chosen price normalization."""
+
+    inputs = {}
+    outputs = {"views": OutputSpec((ScoreView,))}
+    triggers = (Trigger("data"),)
+
+    def __init__(self, instrument, normalization):
+        self.instrument = instrument
+        # require_all=False lets the node evaluate without any bar fixtures; these
+        # tests are about which nodes a lifecycle event touches, not about data.
+        self.requirements = (
+            BarsRequirement(
+                Selection((instrument,)), normalization=normalization, require_all=False
+            ),
+        )
+        self.calls = 0
+
+    def evaluate(self, inputs, ctx):
+        self.calls += 1
+        end = ctx.now + timedelta(days=1)
+        view = ScoreView(
+            return_target(self.instrument, Interval(ctx.now, end)),
+            Score(1.0, "fixture"),
+            Metadata(f"{ctx.node_id}:{ctx.snapshot_id}", ctx.node_id, ctx.now, end),
+        )
+        return NodeOutputs({"views": (view,)})
+
+
+def lifecycle_batch(sequence, kind, instrument, **fields):
+    at = NOW + timedelta(seconds=sequence)
+    event = LifecycleEvent(kind, instrument, at, **fields)
+    return EventBatch(sequence, at, (Event("lifecycle", instrument, payload=event),))
+
+
+def test_lifecycle_invalidation_is_scoped_to_the_affected_instrument_and_basis():
+    b = InstrumentId("B")
+    nodes = {
+        "adjusted_a": Reader(A, "adjusted"),
+        "raw_a": Reader(A, "raw"),
+        "adjusted_b": Reader(b, "adjusted"),
+    }
+    builder = Graph()
+    for name, node in nodes.items():
+        builder.add_node(name, node)
+    runtime = GraphRuntime(builder.set_output("adjusted_a", "views").compile(), MemoryServices())
+    runtime.process(EventBatch(0, NOW, (Event("data"),)))
+    before = {name: runtime.store.get(name, "views") for name in nodes}
+    assert all(len(views) == 1 for views in before.values())
+
+    # A dividend restates dividend-adjusted history only. The raw reader of the
+    # same stock, and every reader of another stock, keep their Views untouched.
+    runtime.process(lifecycle_batch(1, "dividend", A, amount=1.0))
+    assert [node.calls for node in nodes.values()] == [2, 1, 1]
+    assert runtime.store.get("adjusted_a", "views") != before["adjusted_a"]
+    assert runtime.store.get("raw_a", "views") == before["raw_a"]
+    assert runtime.store.get("adjusted_b", "views") == before["adjusted_b"]
+
+    # A split changes every price basis for that stock, but still only that stock.
+    runtime.process(lifecycle_batch(2, "split", A, factor=0.5))
+    assert [node.calls for node in nodes.values()] == [3, 2, 1]
+    assert runtime.store.get("adjusted_b", "views") == before["adjusted_b"]
+
+
+def test_split_withdraws_views_naming_the_instrument_but_a_dividend_does_not():
+    # Neither node reads price data, but both of their quantity targets name A.
+    source, consumer = Source(), Consumer()
+    runtime = GraphRuntime(graph(source, consumer), MemoryServices())
+    runtime.process(EventBatch(0, NOW, (Event("data"),)))
+    kept = runtime.store.get("c", "p")
+    calls = (source.calls, consumer.calls)
+    # A cash dividend does not change what "2 shares of A" means: nothing happens.
+    runtime.process(lifecycle_batch(1, "dividend", A, amount=1.0))
+    assert runtime.store.get("c", "p") == kept
+    assert (source.calls, consumer.calls) == calls
+    # A split does. Both targets are withdrawn and both nodes decide afresh.
+    runtime.process(lifecycle_batch(2, "split", A, factor=0.5))
+    assert (source.calls, consumer.calls) == (calls[0] + 1, calls[1] + 1)
+    assert runtime.store.get("c", "p") != kept
+
+
+def test_identity_ledger_remembers_only_the_most_recent_identities():
+    def view(identity, quantity):
+        return PositionView(
+            {A: quantity},
+            "quantity",
+            "account",
+            Metadata(identity, "s", NOW, NOW + timedelta(minutes=1)),
+        )
+
+    store = ViewStore(identity_limit=2)
+    for number in range(3):
+        store.replace("s", NodeOutputs({"p": (view(f"v{number}", 1),)}))
+    # v2 is still remembered: reusing it for different contents is rejected.
+    with pytest.raises(ContractError, match="reused"):
+        store.replace("s", NodeOutputs({"p": (view("v2", 5),)}))
+    # v0 was the oldest of three and has been forgotten, keeping memory bounded.
+    assert store.replace("s", NodeOutputs({"p": (view("v0", 5),)}))
+    with pytest.raises(ContractError, match="at least one"):
+        ViewStore(identity_limit=0)

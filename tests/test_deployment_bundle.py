@@ -28,7 +28,6 @@ def test_external_strategy_bundles_only_selected_sources(tmp_path):
     assert files["private_strategy/__init__.py"] == "VERSION = 1\n"
     assert "private_strategy.strategy import deployment" in files["deployment_config.py"]
     assert "sugarloaf/core/primitives.py" in files
-    assert "sugarloaf/core/types.py" not in files
     assert "sugarloaf/adapters/quantconnect/cloud/backtests.py" not in files
     assert "sugarloaf/cli.py" not in files
     assert not any(name.startswith("sugarloaf/adapters/quantconnect/cloud/") for name in files)

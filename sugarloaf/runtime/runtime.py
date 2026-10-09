@@ -1,6 +1,6 @@
 """Serialized batches, whole-node snapshots, and conservative invalidation."""
 
-from collections import deque
+from collections import OrderedDict, deque
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -9,8 +9,31 @@ from sugarloaf.core.errors import ContractError, NotReady, NumericalError
 from sugarloaf.core.events import EventBatch, LifecycleEvent
 from sugarloaf.core.graph import CompiledGraph
 from sugarloaf.core.node import InputSpec, NodeInputs, NodeOutputs
+from sugarloaf.core.primitives import InstrumentId
 from sugarloaf.core.views import PositionView, View
-from sugarloaf.market.contracts import ResourceUpdate, UniverseRequirement
+from sugarloaf.market.contracts import (
+    BarsRequirement,
+    QuotesRequirement,
+    ResourceUpdate,
+    UniverseRequirement,
+    restates_history,
+)
+
+# Ledger marker for an identity that a lifecycle event invalidated. It is a
+# distinct object so it can never compare equal to a real View.
+_RETIRED = object()
+
+
+def _subjects(view: View) -> set:
+    """Return every subject a View makes a claim about or requests a position in."""
+    # A PositionView names instruments through its positions; predictive Views
+    # name one subject or a tuple of them through their Target.
+    subjects = set(view.positions) if isinstance(view, PositionView) else set()
+    target = getattr(view, "target", None)
+    if target is not None:
+        subject = target.subject
+        subjects.update(subject if isinstance(subject, tuple) else (subject,))
+    return subjects
 
 
 @dataclass(frozen=True)
@@ -23,13 +46,30 @@ class Diagnostic:
 
 
 class ViewStore:
-    """Active node outputs plus an immutable-identity ledger for this run."""
+    """Active node outputs plus a bounded ledger of recently issued identities.
 
-    def __init__(self):
-        # Active outputs may expire or be withdrawn; the separate identity history lasts
-        # for the run so an old ID cannot later describe different contents.
+    Args:
+        identity_limit: How many of the most recently issued or re-issued View
+            identities the ledger remembers.
+
+    The ledger enforces that one identity never describes two different
+    contents. It remembers the latest ``identity_limit`` identities rather than
+    every identity of the run: a node normally derives its IDs from the batch
+    sequence, so a clash, if a node has one, happens against a recent identity.
+    Keeping every View of a multi-year minute backtest would hold millions of
+    objects for a check that only ever looks at the newest few.
+    """
+
+    def __init__(self, identity_limit: int = 100_000):
+        if identity_limit < 1:
+            raise ContractError("Identity ledger must remember at least one View")
+        # Active outputs may expire or be withdrawn; the separate identity ledger
+        # outlives them so an old ID cannot quietly return with different contents.
         self._snapshots = {}
-        self._identities = {}
+        # identity -> the View issued under it, or _RETIRED. Ordered oldest first so
+        # the least recently used identity is the one dropped at the limit.
+        self._identities: OrderedDict = OrderedDict()
+        self._identity_limit = identity_limit
 
     def get(self, node_id: str, port: str | None = None) -> NodeOutputs | tuple[View, ...]:
         """Read a whole node snapshot, or its View tuple when a port is supplied."""
@@ -56,17 +96,42 @@ class ViewStore:
                 if key in seen:
                     raise ContractError("Duplicate View identity in snapshot")
                 seen.add(key)
-                if key in self._identities and self._identities[key] != view:
+                known = self._identities.get(key)
+                # A retired identity is rejected earlier by the runtime as NotReady;
+                # here only a live identity with changed contents is a contract error.
+                if known is not None and known is not _RETIRED and known != view:
                     raise ContractError("View identity reused with different contents")
         old = self.get(node_id)
         for views in outputs.by_port.values():
             for view in views:
-                self._identities[view.metadata.view_id] = view
+                self._remember(view.metadata.view_id, view)
         self._snapshots[node_id] = outputs
         return old.by_port != outputs.by_port
 
+    def _remember(self, identity: str, value) -> None:
+        """Record an identity as most recently used and drop the oldest beyond the limit."""
+        self._identities[identity] = value
+        self._identities.move_to_end(identity)
+        while len(self._identities) > self._identity_limit:
+            self._identities.popitem(last=False)
+
+    def retire(self, node_id: str) -> None:
+        """Withdraw a node's outputs and forbid reuse of their identities.
+
+        Used when a lifecycle event changes what those Views meant. A node that
+        cached an old View object cannot hand it back later as if still valid.
+        """
+        for views in self.get(node_id).by_port.values():
+            for view in views:
+                self._remember(view.metadata.view_id, _RETIRED)
+        self.withdraw(node_id)
+
+    def retired(self, identity: str) -> bool:
+        """Whether a lifecycle event retired this identity."""
+        return self._identities.get(identity) is _RETIRED
+
     def withdraw(self, node_id: str) -> bool:
-        """Remove all active outputs for a node while retaining its identity history."""
+        """Remove all active outputs for a node; its identities stay in the ledger."""
         # Withdrawal removes authority/evidence, not actual broker holdings. A strategy
         # that wants to sell must publish explicit zero positions rather than disappear.
         return self.replace(node_id, NodeOutputs({}))
@@ -96,8 +161,8 @@ class GraphRuntime:
         on_output: Optional callback for each successful emission, including unchanged
             output; receives node ID, NodeOutputs, and the normalized batch.
 
-    Construction installs all node resources. Diagnostics are bounded; identity
-    history persists for the run. No persistent restart/recovery is supplied.
+    Construction installs all node resources. Diagnostics and the identity
+    ledger are bounded. No persistent restart/recovery is supplied.
     """
 
     def __init__(
@@ -118,8 +183,10 @@ class GraphRuntime:
         self.batch: EventBatch | None = None
         self._pending = {}
         self._processing = False
-        self._invalidated_ids = set()
-        self._basis_changes = {}
+        # (node ID, instrument) -> time of the latest lifecycle event that changed
+        # that node's basis for that instrument. A View from that node about that
+        # instrument must be based on information at or after this time.
+        self._basis_changes: dict[tuple[str, InstrumentId], datetime] = {}
         for node_id in graph.topological_order:
             node = graph.nodes[node_id]
             services.install(
@@ -147,22 +214,26 @@ class GraphRuntime:
             if trigger.schedule is not None:
                 if self.services.schedule_due(trigger.schedule, after, batch.cutoff):
                     return True
-            elif any(
-                trigger.kind == event.kind
-                and (trigger.instrument is None or trigger.instrument == event.instrument)
-                and (trigger.interval is None or trigger.interval == event.interval)
-                and (trigger.key is None or trigger.key == event.key)
-                for event in batch.events
-            ):
+            elif any(trigger.matches(event) for event in batch.events):
                 return True
         return False
+
+    def is_replay(self, batch: EventBatch) -> bool:
+        """Whether this is exactly the last arrival that finished processing.
+
+        ``process`` treats such a batch as a no-op. A host that would otherwise act
+        on the result, such as TradingSession, checks this first so a duplicated
+        callback neither re-evaluates the graph nor touches orders.
+        """
+        return self._last is not None and batch == self._last
 
     def process(self, batch: EventBatch) -> ViewStore:
         """Admit one arrival and evaluate activated nodes once in topological order.
 
         Exact replay of the last completed arrival is a no-op. Graph time never
         rewinds. Resource replacements become effective before admission; expired
-        or lifecycle-invalidated Views are withdrawn before evaluation.
+        Views, and the Views a lifecycle event affects, are withdrawn before
+        evaluation. A lifecycle event touches only the nodes it concerns.
 
         Args:
             batch: Ordered arrival with separate observation and receipt boundaries.
@@ -182,9 +253,9 @@ class GraphRuntime:
         # an observation cutoff; equal observation time does not imply duplicate input.
         if self._processing:
             raise ContractError("Graph batches must be serialized")
+        if self.is_replay(batch):
+            return self.store
         if self._last is not None:
-            if batch == self._last:
-                return self.store
             if batch.sequence <= self._last.sequence or batch.received_at < self._last.received_at:
                 raise ContractError("Batch sequence/receipt regressed or replay conflicts")
         input_batch = batch
@@ -204,8 +275,10 @@ class GraphRuntime:
             for node, update in self._pending.items():
                 self.services.install(node, update)
             self._pending.clear()
-            self.services.apply(batch)
-            extra = tuple(getattr(self.services, "additional_events", ()))
+            # Admission can itself discover facts, such as a universe whose
+            # membership changed. The provider returns them so nodes can react in
+            # this same batch. A provider with nothing to add may return None.
+            extra = tuple(self.services.apply(batch) or ())
             if extra:
                 batch = replace(batch, events=batch.events + extra)
             # Expire before evaluation so a consumer cannot use inputs whose authority
@@ -233,12 +306,10 @@ class GraphRuntime:
                     if owns_changed_universe or reads_changed_universe:
                         dirty.add(node_id)
                         break
-            lifecycle = any(isinstance(e.payload, LifecycleEvent) for e in batch.events)
             # Lifecycle events may change adjustment bases or holdings without bars.
-            # Conservatively invalidate every branch before anything reaches execution.
-            if lifecycle:
-                dirty.update(self.graph.nodes)
-                self._invalidate_lifecycle(batch)
+            # Withdraw the outputs they affect before anything reaches execution,
+            # and re-evaluate those nodes even if their usual trigger did not fire.
+            dirty.update(self._invalidate_lifecycle(batch))
             # Topological order makes each consumer see its producers' replacements
             # from this batch. A node is evaluated at most once, even with many triggers.
             for node_id in self.graph.topological_order:
@@ -297,25 +368,70 @@ class GraphRuntime:
                 ctx.close()
             self._processing = False
 
-    def _invalidate_lifecycle(self, batch: EventBatch) -> None:
-        """Withdraw outputs and prevent reuse of identities or older price bases."""
-        # Corporate actions change the meaning/basis of prior values. Retain a boundary
-        # per instrument and prohibit reusing outputs created against the old basis.
+    def _reads_changed_basis(self, node_id: str, life: LifecycleEvent) -> bool:
+        """Whether a node declares price data whose basis this lifecycle fact changes."""
+        for requirement in self.services.resources[node_id].requirements:
+            # An indicator is computed from its source bars, so judge it by them.
+            source = getattr(requirement, "source", requirement)
+            if not isinstance(source, (BarsRequirement, QuotesRequirement)):
+                continue
+            selection = source.selection
+            # A named universe might contain the instrument. The runtime cannot
+            # resolve membership itself, so it conservatively assumes it does.
+            if selection.universe is None and life.instrument not in selection.instruments:
+                continue
+            if restates_history(life.kind, getattr(source, "normalization", None)):
+                return True
+        return False
+
+    def _invalidate_lifecycle(self, batch: EventBatch) -> set[str]:
+        """Withdraw the outputs a lifecycle event affects and return those nodes.
+
+        Only the affected part of the graph is touched. A dividend on one stock
+        of a large universe must not withdraw every other forecast and cancel
+        every order, which is what invalidating the whole graph would do.
+
+        A node is affected when either:
+
+        * it declares price data for the instrument whose basis the event changes
+          (see ``restates_history``; a dividend leaves raw prices alone), or
+        * for any event other than a dividend, one of its active Views names the
+          instrument. A split or delisting changes what a quantity or a forecast
+          about that instrument means, whatever data the node read.
+
+        Everything downstream of an affected node is affected too, because its
+        output was derived from Views that are no longer valid.
+        """
+        affected: set[str] = set()
         for event in batch.events:
-            if isinstance(event.payload, LifecycleEvent):
-                instrument = event.payload.instrument
-                effective = event.payload.effective_at
+            life = event.payload
+            if not isinstance(life, LifecycleEvent):
+                continue
+            nodes = {n for n in self.graph.nodes if self._reads_changed_basis(n, life)}
+            if life.kind != "dividend":
+                nodes |= {
+                    node
+                    for node in self.graph.nodes
+                    for views in self.store.get(node).by_port.values()
+                    if any(life.instrument in _subjects(view) for view in views)
+                }
+            nodes = self._descendants(nodes)
+            # Record from when each node's Views about this instrument must date.
+            # A dividend binds only the affected nodes. Any other event binds every
+            # node: after a split, no node may publish a claim about the instrument
+            # that rests on information from before it, whether or not it had an
+            # active View to withdraw at this moment.
+            bound = nodes if life.kind == "dividend" else self.graph.nodes
+            for node in bound:
+                key = (node, life.instrument)
                 # A late older action cannot lower the last known basis boundary.
-                self._basis_changes[instrument] = max(
-                    effective, self._basis_changes.get(instrument, effective)
+                self._basis_changes[key] = max(
+                    life.effective_at, self._basis_changes.get(key, life.effective_at)
                 )
-        for node in self.graph.nodes:
-            self._invalidated_ids.update(
-                view.metadata.view_id
-                for views in self.store.get(node).by_port.values()
-                for view in views
-            )
-            self.store.withdraw(node)
+            affected |= nodes
+        for node in affected:
+            self.store.retire(node)
+        return affected
 
     def _validate(self, node_id, output, batch):
         # Validate actual emitted messages as well as compile-time port declarations.
@@ -335,17 +451,14 @@ class GraphRuntime:
                 properties=spec.properties,
             ).validate(views)
             for view in views:
-                if view.metadata.view_id in self._invalidated_ids:
+                if self.store.retired(view.metadata.view_id):
                     raise NotReady("Lifecycle-invalidated View identity cannot be reused")
-                subjects = set(view.positions) if isinstance(view, PositionView) else set()
-                target = getattr(view, "target", None)
-                if target is not None:
-                    subject = target.subject
-                    subjects.update(subject if isinstance(subject, tuple) else (subject,))
+                # A fresh identity is not enough: the View must also be based on
+                # information from after this node's basis changed for the instrument.
                 if any(
-                    view.metadata.cutoff < self._basis_changes[instrument]
-                    for instrument in subjects
-                    if instrument in self._basis_changes
+                    view.metadata.cutoff < self._basis_changes[node_id, instrument]
+                    for instrument in _subjects(view)
+                    if (node_id, instrument) in self._basis_changes
                 ):
                     raise NotReady("View information cutoff predates instrument lifecycle change")
                 if (

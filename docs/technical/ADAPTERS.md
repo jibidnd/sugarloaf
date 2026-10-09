@@ -23,17 +23,18 @@ The runtime uses these provider methods:
    and triggers at a runtime boundary. Shared universe definitions must agree
    across owners.
 2. `apply(EventBatch)` admits a boundary, refreshes membership/lifecycle facts and
-   ownership, and invalidates older Contexts. Provider-generated facts appear in
-   `additional_events` for the current runtime pass.
+   ownership, and invalidates older Contexts. It returns the facts it discovered
+   (for example a changed universe) for the current runtime pass.
 3. `context(batch=None, node_id="")` binds lazy facades to a provider version and
    batch. Empty node ID is reserved for execution account access.
 4. `ready(node_id, context)` checks history, freshness, membership, instruments
-   and indicators. Recorded states are `requested`, `warming`, `unsupported`
+   and indicators. A requirement declared with `require_all=False` is exempt
+   from the per-instrument check. Recorded states are `requested`, `warming`, `unsupported`
    and `ready`.
 5. `schedule_due(schedule, after, through)` tests occurrences in `(after, through]`.
    The runtime controls invocation and coalescing.
 
-Subclasses supply data/indicator/series readers, instrument metadata, calendars
+Subclasses supply data/indicator readers, instrument metadata, calendars
 and optional account/cost/capability hooks. Contexts expose `market`, `instruments`
 and `constraints`; account providers also expose `portfolio`, `costs` and
 `valuation`. Context creation does not eagerly read the account or mirror the
@@ -54,8 +55,7 @@ requirement or out-of-selection read raises `CapabilityError`.
 `InstrumentRequirement(Selection())` permits metadata for input/account-dependent
 instruments without subscribing to prices. Empty portfolio selection means the
 whole account. Restricted selection filters holdings, prices and open orders;
-NAV and cash remain account-wide. Portfolio fields declare supported capabilities,
-not independently guarded fields of the immutable account snapshot.
+NAV and cash remain account-wide.
 
 `market.anchor` reads an exact timestamp from declared convention-compatible bar
 history. Price-return anchors accept raw/split-adjusted bars; total-return anchors
@@ -79,7 +79,8 @@ admits provider batches without node decisions.
 1. Collect eligible retired universe sources.
 2. Apply neutral membership/lifecycle changes, rebuild owners and invalidate
    previous Contexts.
-3. Remove affected consolidation/indicator state after splits or dividends.
+3. Remove the affected instrument's consolidation/indicator state after a split,
+   or after a dividend when that state uses dividend-adjusted prices.
 4. Synchronize resources and warm new resources through the cutoff.
 5. Admit queued observations and update matching native indicators.
 6. Advance the provider version again after resource/data mutations, before node
@@ -96,8 +97,10 @@ are cumulative; event deltas are not summed again.
 
 Backing data identity comprises requirement kind, stable instrument, interval,
 session, normalization and fill-forward policy. Compatible owners share one
-consolidator and `RollingWindow[BaseData]` sized to the largest lookback. Freshness
-is per reader. Enlarging a window rebuilds and warms it.
+consolidator and one bounded window sized to the largest lookback. Each native
+bar is converted to a neutral `Bar`/`Quote` once, when it is admitted, and the
+window stores those. Freshness is per reader. Enlarging a window rebuilds and
+warms it.
 
 Neutral IDs map to LEAN security IDs; ticker changes preserve identity.
 `register(instrument, ticker)` supplies an initial mapping. Metadata rejects
@@ -172,7 +175,9 @@ owner/reference disappears, the source is disposed. Its manager entry is collect
 only after a later boundary and empty selected/member sets, preserving LEAN's
 held/open-order retention.
 
-Split/dividend facts rebuild affected data and indicator resources before reads.
+A split rebuilds that instrument's data and indicator resources before reads. A
+dividend rebuilds only those using `adjusted` or `total_return` prices; raw and
+split-adjusted history is unaffected by a cash dividend.
 Symbol changes preserve identity; delistings mark instruments untradable. Core
 View invalidation and execution cancellation are specified separately.
 
@@ -190,8 +195,10 @@ not charge the account; LEAN applies actual costs during execution. Deployment
 configures the same constant slippage and leverage through a security initializer.
 
 Buying power uses LEAN's initial-margin model and available buying power. Borrow
-requires a finite confirmed shortable quantity; unspecified/unlimited results do
-not count as assurance. The gateway supports regular-session day market orders,
+follows LEAN's `IShortableProvider` contract: a number is the shortable quantity
+and null means "shortable without restrictions". LEAN's default provider always
+returns null, so a default backtest never runs out of borrow; configure a
+shortable provider on the brokerage model to make borrow binding. The gateway supports regular-session day market orders,
 tags orders with intent identity, and obtains feedback from platform tickets.
 
 ## QuantBook and memory providers
@@ -227,12 +234,12 @@ by `run_node`: `resources`, installation, admission, Context creation, readiness
 schedule evaluation, preparation, and historical batches. It requires no provider
 base class, QC objects, account service, or execution capability. Runtime installs
 declarations before preparation and applies each batch before requesting another.
-Provider metadata (`provenance`) and generated facts (`additional_events`) remain
-optional. `MemoryServices` supplies fixture runtime services; a caller-provided
+Provider metadata (`provenance`) is optional, and `apply` may return None when
+the provider discovers no facts of its own. `MemoryServices` supplies fixture runtime services; a caller-provided
 replay implementation adds preparation and historical-batch iteration. Outcome
 resolution remains separate. See [the runner](../../sugarloaf/research/runner.py).
 
-`MemoryServices` accepts explicit bars, quotes, scalar series, selections, account
+`MemoryServices` accepts explicit bars, quotes, selections, account
 and session calendars. Writes invalidate Contexts; timestamp rules determine later
 visibility. Native indicators are unsupported. Fixture buying power is a NAV bound
 with reducing-order allowance; costs are proportional. `MemoryGateway` records
@@ -248,7 +255,7 @@ change orders. It is not a market simulator.
 | `NotReady` | Incomplete/stale history, unavailable membership/anchor or unready indicator/window |
 | `SnapshotError` | Context used after provider mutation or indicator containing unadmitted future points |
 
-QC has no arbitrary scalar-series source. QuantBook also rejects universe, quote
+QuantBook rejects universe, quote
 and portfolio declarations. Memory schedules need explicit calendar fixtures;
 named timezone availability depends on local zone data, while UTC is built in.
 QC uses native timezone and exchange databases. No timer creates synthetic market

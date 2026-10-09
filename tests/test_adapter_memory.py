@@ -7,8 +7,8 @@ from sugarloaf.adapters.memory import MemoryServices, SelectionRow
 from sugarloaf.adapters.memory.services import resource_key
 from sugarloaf.core.errors import CapabilityError, NotReady, SnapshotError
 from sugarloaf.core.events import Event, EventBatch
+from sugarloaf.core.primitives import InstrumentId
 from sugarloaf.core.services import AccountSnapshot, OpenOrder
-from sugarloaf.core.types import InstrumentId
 from sugarloaf.market.contracts import (
     Bar,
     BarsRequirement,
@@ -16,13 +16,11 @@ from sugarloaf.market.contracts import (
     Instrument,
     InstrumentRequirement,
     LiquidityUniverse,
-    Observation,
     PortfolioRequirement,
     Quote,
     QuotesRequirement,
     ResourceUpdate,
     Selection,
-    SeriesRequirement,
     Trigger,
     UniverseRequirement,
 )
@@ -73,9 +71,10 @@ def test_universe_refresh_empty_missing_weight_and_retention():
     )
     services.apply(EventBatch(0, NOW, (Event("data"),)))
     assert "liquid" not in services.memberships
-    services.apply(EventBatch(1, NOW, (Event("scheduled", key="select"),)))
+    # Admission returns the facts it discovered: here, that membership changed.
+    discovered = services.apply(EventBatch(1, NOW, (Event("scheduled", key="select"),)))
     assert services.memberships["liquid"].members == (A,)
-    assert services.additional_events == [Event("universe", key="liquid")]
+    assert discovered == [Event("universe", key="liquid")]
     services.set_selection("liquid", None, NOW)
     services.apply(EventBatch(2, NOW, (Event("scheduled", key="select"),)))
     assert services.memberships["liquid"].members == (A,)
@@ -96,9 +95,8 @@ def test_universe_refresh_empty_missing_weight_and_retention():
         services.context(node_id="etf").market.membership("etf")
 
 
-def test_readiness_calendar_series_and_lazy_portfolio():
+def test_readiness_calendar_and_lazy_portfolio():
     req = BarsRequirement(Selection((A,)), lookback=2)
-    series = SeriesRequirement("released", 1)
     services = MemoryServices(
         [Instrument(A, "A")],
         calendars={A: {"regular": ((NOW - timedelta(hours=4), NOW + timedelta(minutes=1)),)}},
@@ -106,18 +104,59 @@ def test_readiness_calendar_series_and_lazy_portfolio():
     services.install(
         "n",
         ResourceUpdate(
-            (req, series, PortfolioRequirement(), InstrumentRequirement(Selection((A,)))), ()
+            (req, PortfolioRequirement(), InstrumentRequirement(Selection((A,)))), ()
         ),
     )
     services.put_bars(req, [bar()])
-    services.put_series(series, [Observation(NOW, NOW + timedelta(minutes=1), 9)])
     services.apply(EventBatch(0, NOW))
     ctx = services.context(node_id="n")
     assert services.read_counts == {}
     with pytest.raises(NotReady):
         services.ready("n", ctx)
-    with pytest.raises(NotReady):
-        ctx.market.series(series)
     assert ctx.instruments.is_open(A, NOW, "regular")
     assert not ctx.instruments.is_open(A, NOW + timedelta(minutes=1), "regular")
     assert not ctx.portfolio.borrow(A, 1).supported
+
+
+def test_partial_readiness_lets_a_node_use_the_ready_members():
+    # A has two bars of history; B, like a newly listed stock, has only one.
+    strict = BarsRequirement(Selection((A, B)), timedelta(minutes=1), lookback=2)
+    partial = replace(strict, require_all=False)
+    services = MemoryServices([Instrument(A, "A"), Instrument(B, "B")])
+    services.install("strict", ResourceUpdate((strict,), ()))
+    services.install("partial", ResourceUpdate((partial,), ()))
+    short_history = replace(bar(), instrument=B)
+    # Both requirements share one backing resource, so one put serves both readers.
+    services.put_bars(strict, (bar(NOW - timedelta(minutes=1)), bar(), short_history))
+    services.apply(EventBatch(0, NOW))
+    # The default still withdraws the whole node when any member is unready.
+    with pytest.raises(NotReady, match="Insufficient history: B"):
+        services.ready("strict", services.context(node_id="strict"))
+    # Opting out lets the node evaluate and see exactly which members it can read.
+    ctx = services.context(node_id="partial")
+    services.ready("partial", ctx)
+    assert ctx.market.ready(partial) == (A,)
+    with pytest.raises(NotReady):
+        ctx.market.bars(partial, B)
+
+
+def test_session_close_counts_trading_sessions_across_a_weekend():
+    friday_close = datetime(2025, 1, 10, 21, tzinfo=UTC)
+    monday_close = datetime(2025, 1, 13, 21, tzinfo=UTC)
+    tuesday_close = datetime(2025, 1, 14, 21, tzinfo=UTC)
+    sessions = tuple(
+        (close - timedelta(hours=6, minutes=30), close)
+        for close in (friday_close, monday_close, tuesday_close)
+    )
+    services = MemoryServices([Instrument(A, "A")], calendars={A: {"regular": sessions}})
+    services.install("n", ResourceUpdate((InstrumentRequirement(Selection((A,))),), ()))
+    services.apply(EventBatch(0, friday_close))
+    catalog = services.context(node_id="n").instruments
+    # During Friday's session the next close is Friday's own.
+    assert catalog.session_close(A, friday_close - timedelta(hours=1)) == friday_close
+    # At the close itself the search is exclusive: one session later is Monday,
+    # not Saturday, which is what a one-calendar-day horizon would have produced.
+    assert catalog.session_close(A, friday_close) == monday_close
+    assert catalog.session_close(A, friday_close, 2) == tuesday_close
+    with pytest.raises(NotReady, match="no such later session"):
+        catalog.session_close(A, friday_close, 3)

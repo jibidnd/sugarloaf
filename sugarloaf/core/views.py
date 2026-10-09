@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Mapping, Protocol
 
 from sugarloaf.core.errors import ContractError
-from sugarloaf.core.types import InstrumentId, Interval, Metadata, aware, finite, frozen_map
+from sugarloaf.core.primitives import InstrumentId, Interval, Metadata, aware, finite, frozen_map
 
 
 @dataclass(frozen=True)

@@ -48,7 +48,7 @@ held-out predictive study or native-indicator equivalence claim.
 
 ```python
 from examples.technical import EMACrossover, build_graph
-from sugarloaf.core.types import InstrumentId
+from sugarloaf.core.primitives import InstrumentId
 
 spy = InstrumentId("USA:SPY")
 node = EMACrossover((spy,), fast=20, slow=50, weight=0.25)

@@ -1,6 +1,6 @@
 # Core: messages, nodes and graphs
 
-Source: [types](../../sugarloaf/core/types.py), [Views](../../sugarloaf/core/views.py),
+Source: [primitives](../../sugarloaf/core/primitives.py), [Views](../../sugarloaf/core/views.py),
 [node interfaces](../../sugarloaf/core/node.py) and [graph compiler](../../sugarloaf/core/graph.py).
 This reference owns message semantics and graph wiring. See [market](MARKET.md),
 [runtime](RUNTIME.md), [adapters](ADAPTERS.md) and [execution](EXECUTION.md) for their

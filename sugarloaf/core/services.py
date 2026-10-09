@@ -2,31 +2,34 @@
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Callable, Mapping, Protocol, TypeVar
+from typing import TYPE_CHECKING, Callable, Mapping, Protocol, TypeVar
 
+from sugarloaf.core.errors import CapabilityError, SnapshotError
 from sugarloaf.core.events import EventBatch
-from sugarloaf.core.types import InstrumentId, finite, frozen_map
+from sugarloaf.core.primitives import InstrumentId, finite, frozen_map
 from sugarloaf.market.contracts import (
     Bar,
     BarsRequirement,
     Capability,
+    DataRequirement,
     IndicatorRequirement,
     IndicatorSnapshot,
     Instrument,
-    Observation,
     Quote,
     QuotesRequirement,
     Selection,
-    SeriesRequirement,
     UniverseMembership,
 )
+
+if TYPE_CHECKING:
+    # Annotation only: the portfolio package imports this module at runtime.
+    from sugarloaf.portfolio.constraints import PortfolioConstraints
 
 
 @dataclass(frozen=True)
 class OpenOrder:
     """A platform order snapshot with signed total and cumulative filled quantities."""
-    # Signed quantity minus signed cumulative filled is the remaining possible
-    # exposure; a cancellation request does not erase that reservation.
+
     order_id: str
     instrument: InstrumentId
     quantity: float
@@ -46,9 +49,9 @@ class AccountSnapshot:
 
     Holdings use instrument quantities; NAV uses account currency. Prices are
     instrument marks and require multiplier/FX conversion for account valuation.
+    These are account facts, never holdings inferred from a desired PositionView.
     """
-    # These are authoritative account totals, not inferred holdings from node
-    # outputs. A PositionView expresses what is desired, not what has filled.
+
     holdings: Mapping[InstrumentId, float]
     nav: float
     cash: Mapping[str, float]
@@ -78,13 +81,17 @@ class MarketData(Protocol):
     ) -> tuple[Quote, ...]:
         """Return declared bid/ask observations in chronological order."""
         ...
-    def series(self, requirement: SeriesRequirement) -> tuple[Observation, ...]:
-        """Return declared scalar history under its availability convention."""
-        ...
     def indicator(
         self, requirement: IndicatorRequirement, instrument: InstrumentId
     ) -> IndicatorSnapshot:
         """Return admitted provider-native indicator outputs and initialization provenance."""
+        ...
+    def ready(self, requirement: DataRequirement) -> tuple[InstrumentId, ...]:
+        """Return the selected instruments whose declared read is usable now.
+
+        A node whose requirement sets ``require_all=False`` calls this to learn
+        which members it can read, then decides what a partial selection means.
+        """
         ...
     def membership(self, name: str) -> UniverseMembership:
         """Return ready membership; an explicit empty universe differs from unavailable data."""
@@ -106,7 +113,7 @@ class PortfolioState(Protocol):
         """Check platform permission for a proposed signed order quantity."""
         ...
     def borrow(self, instrument: InstrumentId, quantity: float) -> Capability:
-        """Check confirmed borrow availability for a positive required short quantity."""
+        """Check borrow availability for a positive required short quantity."""
         ...
 
 
@@ -117,6 +124,13 @@ class InstrumentCatalog(Protocol):
         ...
     def is_open(self, instrument: InstrumentId, at: datetime, session: str) -> bool:
         """Check whether the instrument trades at an aware timestamp in the named session."""
+        ...
+    def session_close(self, instrument: InstrumentId, after: datetime, count: int = 1) -> datetime:
+        """Return the close of the count-th regular session ending strictly after ``after``.
+
+        This is how a horizon is counted in trading sessions rather than elapsed
+        calendar time: one session after a Friday close ends at Monday's close.
+        """
         ...
 
 
@@ -134,42 +148,6 @@ class ValuationModel(Protocol):
         ...
 
 
-@dataclass(frozen=True)
-class PortfolioConstraints:
-    """Exposure limits expressed as fractions of account NAV.
-
-    Gross exposure is bounded by both budget and gross_limit. Net exposure also
-    respects cash_reserve. Turnover is the sum of absolute weight changes.
-    A zero position remains an allowed exit despite a positive min_weight.
-    """
-    # These fractions use the whole account NAV. Branch budgets and model risk
-    # settings may differ, but execution applies its own account-level safety limits.
-    budget: float = 1.0
-    allow_short: bool = False
-    min_weight: float = 0.0
-    max_weight: float = 1.0
-    gross_limit: float = 1.0
-    net_min: float = 0.0
-    net_max: float = 1.0
-    cash_reserve: float = 0.0
-    turnover_limit: float = 2.0
-
-    def __post_init__(self):
-        from sugarloaf.core.errors import ContractError
-        from sugarloaf.core.types import finite
-
-        finite(*vars(self).values())
-        if (
-            self.budget < 0
-            or self.gross_limit < 0
-            or self.turnover_limit < 0
-            or self.min_weight > self.max_weight
-            or self.net_min > self.net_max
-            or not 0 <= self.cash_reserve <= 1
-        ):
-            raise ContractError("Invalid portfolio constraints")
-
-
 T = TypeVar("T")
 
 
@@ -181,6 +159,10 @@ class Context:
         factories: Named zero-argument service constructors, called on first access.
         guard: Provider check rejecting reads after backing state changes.
         node_id: Registered reader identity; execution Contexts use an empty ID.
+        cache: Optional provider-owned computation cache. Every Context a provider
+            creates for one snapshot shares it, so two nodes reading the same bars
+            fetch them once. The provider clears it whenever its state changes.
+            Without one, the Context keeps a private cache and clears it on close.
 
     Services and computations are cached within the snapshot. Context does not
     copy the platform data store or become authoritative account state. Do not
@@ -193,6 +175,7 @@ class Context:
         factories: Mapping[str, Callable],
         guard: Callable[[], None] = lambda: None,
         node_id: str = "",
+        cache: dict | None = None,
     ):
         # Capture snapshot boundaries and lazy constructors rather than copying a
         # market-data store. Provider guards invalidate reads when backing state changes.
@@ -200,7 +183,10 @@ class Context:
         self._factories = frozen_map(factories)
         self._guard = guard
         self._services: dict = {}
-        self._cache: dict = {}
+        # Remember who owns the cache: close() may clear a private cache, but must
+        # not empty a provider cache that sibling Contexts are still reading.
+        self._owns_cache = cache is None
+        self._cache: dict = {} if cache is None else cache
         self._node_id = node_id
         self._closed = False
 
@@ -244,8 +230,6 @@ class Context:
         Raises:
             SnapshotError: This Context no longer represents a readable snapshot.
         """
-        from sugarloaf.core.errors import SnapshotError
-
         if self._closed:
             raise SnapshotError("Context has been released")
         self._guard()
@@ -259,8 +243,6 @@ class Context:
         """
         # Creating a service is lazy, but every access still validates the Context.
         # A previously cached service handle does not bypass provider snapshot guards.
-        from sugarloaf.core.errors import CapabilityError
-
         self.check()
         if name not in self._services:
             if name not in self._factories:
@@ -294,7 +276,7 @@ class Context:
         return self.service("valuation")
 
     @property
-    def constraints(self) -> PortfolioConstraints:
+    def constraints(self) -> "PortfolioConstraints":
         """Return this provider's configured portfolio safety limits."""
         return self.service("constraints")
 
@@ -329,15 +311,16 @@ class Context:
         """Return a node-labeled Context sharing this snapshot's services, cache, and guard."""
         # Share calculations within a snapshot while attaching reader provenance.
         # The new Context's guard also checks that the parent Context is still valid.
-        result = Context(self.batch, self._factories, self.check, node_id)
+        result = Context(self.batch, self._factories, self.check, node_id, self._cache)
         result._services = self._services
-        result._cache = self._cache
         return result
 
     def close(self):
-        """Release this Context and clear its shared cache and service instances."""
+        """Release this Context, its service instances, and any cache it owns."""
         # Runtime calls this at evaluation cleanup. Stored Context/service handles
         # are no longer safe to read even if the Python object still exists.
         self._closed = True
-        self._cache.clear()
         self._services.clear()
+        # A provider-owned cache outlives this Context; the provider clears it.
+        if self._owns_cache:
+            self._cache.clear()

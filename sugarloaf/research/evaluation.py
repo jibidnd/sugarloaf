@@ -15,7 +15,7 @@ import numpy as np
 from scipy.stats import kendalltau, rankdata
 
 from sugarloaf.core.errors import CapabilityError, ContractError, NotReady
-from sugarloaf.core.types import InstrumentId, Interval, aware, finite, frozen_map
+from sugarloaf.core.primitives import InstrumentId, Interval, aware, finite, frozen_map
 from sugarloaf.core.views import (
     DistributionView,
     Probability,
@@ -374,12 +374,17 @@ def default_metrics(view: View, outcome: Outcome) -> Mapping[str, float | None]:
     raise CapabilityError(f"No default predictive metrics for {type(view).__name__}")
 
 
-def _target_group(target: Target, issued_at: datetime) -> tuple:
+def _target_group(target: Target, issued_at: datetime, pool_horizons: bool = False) -> tuple:
     """Keep horizon and available lead time while pooling distinct calendar dates."""
     times = target.time if isinstance(target.time, tuple) else (target.time,)
     # Pool dates only when full horizon and receipt-to-end lead time agree.
     # A revision closer to maturity is a different predictive information setting.
-    timing = tuple(
+    #
+    # pool_horizons drops that timing from the group. It exists for horizons
+    # counted in trading sessions: "one session" is one calendar day mid-week but
+    # three over a weekend, and exact timing would split one daily signal into a
+    # separate cohort for each of those lengths.
+    timing = () if pool_horizons else tuple(
         ((time.end - time.start).total_seconds(), (time.end - issued_at).total_seconds())
         if isinstance(time, Interval)
         else (None, (time - issued_at).total_seconds())
@@ -391,11 +396,11 @@ def _target_group(target: Target, issued_at: datetime) -> tuple:
         target.units,
         target.convention,
         timing,
-        tuple(_target_group(t, issued_at) for t in target.components),
+        tuple(_target_group(t, issued_at, pool_horizons) for t in target.components),
     )
 
 
-def _cohort(record: ForecastRecord) -> tuple:
+def _cohort(record: ForecastRecord, pool_horizons: bool = False) -> tuple:
     view = record.view
     statement = view.statement
     # Model/target semantics alone do not identify calibration or event meanings.
@@ -408,7 +413,7 @@ def _cohort(record: ForecastRecord) -> tuple:
     elif isinstance(view, DistributionView):
         law = statement.law
         detail = (type(law).__module__, type(law).__qualname__, getattr(law, "events", ()))
-    target_group = _target_group(view.target, record.received_at)
+    target_group = _target_group(view.target, record.received_at, pool_horizons)
     if isinstance(view, RankingView):
         # Cohorts describe the same ranked universe, not the forecast's ordering.
         target_group = (tuple(sorted(view.target.subject)), *target_group[1:])
@@ -514,19 +519,28 @@ class EvaluationReport:
             "issued_after_target_end": sum(row.issued_after_target_end for row in self.rows),
         }
 
-    def summary(self) -> tuple[dict, ...]:
+    def summary(self, *, pool_horizons: bool = False) -> tuple[dict, ...]:
         """Descriptive cohorts, preserving units, horizons, model and issue-time lead.
+
+        Args:
+            pool_horizons: Group forecasts regardless of their calendar length and
+                lead time. Use it for horizons counted in trading sessions, whose
+                calendar length varies (a Friday forecast spans the weekend). By
+                default only forecasts with identical timing share a cohort.
 
         Revisions with different remaining horizons form different cohorts. No
         standard errors/p-values treat overlapping forecasts as independent.
         Infinite log losses remain infinite; they are not dropped from averages.
+
+        For an interval around one of these numbers, or for a per-date rank
+        correlation across instruments, see ``sugarloaf.research.inference``.
         """
         # Summaries use scored rows only; coverage separately retains every issued
         # claim and unresolved reason. Cohorts preserve model and target semantics.
         groups = defaultdict(list)
         for row in self.rows:
             if row.status == "scored":
-                groups[_cohort(row.forecast)].append(row)
+                groups[_cohort(row.forecast, pool_horizons)].append(row)
         result = []
         for cohort, rows in groups.items():
             # Each metric averages its defined values. Undefined values remain in

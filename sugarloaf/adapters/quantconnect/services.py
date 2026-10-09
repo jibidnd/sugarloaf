@@ -1,14 +1,15 @@
 """Lazy services over LEAN, with bounded shared consolidation windows only."""
 
 from collections import deque
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from math import isfinite
 
 from sugarloaf.adapters.base import ProviderServices, SelectionRow, resource_key, select
 from sugarloaf.core.errors import CapabilityError, NotReady
 from sugarloaf.core.events import Event, EventBatch, LifecycleEvent
+from sugarloaf.core.primitives import InstrumentId, frozen_map
 from sugarloaf.core.services import AccountSnapshot, OpenOrder
-from sugarloaf.core.types import InstrumentId, frozen_map
 from sugarloaf.market.contracts import (
     Bar,
     BarsRequirement,
@@ -22,10 +23,10 @@ from sugarloaf.market.contracts import (
     QuotesRequirement,
     ResourceUpdate,
     Selection,
-    SeriesRequirement,
     Trigger,
     UniverseMembership,
     UniverseRequirement,
+    restates_history,
 )
 
 from .lean import LeanAPI
@@ -76,6 +77,9 @@ class QuantConnectDataServices(ProviderServices):
         self.tickers = {}
         # Keys identify compatible resource semantics, so several nodes can share
         # one bounded window/consolidator while retaining separate read permissions.
+        # Each window is a deque of neutral Bar/Quote values, oldest first, capped
+        # at the largest lookback any reader declared. A native bar is converted
+        # once, when it is admitted, and never again on reads.
         self.windows = {}
         self.consolidators = {}
         self.universes = {}
@@ -92,7 +96,6 @@ class QuantConnectDataServices(ProviderServices):
         # Native callbacks stage data here. Admission occurs at apply(), after
         # lifecycle resets; receipt timestamps remain separate from observation ends.
         self._pending_data = []
-        self._received = {}
         self._prefilling = False
         if account_services:
             self.api.setup(algorithm, cost_rate, leverage)
@@ -115,8 +118,6 @@ class QuantConnectDataServices(ProviderServices):
         """Validate declarations and replace universe sources at the runtime boundary."""
         for requested in update.requirements:
             req = requested.source if isinstance(requested, IndicatorRequirement) else requested
-            if isinstance(req, SeriesRequirement):
-                raise CapabilityError("No QC scalar-series source has been configured")
             if isinstance(req, (BarsRequirement, QuotesRequirement)):
                 if req.interval < timedelta(minutes=1) or req.interval % timedelta(minutes=1):
                     raise CapabilityError("US equity adapter requires whole-minute intervals")
@@ -235,8 +236,13 @@ class QuantConnectDataServices(ProviderServices):
         self.universes[definition.name] = universe
         self.universe_definitions[definition.name] = definition
 
-    def apply(self, batch: EventBatch) -> None:
-        """Admit queued inputs after lifecycle resets, ownership changes, and native warmup."""
+    def apply(self, batch: EventBatch) -> list[Event]:
+        """Admit queued inputs after lifecycle resets, ownership changes, and native warmup.
+
+        Returns:
+            Shared admission facts plus every fact native callbacks queued since
+            the last admission (completed bars, universe selections, schedules).
+        """
         # Give retired native universes a later resource boundary to drain; never
         # remove their manager entries merely because graph selection changed.
         self._resource_epoch += 1
@@ -249,30 +255,44 @@ class QuantConnectDataServices(ProviderServices):
         self._retired_universes = retained
         # Shared admission establishes the batch, refreshes owners and invalidates
         # stale Contexts before any graph reads can observe the new boundary.
-        super().apply(batch)
-        self.additional_events.extend(self.pending_events)
+        events = super().apply(batch)
+        events.extend(self.pending_events)
         self.pending_events.clear()
-        # A split/dividend changes the interpretation of accumulated price state.
-        # Recreate affected windows/indicators before admitting queued new samples.
-        reset = {
-            e.payload.instrument
-            for e in batch.events
-            if isinstance(e.payload, LifecycleEvent) and e.payload.kind in {"split", "dividend"}
-        }
-        for key in tuple(self.windows):
-            if key[1] in reset:
-                self.algorithm.subscription_manager.remove_consolidator(
-                    self.symbols[key[1]], self.consolidators.pop(key)
-                )
-                del self.windows[key]
-        for key in tuple(self.native_indicators):
-            if key[1] in reset:
-                del self.native_indicators[key]
+        # A split or dividend changes what already accumulated prices mean. Drop
+        # the affected windows/indicators here; _sync_resources below rebuilds
+        # them from freshly adjusted history before queued new samples are admitted.
+        for event in batch.events:
+            life = event.payload
+            if not isinstance(life, LifecycleEvent) or life.kind not in {"split", "dividend"}:
+                continue
+            for key in tuple(self.windows):
+                if self._basis_changed(key, life):
+                    self.algorithm.subscription_manager.remove_consolidator(
+                        self.symbols[key[1]], self.consolidators.pop(key)
+                    )
+                    del self.windows[key]
+            for key in tuple(self.native_indicators):
+                # An indicator key ends with the resource key of its source bars.
+                if self._basis_changed(key[3], life):
+                    del self.native_indicators[key]
         # Resource changes and silent prefill happen at this cutoff. Only after
         # that setup can pending completed observations feed the surviving state.
         self._sync_resources(batch.cutoff)
         self._admit_pending_data()
         self._changed()
+        return events
+
+    @staticmethod
+    def _basis_changed(key, life) -> bool:
+        """Whether a lifecycle fact invalidates the prices held under a resource key.
+
+        ``key`` is a ``resource_key`` tuple: position 1 is the instrument and
+        position 4 the normalization. Only that instrument's resources are
+        affected, and a dividend leaves raw and split-adjusted prices valid.
+        The runtime applies the same ``restates_history`` rule to Views, so a
+        window is rebuilt exactly when the Views computed from it are withdrawn.
+        """
+        return key[1] == life.instrument and restates_history(life.kind, key[4])
 
     def _admit_pending_data(self):
         """Admit completed native inputs after the batch's lifecycle reset."""
@@ -329,6 +349,8 @@ class QuantConnectDataServices(ProviderServices):
         for instrument, semantics in by_instrument.items():
             if self._subscriptions.get(instrument) == semantics:
                 continue
+            # The native subscription itself is changing (session, adjustment or
+            # fill-forward), so every window built on the old one is discarded.
             for key in tuple(self.windows):
                 if key[1] == instrument:
                     self.algorithm.subscription_manager.remove_consolidator(
@@ -348,7 +370,7 @@ class QuantConnectDataServices(ProviderServices):
         # Create or enlarge only the required windows. Replacing a consolidator
         # prevents the old handler from continuing to own the same resource key.
         for key, req in desired.items():
-            if key in self.windows and self.windows[key].size >= req.lookback:
+            if key in self.windows and self.windows[key].maxlen >= req.lookback:
                 continue
             if key in self.consolidators:
                 self.algorithm.subscription_manager.remove_consolidator(
@@ -356,9 +378,10 @@ class QuantConnectDataServices(ProviderServices):
                 )
             instrument = key[1]
             symbol = self.symbols[instrument]
-            window = self.api.window(req.lookback)
             consolidator = self.api.consolidator(req, self.algorithm.securities[symbol])
-            self.windows[key] = window
+            # maxlen makes the deque drop its oldest value by itself once the
+            # largest declared lookback is reached, so memory stays bounded.
+            self.windows[key] = deque(maxlen=req.lookback)
             self.consolidators[key] = consolidator
 
             # Capture this resource's identifiers now, not the loop's later values.
@@ -418,43 +441,49 @@ class QuantConnectDataServices(ProviderServices):
         if window is None:
             raise NotReady("Subscription requested but not warmed")
         self.read_counts[key] = self.read_counts.get(key, 0) + 1
-        # RollingWindow is newest-first. Expose chronological neutral observations;
-        # shared services enforce cutoff, receipt, lookback and freshness on reads.
-        bars = sorted(tuple(window), key=lambda b: b.end_time)
+        # The window already holds neutral values in chronological order. Shared
+        # services enforce cutoff, receipt, lookback and freshness on every read.
+        return tuple(window)
+
+    def _neutral(self, key, bar, received):
+        """Convert one completed native bar to a neutral Bar or Quote.
+
+        Args:
+            key: Resource key; its first element names the requirement type.
+            bar: Native TradeBar or QuoteBar.
+            received: When this content became known, used as ``available_at``.
+
+        Returns:
+            The neutral value, or None for a quote bar missing its bid or ask.
+        """
+        instrument = key[1]
         security = self.algorithm.securities[self.symbols[instrument]]
-
         # Native bar timestamps use the exchange zone, not the algorithm UTC helper.
-        def convert(t):
-            return self.api.to_utc(security, t)
-
-        if isinstance(req, BarsRequirement):
-            return tuple(
-                Bar(
-                    instrument,
-                    convert(b.time),
-                    convert(b.end_time),
-                    self._received.get((key, convert(b.end_time)), convert(b.end_time)),
-                    float(b.open),
-                    float(b.high),
-                    float(b.low),
-                    float(b.close),
-                    float(b.volume),
-                    bool(b.is_fill_forward),
-                )
-                for b in bars
-            )
-        return tuple(
-            Quote(
+        end = self.api.to_utc(security, bar.end_time)
+        if key[0] == BarsRequirement.__name__:
+            return Bar(
                 instrument,
-                convert(b.end_time),
-                self._received.get((key, convert(b.end_time)), convert(b.end_time)),
-                float(b.bid.close),
-                float(b.ask.close),
-                float(b.last_bid_size),
-                float(b.last_ask_size),
+                self.api.to_utc(security, bar.time),
+                end,
+                received,
+                float(bar.open),
+                float(bar.high),
+                float(bar.low),
+                float(bar.close),
+                float(bar.volume),
+                bool(bar.is_fill_forward),
             )
-            for b in bars
-            if b.bid is not None and b.ask is not None
+        if bar.bid is None or bar.ask is None:
+            # A one-sided quote bar is not a usable bid/ask observation.
+            return None
+        return Quote(
+            instrument,
+            end,
+            received,
+            float(bar.bid.close),
+            float(bar.ask.close),
+            float(bar.last_bid_size),
+            float(bar.last_ask_size),
         )
 
     @property
@@ -637,38 +666,41 @@ class QuantConnectDataServices(ProviderServices):
             getattr(getattr(bar, side, None), "close", None) for side in ("bid", "ask")
         )
 
+    @staticmethod
+    def _stamp(value):
+        """Return a neutral observation's own timestamp: a bar's end or a quote's time."""
+        return value.end if isinstance(value, Bar) else value.time
+
     def _admit_bar(self, key, bar, received, indicators=True):
         window = self.windows.get(key)
         # A queued callback can belong to a resource whose owner was removed.
         # Do not resurrect that resource merely because its last bar arrived.
         if window is None:
             return
-        security = self.algorithm.securities[self.symbols[key[1]]]
-        end = self.api.to_utc(security, bar.end_time)
-        existing = next((item for item in window if item.end_time == bar.end_time), None)
-        changed = existing is None or self._observation_identity(
-            existing
-        ) != self._observation_identity(bar)
-        if changed:
-            if existing is not None or window.count and bar.end_time < window[0].end_time:
-                # Keep the latest admitted revision at each timestamp without
-                # evicting newer requested observations on an older arrival.
-                values = {item.end_time: item for item in window}
-                values[bar.end_time] = bar
-                window = self.api.window(window.size)
-                for stamp in sorted(values)[-window.size :]:
-                    window.add(values[stamp])
-                self.windows[key] = window
+        value = self._neutral(key, bar, received)
+        if value is not None:
+            stamp = self._stamp(value)
+            position = next(
+                (i for i, item in enumerate(window) if self._stamp(item) == stamp), None
+            )
+            if position is not None:
+                # Same timestamp as a retained value. A repeat of identical content
+                # (for example the overlap between warmup history and the live
+                # stream) keeps its original receipt time. Changed content is a
+                # revision and takes the receipt time of this new arrival, because
+                # observation time alone cannot say when that content was known.
+                if replace(window[position], available_at=value.available_at) != value:
+                    window[position] = value
+            elif window and stamp < self._stamp(window[-1]):
+                # A late arrival older than the newest retained value. Insert it in
+                # chronological order, then keep the newest maxlen values so the
+                # late one cannot push out anything more recent.
+                merged = sorted([*window, value], key=self._stamp)[-window.maxlen :]
+                window.clear()
+                window.extend(merged)
             else:
-                window.add(bar)
-            # Revisions take the receipt time of the newly admitted content.
-            # Observation time alone cannot establish when that content was known.
-            self._received[(key, end)] = received
-        retained = {self.api.to_utc(security, item.end_time) for item in window}
-        for stamp in [
-            stamp for stamp in self._received if stamp[0] == key and stamp[1] not in retained
-        ]:
-            del self._received[stamp]
+                # The normal case: a newer observation goes on the end.
+                window.append(value)
         # Only the admitted source path updates streaming indicators; prefill
         # can explicitly disable this after their independent initialization.
         if indicators:
@@ -784,15 +816,29 @@ class QuantConnectDataServices(ProviderServices):
         security = self.algorithm.securities[self.symbols[instrument]]
         return self.api.is_open(security, at, session == "extended")
 
+    def _session_close(self, instrument, after, count):
+        symbol = self.symbols.get(instrument)
+        if symbol is None:
+            raise CapabilityError("Instrument has no platform Symbol")
+        # LEAN's exchange-hours database owns holidays, early closes and DST.
+        return self.api.session_close(self.algorithm.securities[symbol], after, count)
+
     def _borrow(self, instrument, quantity):
         security = self.algorithm.securities[self.symbols[instrument]]
         available = security.shortable_provider.shortable_quantity(
             security.symbol, self.algorithm.time
         )
-        # Null may mean unlimited in a provider; the neutral adapter requires a finite assurance.
+        # LEAN's IShortableProvider documents its result as "the quantity shortable
+        # ... as a positive number. Null if the Symbol is shortable without
+        # restrictions." So None means allowed. LEAN's default provider always
+        # returns None; configure a real shortable provider on the brokerage model
+        # for a backtest in which borrow can actually run out.
+        if available is None:
+            return Capability(True)
+        # NaN or infinity is not a quantity the platform can have confirmed.
         return Capability(
-            available is not None and isfinite(available) and available >= quantity,
-            "Platform did not confirm sufficient finite borrow",
+            isfinite(available) and available >= quantity,
+            "Platform did not confirm sufficient borrow",
         )
 
     def _buying_power(self, instrument, quantity):

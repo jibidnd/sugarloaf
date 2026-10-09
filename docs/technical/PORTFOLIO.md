@@ -34,7 +34,9 @@ unit value = mark × contract/share multiplier × account-currency FX
 weight = quantity × unit value / account NAV
 ```
 
-An active weight target may require maintenance trades as NAV/marks move.
+An active weight target may require maintenance trades as NAV/marks move; the
+execution [rebalance band](EXECUTION.md#reconciliation-algorithm) suppresses the
+ones too small to matter.
 Quantity targets freeze desired units, not an account percentage. Missing valuation
 is a readiness/capability failure; it is not a zero price.
 
@@ -62,12 +64,21 @@ needing branch holdings must supply an explicit attribution rule.
 current holdings. Unspecified instruments remain held. It calls `violations` and
 raises `NotReady("TARGET_REJECTED: ...")` when infeasible; it does not rescale.
 
+`PortfolioConstraints` has one field per limit, all fractions of account NAV.
 Checks use tolerance 1e-8:
 
-- Shorting permission and nonzero position minimum/maximum. Zero is always an exit.
-- Gross exposure ∑|wᵢ| ≤ min(budget, gross_limit).
-- net_min ≤ ∑wᵢ ≤ min(net_max, 1 − cash_reserve).
-- Turnover ∑|wᵢ − currentᵢ| ≤ turnover_limit.
+- min_weight ≤ wᵢ ≤ max_weight for every nonzero position. Zero is always an
+  exit. A negative `min_weight` is what permits shorts; a positive one is a
+  minimum position size.
+- Gross exposure ∑|wᵢ| ≤ gross_limit.
+- net_min ≤ ∑wᵢ ≤ net_max. Hold a cash reserve by lowering `net_max`; allow a
+  net-short book with a negative `net_min`.
+- Turnover ∑|wᵢ − currentᵢ| ≤ turnover_limit, per target (per decision), not per
+  unit of time.
+
+The defaults describe an unlevered long-only account. For example,
+`PortfolioConstraints(gross_limit=1.6, min_weight=-0.1, net_max=1.0)` permits a
+130/30 book whose individual shorts are at most 10% of NAV each.
 
 A USD10,000 account holding USD1,000 of an unspecified asset keeps that 10%
 exposure in feasibility checks. A new 95% long target elsewhere can therefore

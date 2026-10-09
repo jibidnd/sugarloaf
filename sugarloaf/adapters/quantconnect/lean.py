@@ -44,10 +44,6 @@ class LeanAPI:
             data_normalization_mode=mode,
         ).symbol
 
-    def window(self, count):
-        """Create a bounded native RollingWindow of BaseData."""
-        return self.lean.RollingWindow[self.lean.BaseData](count)
-
     def consolidator(self, req, security):
         """Create native bar/quote consolidation; daily bars use exchange-session boundaries."""
         cls = (
@@ -125,6 +121,24 @@ class LeanAPI:
             at.astimezone(UTC).replace(tzinfo=None), security.exchange.time_zone
         )
         return security.exchange.hours.is_open(local, extended)
+
+    def session_close(self, security, after, count):
+        """Return the aware UTC close of the count-th regular session ending after ``after``.
+
+        LEAN's ``GetNextMarketClose`` searches from its argument non-inclusively:
+        asked at exactly 16:00 on a Friday it returns Monday's 16:00, not that
+        same Friday close. Calling it ``count`` times, each time from the previous
+        answer, therefore steps forward one whole regular session at a time and
+        honours holidays and early closes. (Checked against LEAN master
+        ``SecurityExchangeHours.cs``; not yet exercised in a native run.)
+        """
+        local = self.lean.Extensions.convert_from_utc(
+            after.astimezone(UTC).replace(tzinfo=None), security.exchange.time_zone
+        )
+        for _ in range(count):
+            # False excludes extended hours: a session horizon ends at a regular close.
+            local = security.exchange.hours.get_next_market_close(local, False)
+        return self.to_utc(security, local)
 
     def universe(self, algorithm, definition, selector, etf_ticker=None):
         """Create a synchronous minute-resolution native fundamental or ETF universe source."""

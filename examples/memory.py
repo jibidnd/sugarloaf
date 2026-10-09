@@ -9,12 +9,13 @@ from sugarloaf.adapters.memory.services import MemoryServices
 from sugarloaf.core.events import Event, EventBatch
 from sugarloaf.core.graph import Graph
 from sugarloaf.core.node import NodeOutputs, OutputSpec
-from sugarloaf.core.services import AccountSnapshot, PortfolioConstraints
-from sugarloaf.core.types import InstrumentId, Metadata
+from sugarloaf.core.primitives import InstrumentId, Metadata
+from sugarloaf.core.services import AccountSnapshot
 from sugarloaf.core.views import PositionView
 from sugarloaf.execution import ExecutionEngine, TradingSession
 from sugarloaf.market.contracts import Instrument, Trigger
 from sugarloaf.nodes.positions import PortfolioConstraintNode, PositionNetter
+from sugarloaf.portfolio.constraints import PortfolioConstraints
 
 
 class FixedContribution:

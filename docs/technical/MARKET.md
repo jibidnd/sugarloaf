@@ -9,13 +9,12 @@ service protocols and Context live in [core/services.py](../../sugarloaf/core/se
 
 | Requirement | Meaning |
 | --- | --- |
-| `BarsRequirement` | Selection, interval, lookback, session, normalization, fill-forward and maximum age |
+| `BarsRequirement` | Selection, interval, lookback, session, normalization, fill-forward, maximum age and `require_all` |
 | `QuotesRequirement` | Bid/ask observations, interval, lookback, session and freshness |
-| `SeriesRequirement` | Named scalar history with availability convention and freshness |
 | `IndicatorRequirement` | Native indicator over a bar source, immutable parameters and valid output window |
 | `UniverseRequirement` | Named liquidity or historical ETF-constituent definition |
 | `InstrumentRequirement` | Metadata/calendar access for a selection |
-| `PortfolioRequirement` | Account capabilities and selection |
+| `PortfolioRequirement` | Account access and selection |
 
 `Selection` contains explicit stable IDs or one universe name. Unknown membership
 is different from a ready, explicitly empty universe. A requirement's existence
@@ -26,7 +25,7 @@ For an EMA with two retained outputs:
 ```python
 from datetime import timedelta
 
-from sugarloaf.core.types import InstrumentId
+from sugarloaf.core.primitives import InstrumentId
 from sugarloaf.market.contracts import BarsRequirement, IndicatorRequirement, Selection
 
 asset = InstrumentId("USA:SPY")
@@ -55,10 +54,30 @@ It can be read at 10:03 if admitted and fresh. Future history fetched for replay
 does not become readable early. Native indicators additionally require admitted
 source input; older data cannot rewind their state.
 
+Bar prices may be zero or negative (some futures and back-adjusted series are);
+a node that divides by a price checks its sign itself.
+
 Readiness checks the filtered history count and maximum age. Excluding fill-forward
 bars may leave too little history. Stale or missing data raise `NotReady`;
 unsupported normalization or undeclared reads raise `CapabilityError`.
 Normalization and return conventions are explicit assumptions, not cosmetic options.
+
+**Partial universes.** By default a node is withdrawn unless every selected
+instrument is ready, so a universe is never silently shrunk. A cross-sectional
+node over a changing universe usually wants the opposite: a stock listed last
+week lacks history and should simply be left out. Declare the requirement with
+`require_all=False`; the node is then evaluated regardless and calls
+`ctx.market.ready(requirement)` for the instruments it can read:
+
+```python
+bars = BarsRequirement(Selection(universe="liquid"), lookback=252, require_all=False)
+...
+for instrument in ctx.market.ready(bars):
+    history = ctx.market.bars(bars, instrument)
+```
+
+An unavailable universe still withdraws the node, and what a partial selection
+means (rank the rest, wait, or hold) is the node's explicit decision.
 
 ## Context services
 
@@ -66,8 +85,8 @@ Normalization and return conventions are explicit assumptions, not cosmetic opti
 
 | Attribute | Use |
 | --- | --- |
-| `market` | Bars, quotes, scalar series, indicators, membership and exact anchors |
-| `instruments` | Metadata, tradability and session calendars |
+| `market` | Bars, quotes, indicators, ready members, membership and exact anchors |
+| `instruments` | Metadata, tradability, session calendars and `session_close` |
 | `portfolio` | Immutable authoritative account snapshot |
 | `valuation` | Unit value in account currency |
 | `costs` | Expected trading cost |
@@ -81,8 +100,7 @@ prices and open orders; they are read lazily rather than copied at Context creat
 `InstrumentRequirement(Selection())` permits metadata for input/account-dependent
 instruments without subscribing to their prices. Empty portfolio selection means
 the whole account. Restricted selection filters holdings/prices/orders but preserves
-account-wide NAV/cash. Fields declare supported account capabilities rather than
-individually guarded snapshot attributes.
+account-wide NAV/cash.
 
 `ctx.compute(key, inputs, parameters, version, function)` shares a hashable
 calculation within the provider snapshot. It is not persistent model storage.
@@ -92,7 +110,11 @@ The runtime closes evaluation Contexts after processing; do not retain them.
 ## Units and exact anchors
 
 Returns are decimal simple returns; horizons use aware intervals and ACT/365
-calendar years. Quantities are instrument units. Weights are account-NAV fractions.
+calendar years. A horizon can be measured in trading sessions instead of elapsed
+time: `ctx.instruments.session_close(instrument, after, count)` returns the close
+of the count-th regular session ending strictly after `after`. One session after
+a Friday close ends at Monday's close, where a price exists and the market is
+open; one calendar day after it ends on Saturday. Quantities are instrument units. Weights are account-NAV fractions.
 Unit valuation is mark × multiplier × account-currency FX; unsupported conversion
 fails rather than guessing.
 

@@ -84,6 +84,9 @@ end/start minus one, requiring positive start and nonnegative end values, and
 retains the latest endpoint availability. An unmatured horizon stays pending;
 missing or not-yet-available anchors stay unavailable. It never substitutes a
 nearby close, shifts a weekend horizon, or invents corporate-action adjustments.
+A forecast whose horizon ends where no price exists therefore cannot be scored:
+issue horizons in trading sessions (see `sugarloaf.nodes.technical.horizon_end`)
+so a Friday forecast ends at Monday's close rather than on Saturday.
 The source owns correct convention and point-in-time availability.
 
 Custom `metric_fn(view, outcome)` returns named floats or None and can merge
@@ -115,7 +118,9 @@ units/convention, full horizon, and actual receipt-to-target lead time. They als
 retain score calibration identity, event definitions or distribution class as
 applicable. Ranking cohorts identify the universe independently of forecast order.
 Different lead times remain separate; calendar dates with matching semantics can
-pool. Each cohort reports metric means, count, distinct targets and infinite-score
+pool. Session-count horizons vary in calendar length (one day mid-week, three
+over a weekend), so pass `summary(pool_horizons=True)` to keep one daily signal
+in one cohort. Each cohort reports metric means, count, distinct targets and infinite-score
 count. Probability/event-mass cohorts provide ten reliability bins, with 1 in the
 final bin. Undefined means remain None; infinities are not silently dropped.
 
@@ -123,8 +128,22 @@ Forecasts received at/after target end remain visible and are flagged as
 retrospective, including in coverage and summaries. They are not prospective
 evidence. Overlapping horizons and forecast revisions are dependent observations;
 these descriptive summaries supply no independent-sample p-values. The experiment
-owns chronological training/validation splits, calibration, baseline selection
-and significance analysis. Unsupported target forms need an explicit resolver or
+owns chronological training/validation splits, calibration and baseline selection.
+
+[`sugarloaf.research.inference`](../../sugarloaf/research/inference.py) adds two
+tools for judging a result:
+
+- `block_bootstrap_interval(values, block=..., seed=...)` returns a confidence
+  interval for a statistic of a time-ordered series. It resamples whole blocks
+  of consecutive observations so serial dependence is preserved; choose a block
+  at least as long as the forecast horizon in periods. Pass a `(T, k)` array to
+  resample several series on the same dates, for example to compare two signals.
+- `cross_sectional_ic(report.rows)` computes one Spearman rank correlation per
+  decision time across instruments (the information coefficient), from forecasts
+  that may come from one node per instrument. Feed its `ic` series to the
+  bootstrap for an interval around the mean IC.
+
+Both describe predictive association before costs; neither is a trading result. Unsupported target forms need an explicit resolver or
 metric, rather than an implicit reinterpretation.
 
 [Research tests](../../tests/test_research_evaluation.py) cover identity retention,

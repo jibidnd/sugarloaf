@@ -11,11 +11,20 @@ from datetime import timedelta
 from sugarloaf.core.errors import ContractError, NotReady
 from sugarloaf.core.graph import Graph
 from sugarloaf.core.node import InputSpec, NodeOutputs, OutputSpec
-from sugarloaf.core.services import PortfolioConstraints
-from sugarloaf.core.types import Interval, Metadata
+from sugarloaf.core.primitives import Interval, Metadata
 from sugarloaf.core.views import PositionView, Score, ScoreView, return_target
-from sugarloaf.market.contracts import BarsRequirement, IndicatorRequirement, Selection, Trigger
+from sugarloaf.market.contracts import (
+    BarsRequirement,
+    IndicatorRequirement,
+    InstrumentRequirement,
+    Selection,
+    Trigger,
+)
 from sugarloaf.nodes.positions import PortfolioConstraintNode
+
+# Shared horizon arithmetic: calendar time, or a count of exchange sessions.
+from sugarloaf.nodes.technical import Horizon, check_horizon, horizon_end
+from sugarloaf.portfolio.constraints import PortfolioConstraints
 
 
 @dataclass(frozen=True)
@@ -24,16 +33,19 @@ class EMAConfig:
     fast: int = 20
     slow: int = 50
     interval: timedelta = timedelta(days=1)
-    # The forecast spans elapsed calendar time, including nontrading days.
-    horizon: timedelta = timedelta(days=1)
+    # How far ahead the score looks, and how long its View stays valid.
+    # An int counts trading sessions: 1 means "until the next regular close", so a
+    # Friday-close forecast ends at Monday's close, where a price exists to score it
+    # and the market is open to trade it. A timedelta is elapsed calendar time
+    # instead, which from a Friday close would end on Saturday.
+    horizon: Horizon = 1
     weight: float = 0.2
 
     def __post_init__(self):
         # Reject inconsistent teaching settings before installing provider resources.
         if not 0 < self.fast < self.slow or not 0 < self.weight <= 1:
             raise ContractError("Require 0 < fast < slow and weight in (0, 1]")
-        if self.horizon <= timedelta(0):
-            raise ContractError("Forecast horizon must be positive")
+        check_horizon(self.horizon)
 
 
 class EMAScore:
@@ -52,6 +64,10 @@ class EMAScore:
         self.fast = IndicatorRequirement(source, "ema", (("period", config.fast),), window=2)
         self.slow = IndicatorRequirement(source, "ema", (("period", config.slow),), window=2)
         self.requirements = (self.fast, self.slow)
+        # A session-count horizon reads the exchange calendar through
+        # ctx.instruments, and every service read needs a matching declaration.
+        if isinstance(config.horizon, int):
+            self.requirements += (InstrumentRequirement(Selection((instrument,))),)
         # Periods and cadence define the score's meaning for aggregation/research.
         self.calibration_id = (
             f"ema-spread:{config.fast}:{config.slow}:{config.interval.total_seconds()}:raw:v1"
@@ -67,7 +83,7 @@ class EMAScore:
         # Resource readiness alone does not prove that two observations align.
         if fast.time != slow.time or fast.time > ctx.now or slow.values["value"] <= 0:
             raise NotReady("EMA score needs aligned admitted points and a positive denominator")
-        end = ctx.now + self.config.horizon
+        end = horizon_end(ctx, self.instrument, self.config.horizon)
         # The target describes the return interval; the statement is a dimensionless score.
         # A positive ratio-minus-one indicates the fast average is above the slow average.
         view = ScoreView(

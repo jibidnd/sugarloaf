@@ -1,8 +1,8 @@
 # Core contracts
 
-## `core.types`
+## `core.primitives`
 
-::: sugarloaf.core.types
+::: sugarloaf.core.primitives
 
 ## `core.views`
 

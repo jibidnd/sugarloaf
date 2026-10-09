@@ -3,9 +3,9 @@
 from dataclasses import dataclass
 from typing import Mapping, Protocol, Sequence
 
-from sugarloaf.core.errors import ContractError
+from sugarloaf.core.errors import ContractError, NotReady
+from sugarloaf.core.primitives import frozen_map
 from sugarloaf.core.services import Context
-from sugarloaf.core.types import frozen_map
 from sugarloaf.core.views import View
 from sugarloaf.market.contracts import Requirement, ResourceUpdate, Trigger
 
@@ -33,8 +33,6 @@ class InputSpec:
         # Missing required evidence is NotReady, allowing output withdrawal. Receiving
         # more Views or unsupported semantics is a contract violation, not missing data.
         if len(views) < self.min_count:
-            from sugarloaf.core.errors import NotReady
-
             raise NotReady("Required input views are missing")
         if self.max_count is not None and len(views) > self.max_count:
             raise ContractError("Too many input views")

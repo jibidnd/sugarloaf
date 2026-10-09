@@ -6,11 +6,11 @@ from datetime import datetime
 from typing import Protocol
 
 from sugarloaf.core.errors import ContractError
-from sugarloaf.core.events import EventBatch
+from sugarloaf.core.events import Event, EventBatch
 from sugarloaf.core.graph import Graph
 from sugarloaf.core.node import Node
+from sugarloaf.core.primitives import aware, frozen_map
 from sugarloaf.core.services import Context
-from sugarloaf.core.types import aware, frozen_map
 from sugarloaf.market.contracts import ResourceUpdate, Schedule
 from sugarloaf.research.archive import ForecastArchive
 from sugarloaf.runtime import GraphRuntime
@@ -26,9 +26,9 @@ class ResearchProvider(Protocol):
     ``apply`` before requesting the next. Reads expose only admitted information,
     and each provider/run owns fresh state. Unsupported declarations fail visibly.
 
-    Optional ``additional_events`` supplies provider-generated facts after apply;
-    optional ``provenance`` is a mapping recorded by the runner. Neither is needed
-    for a provider that has no extra facts or metadata. Outcome anchors are a
+    ``apply`` may return facts the provider itself discovered during admission
+    (or None when it has none); the runtime adds them to the batch. Optional
+    ``provenance`` is a mapping recorded by the runner. Outcome anchors are a
     separate interface and no account or execution capability is required.
     """
 
@@ -40,8 +40,8 @@ class ResearchProvider(Protocol):
     def install(self, node_id: str, update: ResourceUpdate) -> None:
         """Replace one node's complete declarations before preparation or batch admission."""
         ...
-    def apply(self, batch: EventBatch) -> None:
-        """Admit one historical batch and invalidate prior Contexts."""
+    def apply(self, batch: EventBatch) -> Iterable[Event] | None:
+        """Admit one historical batch, invalidate prior Contexts, return discovered facts."""
         ...
     def context(self, batch: EventBatch | None = None, node_id: str = "") -> Context:
         """Return lazy reads limited to the node's declarations and admitted boundaries."""

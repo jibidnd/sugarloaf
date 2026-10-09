@@ -44,7 +44,7 @@ from examples.memory import FixedContribution
 from sugarloaf.adapters.memory import MemoryServices
 from sugarloaf.core.events import Event, EventBatch
 from sugarloaf.core.graph import Graph
-from sugarloaf.core.types import InstrumentId
+from sugarloaf.core.primitives import InstrumentId
 from sugarloaf.runtime.runtime import GraphRuntime
 
 asset = InstrumentId("fixture:equity:1")
@@ -73,6 +73,8 @@ documents individual interfaces.
 Predictive research uses fresh node/runtime state without order execution.
 `run_node` replays historical provider batches; `ForecastArchive` retains issued
 forecasts; `evaluate` resolves outcomes later. Missing exact labels stay unavailable.
+`block_bootstrap_interval` and `cross_sectional_ic` then say how uncertain a
+summary is and whether the signal ranks instruments correctly on each date.
 
 The [EMA notebook](../examples/ema_research.ipynb) demonstrates this path in QC
 Research using `QuantBookServices`. It requires native LEAN services; memory does
@@ -94,7 +96,7 @@ exactly `PositionView`, with one actual terminal View at runtime:
 
 ```python
 from sugarloaf.core.graph import Graph
-from sugarloaf.core.types import InstrumentId
+from sugarloaf.core.primitives import InstrumentId
 from sugarloaf.nodes.simple import PositiveSignalPositions
 from sugarloaf.nodes.technical import EMASpread
 

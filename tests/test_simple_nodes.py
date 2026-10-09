@@ -6,7 +6,7 @@ import pytest
 
 from sugarloaf.core.errors import ContractError, NotReady
 from sugarloaf.core.node import NodeInputs
-from sugarloaf.core.types import InstrumentId, Interval, Metadata
+from sugarloaf.core.primitives import InstrumentId, Interval, Metadata
 from sugarloaf.core.views import (
     Probability,
     ProbabilityView,

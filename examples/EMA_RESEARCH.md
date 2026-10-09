@@ -3,9 +3,8 @@
 Implementation: [ema.py](ema.py). Start with [ema_research.ipynb](ema_research.ipynb)
 in QuantConnect Research, with the repository's Python modules available.
 `sugarloaf upload --adapter quantconnect --manifest deployments/quantconnect/ema.toml` uses the public EMA manifest,
-which explicitly includes the notebook and transforms its imports
-alongside the Python files for QC Cloud's `types.py` filename restriction. Open that
-uploaded copy when using Cloud; the local copy uses the repository's native imports.
+which explicitly includes the notebook alongside the Python files. Open that
+uploaded copy when using Cloud.
 
 **Idea:** a positive fast/slow EMA spread may predict positive subsequent returns.
 This is a teaching hypothesis, not a replication of a specific academic paper or
@@ -19,9 +18,10 @@ The adapter records the implementation version and initialization details.
 
 **Parameters:** fast/slow periods, source interval, forecast horizon and (for the
 trading graph) target weight. Windows retain two indicator outputs. Source prices
-are raw; outcomes use the exact price-return convention. Horizons are elapsed
-calendar time, not trading-session offsets: a missing weekend/holiday anchor is
-reported unavailable rather than silently replaced with another day's price.
+are raw; outcomes use the exact price-return convention. The horizon defaults to
+one trading session, so a Friday forecast ends at Monday's close. A `timedelta`
+horizon is elapsed calendar time instead; an endpoint with no price is reported
+unavailable rather than silently replaced with another day's price.
 Score calibration identity includes the EMA periods, bar cadence and raw-price
 convention, so different score definitions are kept separate in aggregation and
 evaluation. Evaluation requires both native points to share an admitted timestamp

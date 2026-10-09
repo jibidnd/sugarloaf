@@ -19,7 +19,7 @@ uv run --cache-dir .uv-cache python -m examples.memory
 ```
 
 Supply instruments, prices/account NAV and session intervals when executing orders.
-`put_bars`, `put_quotes`, `put_series` and `set_selection` change fixture state;
+`put_bars`, `put_quotes` and `set_selection` change fixture state;
 Context visibility still obeys observation and availability times.
 `set_account` invalidates older Contexts. Order fills occur only when the caller
 explicitly applies them. A cancel request alone does not release exposure.
