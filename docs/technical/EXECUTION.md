@@ -112,8 +112,13 @@ readable snapshot handles between passes.
 Holding 20 shares against a 20% target, a 0.5% price rise makes the exact desired
 quantity 19.92: the account is 0.08 shares off target, yet whole lots would say
 "sell one". The band compares that exact drift, in account currency, with
-`rebalance_band` × NAV (default 0.25%) and trades only beyond it. Quantity
-targets are exact instructions and are not banded.
+`rebalance_band` × NAV (default 0.25%) and trades only beyond it. It also never
+sends a whole-lot order that would leave the account no closer to the exact target:
+held 50 with 49.55 wanted is 0.45 off, and selling one share would leave it 0.55
+off the other way. In an account where one lot is worth more than the band,
+single-lot corrections still occur whenever the exact target crosses a whole lot;
+raise `min_trade_value` or the band to suppress them. Quantity targets are exact
+instructions and are not banded.
 
 Changing target identity requests cancellation of old intents. Reaccepting identical
 content may reconcile again; changed content under the same active identity fails.

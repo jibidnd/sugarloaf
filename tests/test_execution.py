@@ -213,6 +213,25 @@ def test_rebalance_band_ignores_weight_drift_but_not_entries_exits_or_quantities
     assert gateway.orders["3"].quantity == -1
 
 
+def test_weight_target_order_never_overshoots_when_one_lot_exceeds_the_band():
+    # 50 shares at 100 in a 10,000 account. One share is 1% of NAV, four times the
+    # default 0.25% band, so the band alone cannot stop a one-share correction.
+    services, gateway, engine = setup({A: 50}, cash=5000)
+    weight = replace(target(1, {A: 0.5}), units="weight")
+    # Price rises 2%: NAV 10,100 and exactly 49.51 shares are wanted. The account
+    # is 0.49 shares over target, about 0.5% of NAV and so outside the band. But
+    # selling one would leave it 0.51 under, further away than it is now, so no
+    # order is sent.
+    services.set_account(replace(services.account, nav=10100, prices={A: 102, B: 100}))
+    engine.accept(weight)
+    assert not gateway.orders
+    # Price rises to 104: exactly 49.04 are wanted, 0.96 shares over target.
+    # Selling one now leaves the account only 0.04 off, so the order is sent.
+    services.set_account(replace(services.account, nav=10200, prices={A: 104, B: 100}))
+    engine.reconcile()
+    assert gateway.orders["1"].quantity == -1
+
+
 def test_missing_price_skips_only_that_instrument():
     # B has no mark, as a newly added universe member might not. Before this was
     # handled, the missing price raised out of reconciliation and stopped the run.

@@ -33,15 +33,29 @@ def run_notebook(path: Path, project_id: int, timeout: int = 600):
         # Create a research connection only for the known missing-connection response.
         # Authentication/server failures above must propagate rather than trigger new work.
         connection = api.post("research/create", {"projectId": project_id})
-    base = connection["uri"].rstrip("/")
-    parsed = urlsplit(base)
-    # The returned endpoint will receive a bearer token; validate its origin before
-    # opening either REST or websocket connections.
-    if parsed.scheme != "https" or not parsed.hostname.endswith(".quantconnect.com"):
-        raise RuntimeError("Unexpected research server; refusing to transmit credentials")
-    token = connection["token"]
-    session = requests.Session()
-    session.headers["Authorization"] = "Bearer " + token
+
+    def open_session(connection):
+        """Validate a research endpoint and return its address, token and HTTP session."""
+        base = connection["uri"].rstrip("/")
+        parsed = urlsplit(base)
+        # The returned endpoint will receive a bearer token; validate its origin before
+        # opening either REST or websocket connections.
+        if parsed.scheme != "https" or not parsed.hostname.endswith(".quantconnect.com"):
+            raise RuntimeError("Unexpected research server; refusing to transmit credentials")
+        token = connection["token"]
+        session = requests.Session()
+        session.headers["Authorization"] = "Bearer " + token
+        return base, parsed, token, session
+
+    base, parsed, token, session = open_session(connection)
+    # A saved research session can outlive its server. QC then still returns the
+    # old record, and every route at that address answers 404, so the first kernel
+    # request would fail with an unexplained 404 however often it is retried.
+    # One status request tells the two cases apart; only then ask for a new session.
+    # (Observed 2026-10-09: research/read returned a session whose server was gone.)
+    if session.get(base + "/api/status", timeout=60).status_code == 404:
+        connection = api.post("research/create", {"projectId": project_id})
+        base, parsed, token, session = open_session(connection)
 
     def request(method, route, **kwargs):
         # Research connection discovery uses LEAN; kernel REST operations use the

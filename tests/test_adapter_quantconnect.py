@@ -711,6 +711,34 @@ def test_empty_host_callbacks_do_not_start_or_advance_graph_clock():
     assert host.sequence == 1 and host.runtime.batch.cutoff == NOW
 
 
+def test_queued_callback_facts_wait_for_a_data_boundary_past_a_lifecycle_only_slice():
+    # Raw prices, so the dividend below does not itself re-evaluate the node.
+    req = BarsRequirement(Selection((A,)), timedelta(minutes=1), normalization="raw")
+
+    class Scheduled(Signal):
+        # Evaluated only when the externally scheduled fact "rebalance" is delivered.
+        triggers = (Trigger("scheduled", key="rebalance"),)
+
+    api, platform = API(), algorithm()
+    signal = Scheduled(req)
+    host = QuantConnectHost(platform, compiled(signal), tickers={A: "A"}, api=api)
+    api.host = host
+    host.on_data(slice_data(platform))  # Establish the graph clock with real data.
+    assert signal.reads == []
+    host.schedule("rebalance")
+    # LEAN delivers a slice holding only a corporate action, with no bars. The
+    # clock cannot advance, so the queued fact must not be spent on this callback.
+    symbol = host.services.symbols[A]
+    host.on_data(NS(dividends={symbol: NS(distribution=1.0)}))
+    assert signal.reads == []
+    assert [event.kind for event in host._held] == ["scheduled"]
+    # The next slice with bars is the data boundary the fact was queued for.
+    platform.utc_time += timedelta(minutes=1)
+    host.on_data(slice_data(platform))
+    assert len(signal.reads) == 1
+    assert not host._held and not host.services.pending_events
+
+
 def test_quantbook_scans_native_consolidation_at_each_admitted_boundary():
     from sugarloaf.adapters.quantconnect import QuantBookServices
     from sugarloaf.market.contracts import IndicatorRequirement

@@ -32,7 +32,9 @@ class ExecutionPolicy:
         rebalance_band: Smallest order, as a fraction of NAV, worth submitting for
             a weight target. A weight target's desired quantity moves with every
             mark; without a band the engine would re-trade that drift on every
-            batch. Quantity targets are exact instructions and are not banded.
+            batch. For the same reason a weight target never sends a whole-lot
+            order that would leave the account no closer to its exact target.
+            Quantity targets are exact instructions and are not banded.
 
     Neither threshold ever suppresses an explicit exit to zero. Order lifetime and
     target age limit different things and neither implies a timed exit.

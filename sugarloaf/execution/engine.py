@@ -562,9 +562,27 @@ class ExecutionEngine:
                 # The drift is measured from the exact (unrounded) desired quantity.
                 # Held 20, exactly 19.92 wanted: the account is 0.08 units off, well
                 # inside the band, even though whole lots would say "sell one".
-                drift = abs(exact - actual.holdings.get(instrument, 0) - pending) * value
-                if target.units == "weight" and drift < self.policy.rebalance_band * actual.nav:
-                    continue
+                if target.units == "weight":
+                    # How far the account is from the exact target now, in units,
+                    # and how far it would be once this whole-lot order filled.
+                    gap_now = abs(exact - actual.holdings.get(instrument, 0) - pending)
+                    gap_after = abs(exact - desired)
+                    if gap_now * value < self.policy.rebalance_band * actual.nav:
+                        continue
+                    # Never send an order that leaves the account no closer to its
+                    # target. Orders are whole lots, so one can overshoot: held 50
+                    # with exactly 49.55 wanted is 0.45 off, and selling one share
+                    # would leave it 0.55 off on the other side. This can only
+                    # happen when one lot is worth more than the band.
+                    #
+                    # It does not stop every single-lot order in such an account.
+                    # When the exact target crosses a whole lot (49.95 wanted, 51
+                    # held) the one-lot order is a real improvement and is sent.
+                    # A native two-week run of a USD100,000 account in SPY, where
+                    # one share is 0.6% of NAV, made four such one-share trades.
+                    # Raise min_trade_value or the band to suppress those.
+                    if gap_after >= gap_now:
+                        continue
             # Rejection cannot create a retry storm for identical target identities.
             if any(
                 e.intent.target_id == target.metadata.view_id

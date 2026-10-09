@@ -136,6 +136,8 @@ class QuantConnectHost:
         # submission is still establishing an order identity.
         self._busy = False
         self._feedback = deque()
+        # Callback-queued facts waiting for the next slice that carries data.
+        self._held: list[Event] = []
         # The session installed node declarations. Create/warm their resources
         # without treating those historical samples as strategy decisions.
         self.services._sync_resources(utc(algorithm.utc_time, "UTC"))
@@ -204,9 +206,11 @@ class QuantConnectHost:
             now = utc(self.algorithm.utc_time, "UTC")
             # Consolidators/universes/schedules queue facts rather than invoking
             # nodes. Collect those facts into this serial data boundary.
-            events = list(self.services.pending_events)
+            # Facts held back by an earlier callback come first, in arrival order.
+            queued = self._held + list(self.services.pending_events)
+            self._held = []
             self.services.pending_events.clear()
-            events.extend(self._lifecycle(data, now))
+            lifecycle = self._lifecycle(data, now)
             # Observation ends choose the cutoff; algorithm UTC time above is
             # receipt time. The two clocks describe different facts.
             ends = []
@@ -214,7 +218,29 @@ class QuantConnectHost:
                 for symbol, bar in getattr(data, field, {}).items():
                     security = self.algorithm.securities[symbol]
                     ends.append(self.services.api.to_utc(security, bar.end_time))
-            ends.extend(event.end for event in events if event.end is not None)
+            ends.extend(event.end for event in queued if event.end is not None)
+            if ends:
+                events = queued + lifecycle
+            else:
+                # LEAN also calls OnData for a slice that carries no bars (only
+                # corporate actions or other auxiliary data), typically before the
+                # open. Nothing was observed, so the graph clock cannot advance
+                # past yesterday's close. Lifecycle facts
+                # are handled now, because they affect safety. Facts queued by
+                # callbacks (a new universe selection, a schedule, a resource
+                # change) are promised "the next data boundary" and stay queued.
+                #
+                # Delivering them here would evaluate their nodes with the clock
+                # still at the previous close. A universe selected this morning is
+                # then "from the future", the node is withdrawn as unready, and the
+                # one trigger for that selection is spent. Seen natively: a node
+                # triggered by universe selection missed two days out of five.
+                #
+                # They are held here rather than put back on the provider's queue:
+                # provider admission drains that queue into the very batch being
+                # processed, which would deliver them now after all.
+                self._held = queued
+                events = lifecycle
             prior = self.runtime.batch or self.services.batch
             # An empty callback does not create a graph decision opportunity.
             if not ends and not events:

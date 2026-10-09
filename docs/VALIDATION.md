@@ -51,6 +51,64 @@ Public runs use ignored per-manifest artifact directories; each result retains
 its exact source/parameter/compile identity.
 See [the guide](GUIDE.md#4-deploy-and-inspect) for retrieval and inspection.
 
+## Native acceptance, 9 October 2026
+
+Run on LEAN 2.5.0.0.18178 after the audit changes. Each row answers one
+integration question; none says anything about profitability. All runs completed
+without runtime errors.
+
+The check graphs are deliberately untracked scaffolding in
+`artifacts/qc-acceptance/` (project `37597459`). Every run's exact uploaded
+source, including those graphs, is in its bundle snapshot under
+`artifacts/qc-acceptance/artifacts/acceptance/`. That directory is git-ignored:
+it is evidence on this machine, not a backup.
+
+| Question | Backtest | Observed |
+| --- | --- | --- |
+| Do session-count horizons follow the exchange calendar, and can a Friday decision trade? | `a09b757e4198fbbcbe46061614c47bc3`, repeated on later source as `ccf76792f3a78eb7c898ed64453efaa3` | Daily SPY bars complete at 16:00 New York. Asked at exactly that close, `session_close` returned the next session's close: Wednesday 8 January → Friday 10 (market closed on the 9th), Friday 10 → Monday 13, Friday 17 → Tuesday 21 (holiday on the 20th). Each 16:00 decision was refused as session-closed and filled at 09:31 on the next session, including Monday after a Friday decision. |
+| Is shorting permitted under LEAN's default shortable provider? | same runs | The target alternated +30% and −30%. Every short entry filled; no borrow rejection. |
+| Does the rebalance band stop drift re-trading? | `de6544d12f1e9191c440fa2c82d90f0c` (band 0) and `a5a5e871104671d47ed44e61e21f1c67` (band 0.25%) | A constant 50% SPY weight on USD10m over four sessions: 953 orders and USD993.89 of fees with no band; 3 orders and USD43.89 with it. The two maintenance orders were 43 and 44 shares, about 0.25% of NAV. |
+| Does a corporate action touch only the affected part of the graph? | `bd69f53bdb7d6b22315eebc2caf5b0d7` (and `821fa9dda733cb14178f1bae63edc2cb` without the relay) | June 2024, three independent readers. NVDA's split re-evaluated only the raw NVDA reader. NVDA's and SPY's dividends re-evaluated nothing (raw prices). QQQ's dividend re-evaluated only the adjusted QQQ reader. A relay downstream of the SPY position producer ran exactly once per upstream output, so that target was never withdrawn, and its single order was undisturbed. |
+| Can a node work with a partly ready universe? | `5d90c2881a8229085e63ee60ee63cdbb` | A 60-name native liquidity universe with a 150-bar daily lookback, 9–13 June 2025. The `require_all=False` node evaluated on all five days with 58 of 60 members ready (57 on the last day); the unready ones were CRWV, CRCL and CHYM, all recently listed. Its strict twin was withdrawn every day with `Insufficient history`. |
+| Does the public EMA example still behave the same? | `8422af7a72778f27074ce931d3235d5b` (project `37377184`) | 6 orders, USD6.00 fees, end equity USD99,652.57: identical to the 4 October run above. |
+
+The research notebook was re-executed in the native QuantBook kernel with a
+one-session horizon: nine forecasts issued and **nine scored**, where the
+calendar-day horizon had left three unscorable. Output:
+`artifacts/ema/native-research/2026-10-09/ema_research.ipynb`.
+
+What these runs found, beyond confirming the changes:
+
+- **Queued facts were being spent on data-less callbacks (fixed).** In run
+  `172974f9ada6c6ac6fc3cd503c755ac2` the universe-triggered nodes were withdrawn
+  with `Universe unavailable` on two of five days. LEAN had called `OnData` with a
+  slice carrying no bars; the host delivered the queued universe event with the
+  graph clock still at the previous close, so that morning's selection looked like
+  the future and the one trigger for it was consumed. The host now holds
+  callback-queued facts until a slice carries data. The repeat run above evaluated
+  on all five days.
+- **Adjusted prices in a backtest are already fully adjusted.** The adjusted QQQ
+  window was identical before and after its ex-dividend date: LEAN applies the
+  whole factor file, including later dividends, from the start. Rebuilding an
+  adjusted window on a dividend is therefore harmless but changes nothing in a
+  backtest. It would matter with live data, which this does not test.
+- **A node re-evaluated by a lifecycle event emits nothing until its next bar.**
+  The event arrives before the open while the graph clock is still at the prior
+  close, so the new View's information cutoff predates the event and is rejected.
+  This is the existing conservative rule, now applied to the affected node only.
+- **Small accounts still make single-lot corrections.** With USD100,000 in SPY,
+  one share is 0.6% of NAV, more than the 0.25% band, and the session runs made
+  four one-share trades in two weeks as the exact target crossed whole shares.
+  `min_trade_value` or a wider band suppresses them.
+- **A stale research session answers 404.** `research/read` returned a session
+  whose server no longer existed. The notebook runner now checks the server and
+  requests a fresh session in that case.
+
+Not covered by these runs: partial fills, cancellations and cancel rejections;
+quotes; ETF-constituent universes; delistings and symbol changes; live data.
+The session, band and lifecycle runs predate the host fix; only comments changed
+in the engine after the final session run.
+
 ## Capability limits
 
 - QC trading: US equities, regular-session day market orders; documented minute
@@ -69,9 +127,8 @@ See [the guide](GUIDE.md#4-deploy-and-inspect) for retrieval and inspection.
   rejection/retry and partial-fill sequences remain separate acceptance checks.
 - No live-deployment/restart recovery or durable state. Memory fixtures are not a
   market simulator.
-- Not yet exercised natively: session-count horizons (`LeanAPI.session_close`),
-  the rebalance band, scoped lifecycle invalidation (including the dividend
-  exemption for raw prices), partial-universe readiness, and shorting under
-  LEAN's default shortable provider. Local tests cover them through injected
-  boundaries only; the cloud evidence above predates these changes.
+- Session-count horizons, the rebalance band, scoped lifecycle invalidation,
+  partial-universe readiness and default-provider shorting each have one native
+  backtest (see the 9 October 2026 acceptance above). That is acceptance of the
+  mechanism on one date range, not broad coverage.
 - No independent-sample inference is justified for overlapping forecast revisions.
