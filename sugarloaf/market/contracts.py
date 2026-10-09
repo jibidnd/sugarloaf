@@ -93,6 +93,14 @@ class Schedule:
 
     The provider resolves calendars and timezones when graph data ticks cross the
     declared time; no per-node timer runs.
+
+    Give a wall-time schedule a ``calendar`` unless you really mean every
+    calendar day. Without one, ``Schedule(at=time(10, 0))`` also occurs on
+    weekends and holidays. No data arrives then, and a missed occurrence fires at
+    the next data tick, so the node runs at Monday's 09:31 open as well as at
+    Monday's 10:00. With ``calendar=instrument`` the schedule occurs only on that
+    instrument's trading sessions. (Seen in a native parity run: a "10:00 daily"
+    entry traded at 09:31 after a weekend and after a market closure.)
     """
 
     # Two ways to say "when", of which exactly one is used:

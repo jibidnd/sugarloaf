@@ -55,6 +55,17 @@ def test_signal_to_naive_positions_without_return_calibration(node, values, posi
     assert views[0].target.time.end == NEXT_CLOSE
 
 
+def test_friday_signal_keeps_its_authority_through_the_position_node_until_monday():
+    # NOW is Friday's close and the stand-in calendar says the next close is Monday.
+    ctx = context({("ema", 2): 110, ("ema", 3): 100})
+    views = EMASpread(A, fast=2, slow=3).evaluate(NodeInputs({}), ctx).by_port["views"]
+    ctx.node_id = "positions"
+    target = PositiveSignalPositions((A,)).evaluate(NodeInputs({"views": views}), ctx)
+    # The position target must live as long as the forecast behind it. A one-day
+    # default lifetime would end it on Saturday and the signal could never trade.
+    assert target.by_port["positions"][0].metadata.expires_at == NEXT_CLOSE
+
+
 def test_calendar_horizon_is_still_available_and_needs_no_calendar():
     node = EMASpread(A, fast=2, slow=3, horizon=timedelta(days=1))
     # Only a session horizon declares calendar access.

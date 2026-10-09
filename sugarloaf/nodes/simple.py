@@ -68,7 +68,11 @@ class MeanViewAggregator:
     # Upstream message changes activate this node; it needs no direct market subscription.
     triggers = ()
 
-    def __init__(self, lifetime=timedelta(days=1)):
+    # The default of four days is only a backstop. The output always expires no
+    # later than its parent forecasts and their target ends, which is the precise
+    # limit. A one-day cap would cut a Friday-close forecast that is valid until
+    # Monday's close down to Saturday, before the market reopens.
+    def __init__(self, lifetime=timedelta(days=4)):
         if lifetime <= timedelta(0):
             raise ContractError("Positive aggregate lifetime required")
         self.lifetime = lifetime
@@ -133,7 +137,10 @@ class PositiveSignalPositions:
     requirements = ()
     triggers = ()
 
-    def __init__(self, instruments, budget=0.9, scope="account", lifetime=timedelta(days=1)):
+    # lifetime defaults to four days for the reason given on MeanViewAggregator:
+    # the forecasts' own expiry is the real limit, and one calendar day would
+    # expire a Friday-close target on Saturday, so it could never trade on Monday.
+    def __init__(self, instruments, budget=0.9, scope="account", lifetime=timedelta(days=4)):
         self.instruments = tuple(instruments)
         # One configured identity per asset prevents an accidental double allocation.
         if (

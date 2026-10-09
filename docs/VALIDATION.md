@@ -109,6 +109,45 @@ quotes; ETF-constituent universes; delistings and symbol changes; live data.
 The session, band and lifecycle runs predate the host fix; only comments changed
 in the engine after the final session run.
 
+## Parity with plain QuantConnect algorithms
+
+Five simple rules were each run twice in QC Cloud on 9 October 2026: once as a
+native `QCAlgorithm` with no Sugarloaf code, once as a Sugarloaf graph. All five
+pairs produced identical orders (fill time, symbol, quantity and fill price) and
+identical ending equity.
+
+| Rule | Orders |
+| --- | ---: |
+| Buy and hold | 1 |
+| Three assets rebalanced to fixed weights at 10:00, with a drift band | 15 |
+| Daily close above SMA(5): long, else flat (library `SMATrend`) | 12 |
+| Five-minute EMA(5) above EMA(20): long, else flat (library `EMASpread`) | 40 |
+| Buy at 10:00, sell at 15:30 every session | 18 |
+
+The pairs are an untracked pytest module, `artifacts/qc-parity/test_parity.py`,
+run on demand with `python -m pytest artifacts/qc-parity/test_parity.py -v`. They
+need QC credentials and about four minutes of cloud time.
+
+Getting the pairs to agree showed how Sugarloaf differs from a naive native
+algorithm. Each is intended behaviour that a strategy author needs to know:
+
+- **A wall-clock schedule without a calendar fires at the next open after a
+  weekend or holiday.** `Schedule(at=time(10, 0))` occurs every calendar day and a
+  missed occurrence fires at the next data tick. Use `calendar=instrument` for
+  "each session".
+- **Each order is sized when it is sent.** In a multi-asset rebalance, later
+  orders see NAV after the earlier orders' slippage and fees.
+- **Warm-up bars are not decisions.** The first decision comes from the first bar
+  completed after the start, never from history used to prepare an indicator.
+- **A daily-close signal trades at the next session's first minute bar,** because
+  the market is closed when the daily bar completes.
+- **An adjusted-price signal is withdrawn on its ex-dividend day** until its next
+  bar. The daily pair's dates avoid SPY's ex-dividend days for that reason, so this
+  difference is known but not exercised by the pairs.
+
+The pairs do not cover partial fills, cancellations, shorting, universes or
+anything outside regular-session market orders.
+
 ## Capability limits
 
 - QC trading: US equities, regular-session day market orders; documented minute

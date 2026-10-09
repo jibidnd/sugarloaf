@@ -31,7 +31,10 @@ class PositionNetter:
     # Account/metadata access supports quantity conversion without declaring price subscriptions.
     triggers = ()
 
-    def __init__(self, budgets: Mapping[str, float], lifetime: timedelta = timedelta(days=1)):
+    # Four days is a backstop that spans a long weekend; each branch target's own
+    # expiry is the binding limit. One calendar day would end a Friday-close
+    # account target on Saturday even when every branch is valid until Monday.
+    def __init__(self, budgets: Mapping[str, float], lifetime: timedelta = timedelta(days=4)):
         if not budgets or any(b < 0 or not isfinite(b) for b in budgets.values()):
             raise ContractError("Netter requires finite nonnegative branch budgets")
         self.budgets = dict(budgets)
