@@ -41,8 +41,8 @@ making a research claim. Framework diagnostics do not supply independent-sample 
 execution; the notebook itself is supplied without fabricated outputs.
 
 **Current research behavior:** QuantBook replay admits typed split/dividend facts
-at effective boundaries and resets affected data/indicator resources before
-post-action observations. Split warnings are not effective split facts. Historical
+at effective boundaries and, after a split, resets raw-price data/indicator
+resources before post-action observations. Split warnings are not effective split facts. Historical
 receipt times are assumed equal to observation ends, not measured latency.
 The native notebook issued nine forecasts and scored six during its recorded
 January 2025 replay; three exact anchors were unavailable. Local tests verify

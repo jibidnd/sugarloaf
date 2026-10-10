@@ -4,16 +4,14 @@ import pytest
 
 from sugarloaf.adapters.memory import MemoryServices, SelectionRow
 from sugarloaf.core.errors import ContractError, NumericalError
-from sugarloaf.core.events import Event, EventBatch, LifecycleEvent
+from sugarloaf.core.events import DataReset, Event, EventBatch, LifecycleEvent
 from sugarloaf.core.graph import Graph
 from sugarloaf.core.node import InputSpec, NodeOutputs, OutputSpec
 from sugarloaf.core.primitives import InstrumentId, Interval, Metadata
 from sugarloaf.core.views import PositionView, Score, ScoreView, return_target
 from sugarloaf.market.contracts import (
-    BarsRequirement,
     LiquidityUniverse,
     ResourceUpdate,
-    Selection,
     Trigger,
     UniverseRequirement,
 )
@@ -189,21 +187,17 @@ def test_membership_change_rechecks_node_without_its_ordinary_trigger():
 
 
 class Reader:
-    """Emit one score about an instrument, read under a chosen price normalization."""
+    """Emit one score about an instrument and count how often it is evaluated."""
 
     inputs = {}
     outputs = {"views": OutputSpec((ScoreView,))}
+    # No data requirement: these tests are about which nodes the runtime
+    # withdraws and re-evaluates, which it decides from facts, not from data.
+    requirements = ()
     triggers = (Trigger("data"),)
 
-    def __init__(self, instrument, normalization):
+    def __init__(self, instrument):
         self.instrument = instrument
-        # require_all=False lets the node evaluate without any bar fixtures; these
-        # tests are about which nodes a lifecycle event touches, not about data.
-        self.requirements = (
-            BarsRequirement(
-                Selection((instrument,)), normalization=normalization, require_all=False
-            ),
-        )
         self.calls = 0
 
     def evaluate(self, inputs, ctx):
@@ -223,33 +217,62 @@ def lifecycle_batch(sequence, kind, instrument, **fields):
     return EventBatch(sequence, at, (Event("lifecycle", instrument, payload=event),))
 
 
-def test_lifecycle_invalidation_is_scoped_to_the_affected_instrument_and_basis():
+def reset_batch(sequence, instrument, nodes):
+    """A batch carrying a provider's report that it rebuilt those nodes' data."""
+    at = NOW + timedelta(seconds=sequence)
+    fact = DataReset(instrument, nodes, at)
+    return EventBatch(sequence, at, (Event("data_reset", instrument, payload=fact),))
+
+
+def test_data_reset_withdraws_only_the_nodes_the_provider_names():
     b = InstrumentId("B")
-    nodes = {
-        "adjusted_a": Reader(A, "adjusted"),
-        "raw_a": Reader(A, "raw"),
-        "adjusted_b": Reader(b, "adjusted"),
-    }
+    nodes = {"rebuilt_a": Reader(A), "other_a": Reader(A), "reads_b": Reader(b)}
     builder = Graph()
     for name, node in nodes.items():
         builder.add_node(name, node)
-    runtime = GraphRuntime(builder.set_output("adjusted_a", "views").compile(), MemoryServices())
+    runtime = GraphRuntime(builder.set_output("rebuilt_a", "views").compile(), MemoryServices())
     runtime.process(EventBatch(0, NOW, (Event("data"),)))
     before = {name: runtime.store.get(name, "views") for name in nodes}
     assert all(len(views) == 1 for views in before.values())
 
-    # A dividend restates dividend-adjusted history only. The raw reader of the
-    # same stock, and every reader of another stock, keep their Views untouched.
-    runtime.process(lifecycle_batch(1, "dividend", A, amount=1.0))
+    # The provider says it rebuilt the data one node declared. Only that node is
+    # withdrawn and evaluated again; a second node about the same stock, whose data
+    # the provider did not rebuild, keeps its View. A name that is not in this
+    # graph is ignored, because a provider may serve more than one consumer.
+    runtime.process(reset_batch(1, A, ("rebuilt_a", "not_in_this_graph")))
     assert [node.calls for node in nodes.values()] == [2, 1, 1]
-    assert runtime.store.get("adjusted_a", "views") != before["adjusted_a"]
-    assert runtime.store.get("raw_a", "views") == before["raw_a"]
-    assert runtime.store.get("adjusted_b", "views") == before["adjusted_b"]
+    assert runtime.store.get("rebuilt_a", "views") != before["rebuilt_a"]
+    assert runtime.store.get("other_a", "views") == before["other_a"]
+    assert runtime.store.get("reads_b", "views") == before["reads_b"]
 
-    # A split changes every price basis for that stock, but still only that stock.
-    runtime.process(lifecycle_batch(2, "split", A, factor=0.5))
+    # A dividend with no reset reported is only a fact. The runtime holds no rule
+    # of its own about dividends, so nothing is withdrawn.
+    runtime.process(lifecycle_batch(2, "dividend", A, amount=1.0))
+    assert [node.calls for node in nodes.values()] == [2, 1, 1]
+
+    # A split changes what a share of A is, whichever vendor supplies the data.
+    # Every View naming A is withdrawn; the other stock is still untouched.
+    runtime.process(lifecycle_batch(3, "split", A, factor=0.5))
     assert [node.calls for node in nodes.values()] == [3, 2, 1]
-    assert runtime.store.get("adjusted_b", "views") == before["adjusted_b"]
+    assert runtime.store.get("reads_b", "views") == before["reads_b"]
+
+
+def test_data_reset_also_withdraws_everything_downstream():
+    source, consumer = Source(), Consumer()
+    runtime = GraphRuntime(graph(source, consumer), MemoryServices())
+    runtime.process(EventBatch(0, NOW, (Event("data"),)))
+    kept = runtime.store.get("c", "p")
+    # Only the source is named, but the consumer's target was derived from the
+    # source's withdrawn View, so it must be decided again too.
+    runtime.process(reset_batch(1, A, ("s",)))
+    assert (source.calls, consumer.calls) == (2, 2)
+    assert runtime.store.get("c", "p") != kept
+
+
+def test_data_reset_must_name_at_least_one_node():
+    # A provider that rebuilt nothing reports nothing; an empty report is a bug.
+    with pytest.raises(ContractError):
+        DataReset(A, (), NOW)
 
 
 def test_split_withdraws_views_naming_the_instrument_but_a_dividend_does_not():

@@ -51,8 +51,9 @@ boundary. Expiry also takes effect when processing reaches its boundary.
    the facts it returns (for example a changed universe).
 3. Expire Views with expiry ≤ now. Activate their downstream consumers/descendants,
    resource-changed owners, matching triggers and changed-universe readers/owners.
-4. On lifecycle facts, withdraw and re-activate only the affected nodes and their
-   descendants, retire their View identities, and advance basis watermarks
+4. On a provider's `DataReset` or a unit-changing lifecycle fact, withdraw and
+   re-activate only the affected nodes and their descendants, retire their View
+   identities, and advance their information watermarks
    (see [ViewStore and lifecycle](#viewstore-and-lifecycle)).
 5. Visit activated nodes once in topological order. Assemble input ports, create
    Context, validate input cardinality/semantics and readiness, then evaluate.
@@ -82,26 +83,33 @@ every View it ever issued. Unactivated nodes retain active
 outputs subject to expiry/invalidation. The ledger is not a forecast archive:
 [ForecastArchive](RESEARCH.md#issued-forecasts) separately retains issued predictions.
 
-A lifecycle event affects a node when either:
+Two facts invalidate a node's output. The runtime holds no rule about dividends,
+price conventions or any vendor:
 
-- the node declares bar, quote or indicator data for that instrument whose price
-  basis the event changes. A split changes every basis. A dividend changes only
-  `adjusted` and `total_return` history; raw and split-adjusted prices stay
-  valid. A named-universe selection is assumed to contain the instrument;
-- for any event other than a dividend, one of the node's active Views names the
-  instrument (as a target subject or a position).
+- **The provider reports a `DataReset(instrument, nodes, effective_at)`.** It
+  discarded and rebuilt data those nodes had declared. Whether a corporate
+  action requires that depends on the vendor's data, so the adapter decides and
+  the runtime only reacts. A provider that rebuilt nothing reports nothing.
+- **A lifecycle fact changes what a unit of the instrument is:** `split`,
+  `delisting`, `expiry`, `exercise` or `assignment`. Every node with an active
+  View naming the instrument (as a target subject or a position) is affected,
+  whatever data it read. This is true of the instrument, not of a vendor.
+
+A `dividend` or `symbol_change` fact alone invalidates nothing. It is still
+delivered as an event, so a node may trigger on it.
 
 Affected nodes and all their descendants are withdrawn, their View IDs retired,
-and they are re-evaluated in the same batch. Everything else is untouched: a
-dividend on one stock of a 500-name universe no longer withdraws the other 499
-forecasts or cancels every order.
+and they are re-evaluated in the same batch. Everything else is untouched: an
+action on one stock of a 500-name universe does not withdraw the other 499
+forecasts or cancel every order.
 
-A new View concerning an affected instrument must have an information cutoff at
-or after the latest effective lifecycle boundary. After a non-dividend event that
-holds for every node; after a dividend, for the affected nodes. Even a late
-older action cannot lower that watermark.
-The provider resets affected resources; broker holdings adjustments remain native.
-The runtime neither transforms old Views nor liquidates holdings.
+A new View concerning the instrument must have an information cutoff at or after
+the fact's effective time. After a `DataReset` that holds for the named nodes and
+their descendants; after a unit-changing fact, for every node. Even a late older
+fact cannot lower that watermark. A node re-evaluated in the fact's own batch
+has usually seen no newer data, so it publishes again on its next bar.
+Broker holdings adjustments remain native. The runtime neither transforms old
+Views nor liquidates holdings.
 
 ## Concrete trace
 

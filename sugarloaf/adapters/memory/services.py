@@ -97,7 +97,6 @@ class MemoryServices(ProviderServices):
             self.buffers[key] = tuple(merged[t] for t in sorted(merged))
         self._changed()
 
-
     def set_selection(self, name, rows, cutoff):
         """None means unchanged; an empty iterable is an explicit empty selection."""
         # Preserve the distinction between no update and an explicitly empty

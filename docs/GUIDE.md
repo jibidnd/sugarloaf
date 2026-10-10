@@ -82,8 +82,8 @@ not implement native indicators. Follow the
 [EMA walkthrough](../examples/EMA_RESEARCH.md) and
 [research reference](technical/RESEARCH.md) for public calls and metrics.
 
-QuantBook replay admits split/dividend facts at effective boundaries and resets
-affected resources before post-action reads. Historical receipt times are assumed
+QuantBook replay admits split/dividend facts at effective boundaries and, after a
+split, resets raw-price resources before post-action reads. Historical receipt times are assumed
 equal to observation ends. The EMA notebook has native kernel acceptance;
 corporate-action replay, numerical parity and adjustment-vintage correctness
 remain unverified. Predictive evaluation and

@@ -123,6 +123,20 @@ class PortfolioConstraintNode:
         if failures:
             # Readiness failure withdraws authority; there is no clipping, rescaling or liquidation.
             raise NotReady("TARGET_REJECTED: " + ", ".join(failures))
+        # Attribution is declared in the same units as the positions it explains.
+        # This node always emits weights, so a quantity target's attribution is
+        # converted the same way its positions were, keeping every field of the
+        # output on one account-NAV scale rather than mixing weights and shares.
+        if view.units == "weight":
+            attribution = view.attribution
+        else:
+            attribution = {
+                branch: {
+                    i: q * ctx.valuation.unit_value(i) / account.nav
+                    for i, q in contributions.items()
+                }
+                for branch, contributions in view.attribution.items()
+            }
         metadata = Metadata(
             # Fresh identity preserves the proposed target's parent, expiry and branch attribution.
             f"{ctx.node_id}:{ctx.snapshot_id}",
@@ -132,5 +146,5 @@ class PortfolioConstraintNode:
             (view.metadata.view_id,),
         )
         return NodeOutputs(
-            {"positions": (PositionView(weights, "weight", "account", metadata, view.attribution),)}
+            {"positions": (PositionView(weights, "weight", "account", metadata, attribution),)}
         )

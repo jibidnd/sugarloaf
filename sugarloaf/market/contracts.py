@@ -195,8 +195,10 @@ class BarsRequirement(DataRequirement):
     interval: timedelta = timedelta(days=1)
     lookback: int = 1
     session: str = "regular"
-    # "adjusted" restates history for splits and dividends, "split_adjusted" for
-    # splits only, "total_return" reinvests dividends, "raw" is as traded.
+    # "adjusted" prices are corrected for splits and dividends, "split_adjusted"
+    # for splits only, "total_return" reinvests dividends, "raw" is as traded.
+    # How and when a vendor applies those corrections is the adapter's concern:
+    # it rebuilds what it must and reports a DataReset (see core/events.py).
     normalization: str = "adjusted"
     fill_forward: bool = False
     # The default of four days lets a daily bar from Friday stay usable over a
@@ -212,26 +214,6 @@ class BarsRequirement(DataRequirement):
             raise ContractError("Unknown trading session")
         if self.normalization not in {"raw", "adjusted", "split_adjusted", "total_return"}:
             raise ContractError("Unknown normalization")
-
-
-def restates_history(kind: str, normalization: str | None) -> bool:
-    """Whether a lifecycle fact changes the basis of prices already retained.
-
-    Args:
-        kind: LifecycleEvent kind, such as ``"split"`` or ``"dividend"``.
-        normalization: The BarsRequirement normalization the prices were read
-            under, or None for data that has none (quotes).
-
-    A cash dividend only restates history that is adjusted for dividends
-    (``adjusted`` and ``total_return``). Raw and split-adjusted prices before and
-    after the ex-date are still on one basis, so windows, indicators and Views
-    built from them stay valid. Every other lifecycle fact is treated as changing
-    the basis: a split rescales raw prices and restates every adjusted series.
-
-    The runtime uses this to decide which Views to withdraw and the adapter uses
-    it to decide which windows and indicators to rebuild, so both always agree.
-    """
-    return kind != "dividend" or normalization in {"adjusted", "total_return"}
 
 
 @dataclass(frozen=True)

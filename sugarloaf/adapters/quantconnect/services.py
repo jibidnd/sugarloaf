@@ -26,7 +26,6 @@ from sugarloaf.market.contracts import (
     Trigger,
     UniverseMembership,
     UniverseRequirement,
-    restates_history,
 )
 
 from .lean import LeanAPI
@@ -258,23 +257,30 @@ class QuantConnectDataServices(ProviderServices):
         events = super().apply(batch)
         events.extend(self.pending_events)
         self.pending_events.clear()
-        # A split or dividend changes what already accumulated prices mean. Drop
-        # the affected windows/indicators here; _sync_resources below rebuilds
-        # them from freshly adjusted history before queued new samples are admitted.
+        # Decide, for this vendor, which retained data a corporate action made
+        # unusable. Drop it here; _sync_resources below rebuilds it from history
+        # before queued new samples are admitted. Then tell the runtime which
+        # nodes were reading it, so their outputs are withdrawn and recomputed.
         for event in batch.events:
             life = event.payload
-            if not isinstance(life, LifecycleEvent) or life.kind not in {"split", "dividend"}:
+            if not isinstance(life, LifecycleEvent):
                 continue
+            rebuilt = set()
             for key in tuple(self.windows):
-                if self._basis_changed(key, life):
+                if self._rebuilds(key, life):
                     self.algorithm.subscription_manager.remove_consolidator(
                         self.symbols[key[1]], self.consolidators.pop(key)
                     )
                     del self.windows[key]
+                    rebuilt.add(key)
             for key in tuple(self.native_indicators):
                 # An indicator key ends with the resource key of its source bars.
-                if self._basis_changed(key[3], life):
+                if self._rebuilds(key[3], life):
                     del self.native_indicators[key]
+                    rebuilt.add(key[3])
+            reset = self._data_reset(life.instrument, rebuilt, life.effective_at)
+            if reset is not None:
+                events.append(reset)
         # Resource changes and silent prefill happen at this cutoff. Only after
         # that setup can pending completed observations feed the surviving state.
         self._sync_resources(batch.cutoff)
@@ -283,16 +289,31 @@ class QuantConnectDataServices(ProviderServices):
         return events
 
     @staticmethod
-    def _basis_changed(key, life) -> bool:
-        """Whether a lifecycle fact invalidates the prices held under a resource key.
+    def _rebuilds(key, life) -> bool:
+        """Whether a lifecycle fact makes LEAN data held under a resource key unusable.
 
         ``key`` is a ``resource_key`` tuple: position 1 is the instrument and
-        position 4 the normalization. Only that instrument's resources are
-        affected, and a dividend leaves raw and split-adjusted prices valid.
-        The runtime applies the same ``restates_history`` rule to Views, so a
-        window is rebuilt exactly when the Views computed from it are withdrawn.
+        position 4 the price normalization (None for quotes, which are as traded).
+
+        This rule describes QuantConnect backtests and research, the only modes
+        this adapter supports. It is deliberately here and not in the core:
+        another vendor's data may behave differently.
+
+        * Dividend: nothing is rebuilt, under any normalization. LEAN's adjusted
+          and total-return prices are adjusted with the whole factor file from
+          the first bar, so they are already continuous through the ex-date and
+          do not change on it. Raw and split-adjusted prices simply trade lower
+          by the dividend, which is a real price move, and the cash is credited
+          by LEAN. (Observed natively: an adjusted QQQ window was identical
+          before and after its ex-dividend date.)
+        * Split, adjusted normalizations: nothing is rebuilt, for the same
+          reason. The series is continuous through the split.
+        * Split, raw prices or quotes: rebuilt. Prices before and after the
+          split are on different per-share scales. Note the rebuilt history is
+          still as traded, so a window spanning the split mixes both scales;
+          the rebuild restarts indicators, it does not rescale old prices.
         """
-        return key[1] == life.instrument and restates_history(life.kind, key[4])
+        return key[1] == life.instrument and life.kind == "split" and key[4] in (None, "raw")
 
     def _admit_pending_data(self):
         """Admit completed native inputs after the batch's lifecycle reset."""

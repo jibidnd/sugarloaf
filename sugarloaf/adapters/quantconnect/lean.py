@@ -157,13 +157,13 @@ class LeanAPI:
         return self.lean.Universe.UNCHANGED
 
     def dispose_universe(self, universe):
-        # LEAN performs one final empty selection and preserves held/open-order members.
         """Dispose selection ownership while leaving held/open-order member retention to LEAN."""
+        # LEAN performs one final empty selection and preserves held/open-order members.
         universe.dispose()
 
     def collect_universe(self, algorithm, universe):
-        # Removing the manager entry early would remove these members from ActiveSecurities.
         """Remove a disposed universe manager entry only when selected/member sets are empty."""
+        # Removing the manager entry early would remove these members from ActiveSecurities.
         # Retained members may still back holdings or open orders after selection
         # has stopped. Removal waits for both native collections to become empty.
         if universe.selected or universe.members:

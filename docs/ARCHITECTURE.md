@@ -132,10 +132,12 @@ path and its execution assumptions.
 
 Change a signal in its node; add provider behavior in the adapter; change order
 semantics in the gateway/engine. Keep cross-component contracts explicit.
-A lifecycle event invalidates the graph outputs that depend on the affected
-instrument, and execution authority with them when the terminal target is among
-those outputs; the rest of the graph carries on. Native holdings adjustments
-remain the platform's responsibility.
+The adapter decides whether a corporate action made its retained data unusable,
+rebuilds it and reports a `DataReset`; the core holds no vendor rule. The runtime
+withdraws the outputs of the nodes that reset names, and any View naming an
+instrument whose unit changed (a split, a delisting), and execution authority
+with them when the terminal target is among those outputs. The rest of the graph
+carries on. Native holdings adjustments remain the platform's responsibility.
 
 Contexts cannot survive provider mutations or the batch that created them.
 Runtime, identity and intent state are not durably persisted; restart recovery is

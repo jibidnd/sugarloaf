@@ -6,7 +6,7 @@ from math import isfinite
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sugarloaf.core.errors import CapabilityError, ContractError, NotReady, SnapshotError
-from sugarloaf.core.events import Event, EventBatch, LifecycleEvent
+from sugarloaf.core.events import DataReset, Event, EventBatch, LifecycleEvent
 from sugarloaf.core.primitives import InstrumentId
 from sugarloaf.core.services import Context
 from sugarloaf.market.contracts import (
@@ -282,6 +282,31 @@ class ProviderServices:
         self._rebuild_owners()
         self._changed()
         return discovered
+
+    def _data_reset(self, instrument, keys, effective_at) -> Event | None:
+        """Describe rebuilt resources as a DataReset fact for the runtime.
+
+        Args:
+            instrument: Instrument whose data was rebuilt.
+            keys: ``resource_key`` identities of the rebuilt backing data.
+            effective_at: Aware time from which the rebuilt data applies.
+
+        Returns:
+            An event naming every node that declared those resources, or None
+            when no node did. A subclass appends it to what ``apply`` returns.
+
+        Deciding WHETHER to rebuild is the subclass's job, because it depends on
+        how that vendor's data behaves. This helper only answers "which nodes
+        were reading what I just rebuilt?" from the shared ownership map.
+        """
+        nodes = sorted({node for key in keys for node in self.owners.get(key, ())})
+        if not nodes:
+            return None
+        return Event(
+            "data_reset",
+            instrument,
+            payload=DataReset(instrument, tuple(nodes), effective_at),
+        )
 
     def context(self, batch: EventBatch | None = None, node_id: str = "") -> Context:
         """Bind lazy declaration-guarded reads to the current provider version.

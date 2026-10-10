@@ -11,7 +11,8 @@ from math import isfinite
 # Nodes depend on neutral contracts; adapters supply actual native indicator objects.
 from sugarloaf.core.errors import ContractError, NotReady
 from sugarloaf.core.node import NodeOutputs, OutputSpec
-from sugarloaf.core.primitives import Interval, Metadata
+from sugarloaf.core.primitives import InstrumentId, Interval, Metadata
+from sugarloaf.core.services import Context
 from sugarloaf.core.views import Score, ScoreView, return_target
 from sugarloaf.market.contracts import (
     BarsRequirement,
@@ -34,7 +35,7 @@ def check_horizon(horizon: Horizon) -> None:
         raise ContractError("Positive forecast horizon required")
 
 
-def horizon_end(ctx, instrument, horizon: Horizon):
+def horizon_end(ctx: Context, instrument: InstrumentId, horizon: Horizon):
     """Return when a forecast issued now, over this horizon, ends.
 
     Args:

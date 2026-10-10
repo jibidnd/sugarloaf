@@ -17,6 +17,7 @@ from collections import defaultdict
 from collections.abc import Callable, Iterable
 
 import numpy as np
+from numpy.typing import ArrayLike
 from scipy.stats import rankdata
 
 from sugarloaf.core.errors import ContractError
@@ -26,7 +27,7 @@ from sugarloaf.research.evaluation import EvaluationRow
 
 
 def block_bootstrap_interval(
-    values,
+    values: ArrayLike,
     *,
     block: int,
     seed: int,
@@ -165,7 +166,7 @@ def cross_sectional_ic(
         * ``breadth``: how many instruments it ranked;
         * ``mean_ic``: the average of ``ic``, or None when nothing was scored;
         * ``skipped``: cross-sections that were too small, had no variation in
-          the predictions or outcomes, or held two forecasts for one instrument.
+            the predictions or outcomes, or held two forecasts for one instrument.
 
     A cross-section is every forecast in a cohort sharing one exact target
     interval. Forecasts may come from different nodes, which is the usual

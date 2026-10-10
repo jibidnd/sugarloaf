@@ -79,8 +79,9 @@ admits provider batches without node decisions.
 1. Collect eligible retired universe sources.
 2. Apply neutral membership/lifecycle changes, rebuild owners and invalidate
    previous Contexts.
-3. Remove the affected instrument's consolidation/indicator state after a split,
-   or after a dividend when that state uses dividend-adjusted prices.
+3. After a split, remove that instrument's raw-price consolidation/indicator
+   state and return a `DataReset` naming the nodes that declared it (see
+   [corporate actions](#corporate-actions-and-data-resets)).
 4. Synchronize resources and warm new resources through the cutoff.
 5. Admit queued observations and update matching native indicators.
 6. Advance the provider version again after resource/data mutations, before node
@@ -175,11 +176,35 @@ owner/reference disappears, the source is disposed. Its manager entry is collect
 only after a later boundary and empty selected/member sets, preserving LEAN's
 held/open-order retention.
 
-A split rebuilds that instrument's data and indicator resources before reads. A
-dividend rebuilds only those using `adjusted` or `total_return` prices; raw and
-split-adjusted history is unaffected by a cash dividend.
-Symbol changes preserve identity; delistings mark instruments untradable. Core
-View invalidation and execution cancellation are specified separately.
+Symbol changes preserve identity; delistings mark instruments untradable.
+
+## Corporate actions and data resets
+
+Whether a corporate action makes retained prices unusable depends on the vendor,
+so each adapter owns that rule. An adapter that discards and rebuilds data returns
+`Event("data_reset", payload=DataReset(instrument, nodes, effective_at))` from
+`apply`; `ProviderServices._data_reset` builds it from the rebuilt resource keys.
+The [runtime](RUNTIME.md#viewstore-and-lifecycle) withdraws and re-evaluates the
+named nodes. An adapter that rebuilds nothing returns nothing.
+
+The QuantConnect rule, for backtests and QuantBook research:
+
+| Fact | `adjusted`, `split_adjusted`, `total_return` | `raw` bars, quotes |
+| --- | --- | --- |
+| Dividend | Nothing rebuilt | Nothing rebuilt |
+| Split | Nothing rebuilt | Windows and indicators rebuilt; `DataReset` reported |
+
+LEAN adjusts those series with the whole factor file from the first bar, so they
+are continuous through an ex-date or a split and do not change on it. A raw price
+that opens lower by a dividend is a real price move. Only a split puts raw prices
+on a different per-share scale. The rebuilt raw history is still as traded: a
+window spanning the split mixes both scales, so the rebuild restarts state but
+does not rescale old prices. A strategy that needs continuous prices should
+request an adjusted convention.
+
+Independently of any reset, the runtime withdraws Views that name a split
+instrument, under every convention. LEAN's own holdings adjustment remains native.
+This rule does not describe live trading, which is unsupported.
 
 ## Account, costs and execution
 
@@ -207,9 +232,10 @@ tags orders with intent identity, and obtains feedback from platform tickets.
 and native indicators, with no account/execution services. Install requirements,
 then call `prepare(start, end)` with aware times and a fresh provider. Preparation
 silently warms through start and retrieves typed split/dividend history. Replay
-admits neutral lifecycle facts at their effective boundaries; splits and dividends
-reset affected data and native indicator resources before post-action observations
-are admitted. Split warnings are not effective split facts. Future retrieved actions
+admits neutral lifecycle facts at their effective boundaries; a split resets
+raw-price data and native indicator resources before post-action observations
+are admitted, as [above](#corporate-actions-and-data-resets). Split warnings are
+not effective split facts. Future retrieved actions
 are not exposed before their boundary. This local causal contract does not establish
 native numerical parity or point-in-time adjustment-vintage correctness.
 

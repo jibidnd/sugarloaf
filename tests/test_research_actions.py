@@ -24,6 +24,11 @@ from sugarloaf.market.contracts import (
 )
 from sugarloaf.runtime import GraphRuntime
 
+# These replays read raw prices, the one convention the QuantConnect adapter
+# rebuilds on a split. Adjusted series are continuous through a split in LEAN,
+# so the adapter leaves those windows and indicators alone.
+MINUTE = BarsRequirement(Selection((A,)), timedelta(minutes=1), normalization="raw")
+
 
 class ActionsAPI(IndicatorAPI):
     def __init__(self, actions):
@@ -47,7 +52,7 @@ class ActionsAPI(IndicatorAPI):
 def replay(actions):
     api = ActionsAPI(actions)
     provider = QuantBookServices(algorithm(), {A: "A"}, api=api)
-    signal = Signal(BarsRequirement(Selection((A,)), timedelta(minutes=1)))
+    signal = Signal(MINUTE)
     runtime = GraphRuntime(compiled(signal), provider)
     end = NOW + timedelta(minutes=3)
     provider.prepare(NOW, end)
@@ -108,8 +113,7 @@ def test_split_rebuilds_native_indicator_without_replaying_old_price_basis():
     at = NOW + timedelta(minutes=2)
     api = ActionsAPI([NS(end_time=at, split_factor=0.5)])
     provider = QuantBookServices(algorithm(), {A: "A"}, api=api)
-    source = BarsRequirement(Selection((A,)), timedelta(minutes=1))
-    indicator = IndicatorRequirement(source, "ema", (("period", 2),), window=2)
+    indicator = IndicatorRequirement(MINUTE, "ema", (("period", 2),), window=2)
     provider.install("probe", ResourceUpdate((indicator,), ()))
     end = NOW + timedelta(minutes=3)
     provider.prepare(NOW, end)
@@ -133,13 +137,9 @@ def test_outcome_anchors_use_split_safe_conventions_without_mutating_inputs(
     api, provider, _, runtime, end = replay([])
     for batch in provider.history_batches(NOW, end):
         runtime.process(batch)
-    before = provider.context(node_id="signal").market.bars(
-        BarsRequirement(Selection((A,)), timedelta(minutes=1)), A
-    )
+    before = provider.context(node_id="signal").market.bars(MINUTE, A)
     # Use the general boundary's recorded normalization to verify the provider request.
     api.history_range = IndicatorAPI.history_range.__get__(api)
     result = provider.anchor_observation(A, end, convention, end)
     assert result.time == end and api.ranges[-1][2] == normalization
-    assert provider.context(node_id="signal").market.bars(
-        BarsRequirement(Selection((A,)), timedelta(minutes=1)), A
-    ) == before
+    assert provider.context(node_id="signal").market.bars(MINUTE, A) == before

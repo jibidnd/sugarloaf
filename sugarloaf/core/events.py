@@ -64,6 +64,37 @@ class LifecycleEvent:
 
 
 @dataclass(frozen=True)
+class DataReset:
+    """A provider's report that it discarded and rebuilt data some nodes had declared.
+
+    Attributes:
+        instrument: The instrument whose retained data was rebuilt.
+        nodes: IDs of the nodes that declared that data.
+        effective_at: Aware time from which the rebuilt data applies.
+
+    Only the provider knows whether a corporate action changed the meaning of
+    prices it already holds. That depends on the vendor and the price convention:
+    one vendor restates adjusted history on an ex-dividend date, another supplies
+    a series that was continuous all along. So the provider decides, rebuilds
+    what it must, and reports it with this fact. The runtime withdraws the named
+    nodes' outputs, and everything derived from them, and evaluates them again.
+
+    The core therefore holds no rule about dividends or price conventions. A
+    provider that rebuilt nothing reports nothing, and nothing is withdrawn.
+    """
+
+    instrument: InstrumentId
+    nodes: tuple[str, ...]
+    effective_at: datetime
+
+    def __post_init__(self):
+        aware(self.effective_at)
+        object.__setattr__(self, "nodes", tuple(self.nodes))
+        if not self.nodes:
+            raise ContractError("A data reset must name the nodes whose data was rebuilt")
+
+
+@dataclass(frozen=True)
 class Event:
     """A triggerable fact with optional matching filters and immutable payload.
 
@@ -124,4 +155,4 @@ class EventBatch:
             isinstance(event.payload, LifecycleEvent) and event.payload.effective_at > received
             for event in self.events
         ):
-            raise ContractError("Lifecycle event cannot precede its availability boundary")
+            raise ContractError("Lifecycle event cannot follow its availability boundary")

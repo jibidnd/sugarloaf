@@ -6,21 +6,22 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 
 from sugarloaf.core.errors import ContractError, NotReady, NumericalError
-from sugarloaf.core.events import EventBatch, LifecycleEvent
+from sugarloaf.core.events import DataReset, EventBatch, LifecycleEvent
 from sugarloaf.core.graph import CompiledGraph
 from sugarloaf.core.node import InputSpec, NodeInputs, NodeOutputs
 from sugarloaf.core.primitives import InstrumentId
 from sugarloaf.core.views import PositionView, View
-from sugarloaf.market.contracts import (
-    BarsRequirement,
-    QuotesRequirement,
-    ResourceUpdate,
-    UniverseRequirement,
-    restates_history,
-)
+from sugarloaf.market.contracts import ResourceUpdate, UniverseRequirement
 
-# Ledger marker for an identity that a lifecycle event invalidated. It is a
-# distinct object so it can never compare equal to a real View.
+# Lifecycle kinds that change what one unit of an instrument is, or whether it
+# can be held at all. This is true of the instrument itself, whichever vendor
+# supplies the data: after a 10-for-1 split "hold 10 shares" is a tenth of the
+# position it described, and a delisted instrument cannot be held. A dividend or
+# a ticker change alters neither, so those kinds are not listed.
+_UNIT_CHANGING = frozenset({"split", "delisting", "expiry", "exercise", "assignment"})
+
+# Ledger marker for an identity withdrawn by a data reset or a lifecycle event.
+# It is a distinct object so it can never compare equal to a real View.
 _RETIRED = object()
 
 
@@ -118,8 +119,9 @@ class ViewStore:
     def retire(self, node_id: str) -> None:
         """Withdraw a node's outputs and forbid reuse of their identities.
 
-        Used when a lifecycle event changes what those Views meant. A node that
-        cached an old View object cannot hand it back later as if still valid.
+        Used when a data reset or a lifecycle event means those Views no longer
+        hold. A node that cached an old View object cannot hand it back later as
+        if still valid.
         """
         for views in self.get(node_id).by_port.values():
             for view in views:
@@ -127,7 +129,7 @@ class ViewStore:
         self.withdraw(node_id)
 
     def retired(self, identity: str) -> bool:
-        """Whether a lifecycle event retired this identity."""
+        """Whether this identity was retired by ``retire``."""
         return self._identities.get(identity) is _RETIRED
 
     def withdraw(self, node_id: str) -> bool:
@@ -183,10 +185,11 @@ class GraphRuntime:
         self.batch: EventBatch | None = None
         self._pending = {}
         self._processing = False
-        # (node ID, instrument) -> time of the latest lifecycle event that changed
-        # that node's basis for that instrument. A View from that node about that
-        # instrument must be based on information at or after this time.
-        self._basis_changes: dict[tuple[str, InstrumentId], datetime] = {}
+        # (node ID, instrument) -> time of the latest data reset or unit-changing
+        # lifecycle event that applies to that node and instrument. A View from
+        # that node about that instrument must be based on information at or
+        # after this time. See _withdraw_invalidated for what sets it.
+        self._valid_from: dict[tuple[str, InstrumentId], datetime] = {}
         for node_id in graph.topological_order:
             node = graph.nodes[node_id]
             services.install(
@@ -232,8 +235,8 @@ class GraphRuntime:
 
         Exact replay of the last completed arrival is a no-op. Graph time never
         rewinds. Resource replacements become effective before admission; expired
-        Views, and the Views a lifecycle event affects, are withdrawn before
-        evaluation. A lifecycle event touches only the nodes it concerns.
+        Views, and the Views a data reset or lifecycle event invalidates, are
+        withdrawn before evaluation. Only the nodes concerned are touched.
 
         Args:
             batch: Ordered arrival with separate observation and receipt boundaries.
@@ -306,10 +309,11 @@ class GraphRuntime:
                     if owns_changed_universe or reads_changed_universe:
                         dirty.add(node_id)
                         break
-            # Lifecycle events may change adjustment bases or holdings without bars.
-            # Withdraw the outputs they affect before anything reaches execution,
+            # A provider may have rebuilt data, and a lifecycle event may have
+            # changed what a unit of an instrument is, without any new bar.
+            # Withdraw the outputs this affects before anything reaches execution,
             # and re-evaluate those nodes even if their usual trigger did not fire.
-            dirty.update(self._invalidate_lifecycle(batch))
+            dirty.update(self._withdraw_invalidated(batch))
             # Topological order makes each consumer see its producers' replacements
             # from this batch. A node is evaluated at most once, even with many triggers.
             for node_id in self.graph.topological_order:
@@ -368,65 +372,54 @@ class GraphRuntime:
                 ctx.close()
             self._processing = False
 
-    def _reads_changed_basis(self, node_id: str, life: LifecycleEvent) -> bool:
-        """Whether a node declares price data whose basis this lifecycle fact changes."""
-        for requirement in self.services.resources[node_id].requirements:
-            # An indicator is computed from its source bars, so judge it by them.
-            source = getattr(requirement, "source", requirement)
-            if not isinstance(source, (BarsRequirement, QuotesRequirement)):
-                continue
-            selection = source.selection
-            # A named universe might contain the instrument. The runtime cannot
-            # resolve membership itself, so it conservatively assumes it does.
-            if selection.universe is None and life.instrument not in selection.instruments:
-                continue
-            if restates_history(life.kind, getattr(source, "normalization", None)):
-                return True
-        return False
+    def _withdraw_invalidated(self, batch: EventBatch) -> set[str]:
+        """Withdraw outputs that are no longer valid and return the affected nodes.
 
-    def _invalidate_lifecycle(self, batch: EventBatch) -> set[str]:
-        """Withdraw the outputs a lifecycle event affects and return those nodes.
+        Two things invalidate an output, and nothing else does:
 
-        Only the affected part of the graph is touched. A dividend on one stock
-        of a large universe must not withdraw every other forecast and cancel
-        every order, which is what invalidating the whole graph would do.
+        * The provider reports a ``DataReset``: it rebuilt data those nodes had
+          declared. Whether a corporate action required that is the provider's
+          decision; the runtime does not reason about dividends or price
+          conventions. A provider that rebuilt nothing reports nothing.
+        * A lifecycle event changed what a unit of the instrument is (a split, a
+          delisting, an option expiry and so on). Every active View that names the
+          instrument is withdrawn, whatever data its node read, because a share
+          count or a forecast about it no longer means what it did.
 
-        A node is affected when either:
-
-        * it declares price data for the instrument whose basis the event changes
-          (see ``restates_history``; a dividend leaves raw prices alone), or
-        * for any event other than a dividend, one of its active Views names the
-          instrument. A split or delisting changes what a quantity or a forecast
-          about that instrument means, whatever data the node read.
-
-        Everything downstream of an affected node is affected too, because its
-        output was derived from Views that are no longer valid.
+        Only that part of the graph is touched. A dividend on one stock of a
+        large universe must not withdraw every other forecast and cancel every
+        order. Everything downstream of an affected node is affected too, because
+        its output was derived from Views that are no longer valid.
         """
         affected: set[str] = set()
         for event in batch.events:
-            life = event.payload
-            if not isinstance(life, LifecycleEvent):
+            fact = event.payload
+            if isinstance(fact, DataReset):
+                # Ignore names this graph does not contain: a provider can serve
+                # more than one consumer.
+                nodes = self._descendants(set(fact.nodes) & set(self.graph.nodes))
+                # Only the rebuilt nodes are barred from publishing older claims.
+                bound = nodes
+            elif isinstance(fact, LifecycleEvent) and fact.kind in _UNIT_CHANGING:
+                nodes = self._descendants(
+                    {
+                        node
+                        for node in self.graph.nodes
+                        for views in self.store.get(node).by_port.values()
+                        if any(fact.instrument in _subjects(view) for view in views)
+                    }
+                )
+                # Every node is barred: after a split no node may publish a claim
+                # about the instrument that rests on information from before it,
+                # whether or not it had an active View to withdraw at this moment.
+                bound = self.graph.nodes
+            else:
                 continue
-            nodes = {n for n in self.graph.nodes if self._reads_changed_basis(n, life)}
-            if life.kind != "dividend":
-                nodes |= {
-                    node
-                    for node in self.graph.nodes
-                    for views in self.store.get(node).by_port.values()
-                    if any(life.instrument in _subjects(view) for view in views)
-                }
-            nodes = self._descendants(nodes)
-            # Record from when each node's Views about this instrument must date.
-            # A dividend binds only the affected nodes. Any other event binds every
-            # node: after a split, no node may publish a claim about the instrument
-            # that rests on information from before it, whether or not it had an
-            # active View to withdraw at this moment.
-            bound = nodes if life.kind == "dividend" else self.graph.nodes
             for node in bound:
-                key = (node, life.instrument)
-                # A late older action cannot lower the last known basis boundary.
-                self._basis_changes[key] = max(
-                    life.effective_at, self._basis_changes.get(key, life.effective_at)
+                key = (node, fact.instrument)
+                # A late older fact cannot lower the last known boundary.
+                self._valid_from[key] = max(
+                    fact.effective_at, self._valid_from.get(key, fact.effective_at)
                 )
             affected |= nodes
         for node in affected:
@@ -454,11 +447,13 @@ class GraphRuntime:
                 if self.store.retired(view.metadata.view_id):
                     raise NotReady("Lifecycle-invalidated View identity cannot be reused")
                 # A fresh identity is not enough: the View must also be based on
-                # information from after this node's basis changed for the instrument.
+                # information from after the reset or lifecycle event. In practice
+                # a node re-evaluated in the event's own batch is refused here and
+                # publishes again on its next bar, once it has seen newer data.
                 if any(
-                    view.metadata.cutoff < self._basis_changes[node_id, instrument]
+                    view.metadata.cutoff < self._valid_from[node_id, instrument]
                     for instrument in _subjects(view)
-                    if (node_id, instrument) in self._basis_changes
+                    if (node_id, instrument) in self._valid_from
                 ):
                     raise NotReady("View information cutoff predates instrument lifecycle change")
                 if (

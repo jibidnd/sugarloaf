@@ -89,13 +89,16 @@ What these runs found, beyond confirming the changes:
   on all five days.
 - **Adjusted prices in a backtest are already fully adjusted.** The adjusted QQQ
   window was identical before and after its ex-dividend date: LEAN applies the
-  whole factor file, including later dividends, from the start. Rebuilding an
-  adjusted window on a dividend is therefore harmless but changes nothing in a
-  backtest. It would matter with live data, which this does not test.
+  whole factor file, including later dividends, from the start. The rule these
+  runs exercised rebuilt that window and withdrew its reader anyway. It has since
+  moved into the QuantConnect adapter, which now rebuilds nothing on a dividend
+  (see [corporate actions](technical/ADAPTERS.md#corporate-actions-and-data-resets)
+  and the parity section below).
 - **A node re-evaluated by a lifecycle event emits nothing until its next bar.**
   The event arrives before the open while the graph clock is still at the prior
   close, so the new View's information cutoff predates the event and is rejected.
   This is the existing conservative rule, now applied to the affected node only.
+  Since the adapter change it follows a split, not a dividend.
 - **Small accounts still make single-lot corrections.** With USD100,000 in SPY,
   one share is 0.6% of NAV, more than the 0.25% band, and the session runs made
   four one-share trades in two weeks as the exact target crossed whole shares.
@@ -114,13 +117,14 @@ in the engine after the final session run.
 Five simple rules were each run twice in QC Cloud on 9 October 2026: once as a
 native `QCAlgorithm` with no Sugarloaf code, once as a Sugarloaf graph. All five
 pairs produced identical orders (fill time, symbol, quantity and fill price) and
-identical ending equity.
+identical ending equity. The counts below are from the rerun after corporate-
+action handling moved into the adapter (working tree on `4a2907d`).
 
 | Rule | Orders |
 | --- | ---: |
 | Buy and hold | 1 |
 | Three assets rebalanced to fixed weights at 10:00, with a drift band | 15 |
-| Daily close above SMA(5): long, else flat (library `SMATrend`) | 12 |
+| Daily close above SMA(5): long, else flat (library `SMATrend`), across two SPY ex-dividend days | 23 |
 | Five-minute EMA(5) above EMA(20): long, else flat (library `EMASpread`) | 40 |
 | Buy at 10:00, sell at 15:30 every session | 18 |
 
@@ -141,9 +145,14 @@ algorithm. Each is intended behaviour that a strategy author needs to know:
   completed after the start, never from history used to prepare an indicator.
 - **A daily-close signal trades at the next session's first minute bar,** because
   the market is closed when the daily bar completes.
-- **An adjusted-price signal is withdrawn on its ex-dividend day** until its next
-  bar. The daily pair's dates avoid SPY's ex-dividend days for that reason, so this
-  difference is known but not exercised by the pairs.
+- **A dividend does not disturb a signal.** The daily pair runs from 3 September
+  2024 to 17 January 2025, across SPY's ex-dividend days of 20 September and
+  20 December. The 19 September close crosses above the average, so a buy is due
+  at the ex-date's open, and both sides make it. Run against the previous commit
+  (`4a2907d`), the same pair failed: Sugarloaf withdrew the adjusted-price signal
+  on the ex-date and bought one session late, on 23 September. The QuantConnect
+  adapter now rebuilds nothing on a dividend, so nothing is withdrawn. A split on
+  raw prices is not exercised by the pairs.
 
 The pairs do not cover partial fills, cancellations, shorting, universes or
 anything outside regular-session market orders.
@@ -155,7 +164,8 @@ anything outside regular-session market orders.
 - Native indicators: QC SMA, EMA, RSI and Donchian. No memory formula fallback or
   cross-provider parity promise. Older raw data cannot rewind native indicators.
 - QuantBook: explicit instruments, bars and native indicators; split/dividend
-  facts replay at effective boundaries and reset affected resources before reads.
+  facts replay at effective boundaries, and a split resets raw-price resources
+  before reads.
   `price_return` outcome anchors request split-adjusted history; total-return
   anchors request total-return history. Historical receipt is assumed equal to
   observation end. Exact missing outcome anchors stay unavailable. Native numerical

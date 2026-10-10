@@ -12,7 +12,7 @@ from sugarloaf.adapters.quantconnect import QuantConnectHost, QuantConnectServic
 from sugarloaf.adapters.quantconnect.host import QuantConnectGateway
 from sugarloaf.adapters.quantconnect.lean import LeanAPI
 from sugarloaf.core.errors import CapabilityError, ContractError, NotReady, SnapshotError
-from sugarloaf.core.events import Event, EventBatch, LifecycleEvent
+from sugarloaf.core.events import DataReset, Event, EventBatch, LifecycleEvent
 from sugarloaf.core.graph import Graph
 from sugarloaf.core.node import NodeOutputs, OutputSpec
 from sugarloaf.core.primitives import InstrumentId, Metadata
@@ -316,8 +316,9 @@ def test_qc_shared_mixed_resources_lazy_snapshot_and_split_rewarm():
     api, platform = API(), algorithm()
     services = QuantConnectServices(platform, api=api)
     services.register(A, "A")
-    minute = BarsRequirement(Selection((A,)), timedelta(minutes=1), 2)
-    hour = BarsRequirement(Selection((A,)), timedelta(hours=1), 2)
+    # Raw prices: the one convention this adapter rebuilds on a split.
+    minute = BarsRequirement(Selection((A,)), timedelta(minutes=1), 2, normalization="raw")
+    hour = BarsRequirement(Selection((A,)), timedelta(hours=1), 2, normalization="raw")
     for node in ("n", "m"):
         services.install(node, ResourceUpdate((minute, hour), ()))
     services.apply(EventBatch(0, NOW))
@@ -331,12 +332,17 @@ def test_qc_shared_mixed_resources_lazy_snapshot_and_split_rewarm():
     with pytest.raises(SnapshotError):
         reader.bars(minute, A)
     api.price = 50
-    services.apply(
+    discovered = services.apply(
         EventBatch(
             1, NOW, (Event("lifecycle", A, payload=LifecycleEvent("split", A, NOW, factor=0.5)),)
         )
     )
     assert api.history_reads == 4
+    # Both windows were rebuilt, and the adapter reports once, naming every node
+    # that had declared them, so the runtime can withdraw what they published.
+    assert [event.payload for event in discovered if event.kind == "data_reset"] == [
+        DataReset(A, ("m", "n"), NOW)
+    ]
     assert all(b.close == 50 for b in services.context(node_id="n").market.bars(minute, A))
     renamed = Symbol("stable:A", "RENAMED")
     assert services.bind(renamed) == A
@@ -964,7 +970,7 @@ def test_qc_borrow_follows_the_platform_shortable_contract(available):
     assert services.context().portfolio.borrow(A, 2).supported == (available in (None, 10))
 
 
-def test_dividend_rebuilds_only_dividend_adjusted_resources():
+def test_only_a_split_on_raw_prices_rebuilds_and_reports_a_data_reset():
     b = InstrumentId("USA:B")
     api, platform = API(), algorithm()
     services = QuantConnectServices(platform, api=api)
@@ -976,15 +982,22 @@ def test_dividend_rebuilds_only_dividend_adjusted_resources():
     services.apply(EventBatch(0, NOW))
     assert api.history_reads == 2  # One warmup history request per window.
 
-    def dividend(sequence, instrument):
-        event = LifecycleEvent("dividend", instrument, NOW, amount=1.0)
-        return EventBatch(sequence, NOW, (Event("lifecycle", instrument, payload=event),))
+    def resets(sequence, kind, instrument, **fields):
+        """Apply one corporate action and return the data resets the adapter reports."""
+        event = LifecycleEvent(kind, instrument, NOW, **fields)
+        batch = EventBatch(sequence, NOW, (Event("lifecycle", instrument, payload=event),))
+        return [e.payload for e in services.apply(batch) if e.kind == "data_reset"]
 
-    # Raw prices on either side of an ex-date are on one basis: nothing is rebuilt.
-    services.apply(dividend(1, A))
+    # A dividend rebuilds nothing under either convention. LEAN's adjusted series
+    # is continuous through the ex-date from its first bar, and a raw price that
+    # opens lower by the dividend is a real price move.
+    assert resets(1, "dividend", A, amount=1.0) == []
+    assert resets(2, "dividend", b, amount=1.0) == []
+    # A split leaves the adjusted series continuous as well.
+    assert resets(3, "split", b, factor=0.5) == []
     assert api.history_reads == 2
-    # Dividend-adjusted history is restated, so that window is re-read.
-    services.apply(dividend(2, b))
+    # Only raw prices change scale on a split: that window is re-read and reported.
+    assert resets(4, "split", A, factor=0.5) == [DataReset(A, ("n",), NOW)]
     assert api.history_reads == 3
 
 
