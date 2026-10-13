@@ -19,7 +19,11 @@ NOW = datetime(2024, 1, 2, 15, tzinfo=timezone.utc)
 A, B = InstrumentId("A"), InstrumentId("B")
 
 
-def setup(holdings=None, cash=10000, nav=10000):
+# Tests of order expiry opt in to a cancel timer; the policy has none by default.
+FIVE_MINUTES = ExecutionPolicy(lifetime=timedelta(minutes=5))
+
+
+def setup(holdings=None, cash=10000, nav=10000, policy=None):
     account = AccountSnapshot(holdings or {}, nav, {"USD": cash}, {A: 100, B: 100})
     calendar = {
         i: {"regular": ((NOW - timedelta(hours=1), NOW + timedelta(hours=5)),)} for i in (A, B)
@@ -27,7 +31,7 @@ def setup(holdings=None, cash=10000, nav=10000):
     services = MemoryServices((Instrument(A, "A"), Instrument(B, "B")), account, calendars=calendar)
     services.apply(EventBatch(1, NOW))
     gateway = MemoryGateway(services)
-    engine = ExecutionEngine(gateway)
+    engine = ExecutionEngine(gateway, policy)
     gateway.on_update = engine.on_order_update
     return services, gateway, engine
 
@@ -94,7 +98,7 @@ def test_unknown_reserved_order_counts_as_possible_exposure():
 
 
 def test_expired_order_waits_for_cancel_and_expired_view_holds():
-    services, gateway, engine = setup()
+    services, gateway, engine = setup(policy=FIVE_MINUTES)
     engine.accept(target(1, {A: 30}))
     services.apply(EventBatch(2, NOW + timedelta(minutes=6)))
     engine.reconcile()
@@ -262,7 +266,7 @@ def test_positive_minimum_net_does_not_deadlock_entry_from_cash():
 
 @pytest.mark.parametrize("reason", ["expiry", "supersession", "withdrawal"])
 def test_failed_cancellation_retries_without_releasing_pending_exposure(reason):
-    services, gateway, engine = setup()
+    services, gateway, engine = setup(policy=FIVE_MINUTES)
     engine.accept(target(1, {A: 30}))
     original_cancel = gateway.cancel
     attempts = []
@@ -445,3 +449,152 @@ def test_execution_releases_gateway_snapshots_after_every_reconciliation_route(r
     for ctx in snapshots:
         with pytest.raises(SnapshotError, match="released"):
             ctx.check()
+
+
+def test_policy_names_one_of_three_order_types_and_has_no_cancel_timer_by_default():
+    for order_type in ("market", "market_on_open", "market_on_close"):
+        assert ExecutionPolicy(order_type=order_type).lifetime is None
+    explicit = ExecutionPolicy(order_type="market_on_close", lifetime=timedelta(hours=7))
+    assert explicit.lifetime == timedelta(hours=7)
+    with pytest.raises(ContractError, match="Unknown order type"):
+        ExecutionPolicy(order_type="limit")
+    assert ExecutionPolicy().time_in_force == "gtc"
+    assert ExecutionPolicy(time_in_force="day").time_in_force == "day"
+    with pytest.raises(ContractError, match="Unknown time in force"):
+        ExecutionPolicy(time_in_force="fok")
+    with pytest.raises(ContractError, match="positive"):
+        ExecutionPolicy(lifetime=timedelta(0))
+
+
+def test_an_order_the_platform_holds_overnight_is_not_cancelled_by_a_later_reconciliation():
+    # Seen natively: daily-bar orders sent at the close wait for the next open, and
+    # a corporate-action batch at midnight reconciles in between. A five-minute
+    # default lifetime cancelled every one of them.
+    services, gateway, engine = setup()
+    held = PositionView(
+        {A: 5}, "quantity", "account", Metadata("t", "terminal", NOW, NOW + timedelta(days=2))
+    )
+    engine.accept(held)
+    services.apply(EventBatch(2, NOW + timedelta(hours=8)))
+    engine.accept(held)
+    assert gateway.cancel_requests == set()
+    assert len(gateway.orders) == 1
+
+
+def test_intent_carries_the_policy_order_type_and_lifetime_to_the_gateway():
+    services, gateway, _ = setup()
+    engine = ExecutionEngine(gateway, ExecutionPolicy(order_type="market_on_close"))
+    gateway.on_update = engine.on_order_update
+    engine.accept(target(1, {A: 5}))
+    (intent,) = gateway.intents.values()
+    assert intent.order_type == "market_on_close"
+    # No policy lifetime: bounded by the oldest a target may get.
+    assert intent.expires_at == NOW + engine.policy.max_target_age
+
+
+def test_an_order_decided_outside_the_session_is_sent_and_left_to_the_platform():
+    # A decision on the daily bar arrives at the close. Whether the order then
+    # waits for the next open, fills at the close or is refused is the platform's
+    # rule, so the engine sends it instead of dropping it.
+    services, gateway, engine = setup()
+    services.apply(EventBatch(2, NOW + timedelta(hours=6)))
+    assert not services.context().instruments.is_open(A, NOW + timedelta(hours=6), "regular")
+    late = PositionView(
+        {A: 5},
+        "quantity",
+        "account",
+        Metadata("late", "terminal", NOW + timedelta(hours=6), NOW + timedelta(days=1)),
+    )
+    engine.accept(late)
+    assert [order.quantity for order in gateway.orders.values()] == [5]
+    assert not [d for d in engine.diagnostics if d["code"] == "RISK_REJECTED"]
+
+
+def test_a_platform_refusal_is_a_rejected_intent_that_reserves_nothing_and_is_not_retried():
+    from sugarloaf.core.errors import OrderRefused
+
+    services, gateway, engine = setup()
+    attempts = []
+
+    def refuse(intent):
+        attempts.append(intent.instrument)
+        raise OrderRefused("too late for the closing auction")
+
+    gateway.submit = refuse
+    first = target(1, {A: 5, B: 5})
+    engine.accept(first)  # Does not raise: the outcome is known.
+    # One refusal does not stop the other instruments of the target.
+    assert attempts == [A, B]
+    assert {entry.status for entry in engine.state.intents.values()} == {"rejected"}
+    refusals = [d for d in engine.diagnostics if d["code"] == "ORDER_REFUSED"]
+    assert [d["instrument"] for d in refusals] == ["A", "B"]
+    assert "too late" in refusals[0]["reason"]
+    engine.accept(first)
+    assert attempts == [A, B]  # The same target does not ask again.
+    engine.accept(target(2, {A: 5}))
+    assert attempts == [A, B, A]  # A new target does.
+
+
+def test_an_older_order_filled_while_another_is_being_sent_is_not_counted_twice():
+    # Seen natively on daily bars: sending one order made the platform fill the
+    # orders already waiting. Their fills were in holdings at the next broker read
+    # while their feedback was still queued, so each was also counted as pending
+    # and the engine sent an order to reverse it.
+    services, gateway, engine = setup()
+    services.set_account(replace(services.account, prices={B: 100}))
+    held = target(1, {A: 5, B: 10})
+    engine.accept(held)  # A has no mark yet, so only B's order goes out and waits.
+    assert [(o.instrument, o.quantity) for o in gateway.orders.values()] == [(B, 10)]
+    send = gateway.submit
+
+    def send_then_fill_the_waiting_order(intent):
+        order_id = send(intent)
+        gateway.fill("1", 10)  # The platform fills B before the call for A returns.
+        return order_id
+
+    gateway.submit = send_then_fill_the_waiting_order
+    services.set_account(replace(services.account, prices={A: 100, B: 100}))
+    engine.reconcile()  # A is sent first (smaller gap); B is looked at after its fill.
+    assert [(o.instrument, o.quantity) for o in gateway.orders.values()] == [(B, 10), (A, 5)]
+    assert services.account.holdings[B] == 10
+    assert engine.state.intents["t1:intent:1"].status == "filled"
+
+
+def test_a_split_keeps_a_weight_target_and_sizes_only_that_instruments_waiting_order_again():
+    from sugarloaf.core.events import Event, LifecycleEvent
+    from sugarloaf.core.graph import Graph
+    from sugarloaf.core.node import NodeOutputs, OutputSpec
+    from sugarloaf.execution.session import TradingSession
+    from sugarloaf.market.contracts import Trigger
+
+    class Weights:
+        inputs = {}
+        outputs = {"positions": OutputSpec((PositionView,))}
+        requirements = ()
+        triggers = (Trigger("data"),)
+
+        def evaluate(self, inputs, ctx):
+            end = ctx.now + timedelta(days=2)
+            meta = Metadata(f"w:{ctx.snapshot_id}", ctx.node_id, ctx.now, end)
+            weights = PositionView({A: 0.1, B: 0.1}, "weight", "account", meta)
+            return NodeOutputs({"positions": (weights,)})
+
+    services, gateway, engine = setup()
+    graph = Graph().add_node("w", Weights()).set_output("w", "positions").compile()
+    session = TradingSession(graph, services, engine)
+    session.process(EventBatch(2, NOW, (Event("data"),)))
+    assert [(o.instrument, o.quantity) for o in gateway.orders.values()] == [(A, 10), (B, 10)]
+    target_id = engine.state.target.metadata.view_id
+    # A splits while both orders wait. "10% of NAV" still stands, so the target is
+    # kept; the order for A was counted in old shares and is cancelled. B's is not.
+    at = NOW + timedelta(seconds=1)
+    split = Event("lifecycle", A, payload=LifecycleEvent("split", A, at, factor=0.5))
+    session.process(EventBatch(3, at, (split,)))
+    assert engine.state.target.metadata.view_id == target_id
+    assert gateway.cancel_requests == {"1"}
+    assert len(gateway.orders) == 2  # No replacement until the cancellation is confirmed.
+    gateway.confirm_cancel("1")
+    engine.reconcile()
+    assert [(o.instrument, o.quantity, o.status) for o in gateway.orders.values()] == [
+        (A, 10, "canceled"), (B, 10, "open"), (A, 10, "open"),
+    ]

@@ -46,6 +46,10 @@ def start(algorithm, deployment):
         getattr(BrokerageName, env.brokerage), getattr(AccountType, env.account_type)
     )
     algorithm.set_benchmark(env.benchmark)
+    # A native daily bar ends at its session's close and arrives then, not at the
+    # following midnight. This is LEAN's default; it is stated because the graph
+    # clock and every daily decision time depend on it.
+    algorithm.settings.daily_precise_end_time = True
     # Call graph_factory once for this host: nodes and their mutable history must
     # be fresh for every run. The host joins the graph, services and execution.
     host = QuantConnectHost(
@@ -87,6 +91,17 @@ def finish(algorithm, deployment, host):
     # Give the strategy graph access and a neutral record sink, not the QC host.
     # The callback can inspect its nodes without choosing a platform log API.
     context = ReportContext(host.runtime, record)
+    # QC cuts a log entry at about 8,000 characters, and a universe's member list
+    # alone can exceed that. The summary carries each universe's size; the members
+    # go out as separate records, a hundred to a record.
+    memberships = {}
+    for name, membership in host.services.memberships.items():
+        members = [instrument.value for instrument in membership.members]
+        memberships[name] = {"cutoff": membership.cutoff, "ready": membership.ready,
+                             "count": len(members)}
+        for first in range(0, len(members), 100):
+            record("SUGARLOAF_MEMBERS", {"universe": name, "first": first,
+                                         "members": members[first:first + 100]})
     # The optional callback emits individual records while this dictionary is
     # built; its return value becomes the strategy summary in the final record.
     # Diagnostic tails keep that generic summary bounded.
@@ -99,7 +114,7 @@ def finish(algorithm, deployment, host):
             "execution_diagnostic_count": host.execution.diagnostic_count,
             "runtime_diagnostics": list(host.runtime.diagnostics)[-20:],
             "execution_diagnostics": list(host.execution.diagnostics)[-20:],
-            "memberships": host.services.memberships,
+            "memberships": memberships,
             "strategy": deployment.report(context) if deployment.report else {},
             "note": "Orders, fills and performance statistics are in the platform report.",
         },

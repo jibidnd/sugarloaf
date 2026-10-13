@@ -90,10 +90,15 @@ price conventions or any vendor:
   discarded and rebuilt data those nodes had declared. Whether a corporate
   action requires that depends on the vendor's data, so the adapter decides and
   the runtime only reacts. A provider that rebuilt nothing reports nothing.
-- **A lifecycle fact changes what a unit of the instrument is:** `split`,
-  `delisting`, `expiry`, `exercise` or `assignment`. Every node with an active
-  View naming the instrument (as a target subject or a position) is affected,
-  whatever data it read. This is true of the instrument, not of a vendor.
+- **A lifecycle fact ends the instrument or changes what one unit of it is,**
+  whatever data a node read. This is true of the instrument, not of a vendor.
+  - `delisting`, `expiry`, `exercise` or `assignment`: every node with an active
+    View naming the instrument (as a target subject or a position) is affected.
+  - `split`: only nodes with a View stated in units of the instrument are
+    affected. That is a position in `quantity` units, or a claim about anything
+    other than a return (a price level, a volume). "Hold 10 shares" is a
+    different position after a 10-for-1 split; "hold 2% of NAV", a ranking and
+    "expect a 1% return" are not, and they stay.
 
 A `dividend` or `symbol_change` fact alone invalidates nothing. It is still
 delivered as an event, so a node may trigger on it.
@@ -105,7 +110,8 @@ forecasts or cancel every order.
 
 A new View concerning the instrument must have an information cutoff at or after
 the fact's effective time. After a `DataReset` that holds for the named nodes and
-their descendants; after a unit-changing fact, for every node. Even a late older
+their descendants; after a lifecycle fact, for every node, and after a split only
+for Views stated in units of the instrument. Even a late older
 fact cannot lower that watermark. A node re-evaluated in the fact's own batch
 has usually seen no newer data, so it publishes again on its next bar.
 Broker holdings adjustments remain native. The runtime neither transforms old

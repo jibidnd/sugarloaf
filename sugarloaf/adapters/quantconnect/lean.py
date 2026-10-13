@@ -7,7 +7,37 @@ Tests inject an API object implementing these operations, not a fake core graph.
 from datetime import UTC, datetime, timedelta
 
 from sugarloaf.core.errors import CapabilityError
-from sugarloaf.market.contracts import BarsRequirement, LiquidityUniverse
+from sugarloaf.market.contracts import BarsRequirement, LiquidityUniverse, QuotesRequirement
+
+# The bar periods LEAN delivers natively for US equities at the resolutions this
+# adapter uses. A subscription is described by its period, a neutral timedelta.
+MINUTE, HOUR, DAY = timedelta(minutes=1), timedelta(hours=1), timedelta(days=1)
+# Order types the gateway can translate. LEAN decides when each may be sent and
+# how it fills; this adapter only chooses the matching native call.
+ORDER_TYPES = ("market", "market_on_open", "market_on_close")
+# Neutral time in force -> member of LEAN's TimeInForce.
+TIMES_IN_FORCE = {"day": "DAY", "gtc": "GOOD_TIL_CANCELED"}
+
+
+def native_period(req) -> timedelta:
+    """Period of the coarsest native feed that serves one requirement directly.
+
+    A requirement asks for bars or quotes at some interval. LEAN delivers minute,
+    hour and daily trade bars, and anything coarser can be consolidated from a
+    finer feed but not the reverse. So the coarsest usable feed is the largest of
+    those three periods that divides the interval:
+
+    * 1 day -> daily; 1, 2, 3 hours -> hourly; 5 minutes, 90 minutes -> minute.
+    * Quotes -> minute: LEAN has no hourly or daily quote bars for equities.
+    * An extended session -> minute: native hourly and daily bars cover the
+      regular session only.
+    """
+    if isinstance(req, QuotesRequirement) or req.session != "regular":
+        return MINUTE
+    for period in (DAY, HOUR):
+        if req.interval % period == timedelta(0):
+            return period
+    return MINUTE
 
 
 class LeanAPI:
@@ -21,39 +51,85 @@ class LeanAPI:
         self.lean = lean
 
     def setup(self, algorithm, slippage, leverage):
-        """Install a native security initializer with proportional slippage and leverage."""
+        """Install a native security initializer: slippage, leverage and a starting price."""
         # Apply models when native securities are initialized, including those
         # admitted later by a dynamic universe, not only the initial tickers.
         def initialize_security(security):
             security.set_slippage_model(self.lean.ConstantSlippageModel(slippage))
             security.set_leverage(leverage)
+            # A new security has no price until its first bar arrives, and LEAN
+            # refuses an order for it. On a daily feed that is the whole first
+            # day (seen natively: members selected in the morning could not be
+            # valued at that day's close). Give it its last known price, which is
+            # history up to now and not a later value.
+            for data in algorithm.get_last_known_prices(security.symbol):
+                security.set_market_price(data)
 
         algorithm.add_security_initializer(initialize_security)
 
-    def subscribe(self, algorithm, ticker, req):
-        """Create a minute equity feed with declared session, normalization, and fill-forward."""
+    def resolution(self, period):
+        """Translate a native feed period to LEAN's Resolution member."""
+        try:
+            name = {MINUTE: "MINUTE", HOUR: "HOUR", DAY: "DAILY"}[period]
+        except KeyError as error:
+            raise CapabilityError("Native feeds are minute, hourly or daily") from error
+        return getattr(self.lean.Resolution, name)
+
+    def subscribe(self, algorithm, ticker, req, period=MINUTE):
+        """Create an equity feed at ``period`` with declared session, normalization, fill-forward.
+
+        ``period`` is the finest feed any requirement on this security needs (see
+        ``native_period``). A node that reads only daily bars gets a daily feed.
+        """
         normalization = getattr(req, "normalization", "raw")
         mode = getattr(self.lean.DataNormalizationMode, normalization.upper())
-        # Minute data is the upstream feed even when a node requests daily bars.
-        # The adapter's consolidator defines the node-visible interval boundary.
         return algorithm.add_equity(
             ticker,
-            self.lean.Resolution.MINUTE,
+            self.resolution(period),
             fill_forward=req.fill_forward,
             extended_market_hours=req.session == "extended",
             data_normalization_mode=mode,
         ).symbol
 
-    def consolidator(self, req, security):
-        """Create native bar/quote consolidation; daily bars use exchange-session boundaries."""
-        cls = (
-            self.lean.TradeBarConsolidator
-            if isinstance(req, BarsRequirement)
-            else (self.lean.QuoteBarConsolidator)
-        )
+    def feed_period(self, algorithm, symbol, quotes=False):
+        """Period of the feed a consolidator registered on ``symbol`` will read.
+
+        LEAN attaches a consolidator to the first subscription of the symbol whose
+        data type fits; it does not look at resolution. A security can carry two
+        trade-bar subscriptions (for example a daily one from a universe and a
+        minute one added later), and then the first decides what the consolidator
+        receives. (Observed natively: with daily added first an identity
+        consolidator received daily bars, with minute first it received minutes.)
+        Returns None when the symbol has no subscription of that type.
+        """
+        wanted = "QuoteBar" if quotes else "TradeBar"
+        service = algorithm.subscription_manager.subscription_data_config_service
+        for config in service.get_subscription_data_configs(symbol):
+            if str(config.type).split(".")[-1] == wanted:
+                name = str(config.resolution).split(".")[-1].upper()
+                return {"MINUTE": MINUTE, "HOUR": HOUR, "DAILY": DAY}.get(name)
+        return None
+
+    def consolidator(self, req, security, period=MINUTE):
+        """Create the native consolidator that turns the ``period`` feed into ``req.interval``.
+
+        When the feed already delivers the requested interval the consolidator is
+        LEAN's identity one: it passes each bar through as it arrives. Otherwise
+        it is LEAN's trade-bar or quote-bar consolidator. Either way LEAN updates
+        it once it is registered on the security; the adapter feeds it by hand
+        only to warm a new window from history.
+        """
+        bars = isinstance(req, BarsRequirement)
+        if req.interval == period:
+            # A same-period TradeBarConsolidator would hold each bar until the next
+            # one arrives. The identity consolidator emits at once.
+            return self.lean.IdentityDataConsolidator[
+                self.lean.TradeBar if bars else self.lean.QuoteBar
+            ]()
+        cls = self.lean.TradeBarConsolidator if bars else self.lean.QuoteBarConsolidator
         # Daily means the exchange session, not an arbitrary 24-hour bucket.
         # The native calendar handles session opens/closes and shortened days.
-        if req.interval == timedelta(days=1):
+        if req.interval == DAY:
 
             def session_calendar(local):
                 midnight = local.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -65,15 +141,17 @@ class LeanAPI:
             return cls(session_calendar)
         return cls(req.interval)
 
-    def history(self, algorithm, symbol, req, cutoff, count):
+    def history(self, algorithm, symbol, req, cutoff, count, period=MINUTE):
         """Request typed native warmup history ending at an explicit aware cutoff.
 
         The finite retrieval span is a warmup attempt, not a readiness guarantee.
-        Regular daily bars use daily history; other requests use minute inputs.
+        Regular daily bars always come from daily history, whatever the live feed,
+        because warming a long daily window from minutes would read hundreds of
+        thousands of bars. Other requests read history at the feed's ``period``.
         """
         cls = self.lean.TradeBar if isinstance(req, BarsRequirement) else self.lean.QuoteBar
-        # Warm minute consolidations with minute data; explicit end prevents lookahead.
-        daily = req.interval == timedelta(days=1) and req.session == "regular"
+        # An explicit end prevents lookahead.
+        daily = req.interval == DAY and req.session == "regular"
         # Request a finite cushion for non-trading days. Missing history remains
         # a readiness problem; this estimate does not guarantee enough samples.
         days = max(
@@ -88,7 +166,7 @@ class LeanAPI:
             symbol,
             end - timedelta(days=days),
             end,
-            self.lean.Resolution.DAILY if daily else self.lean.Resolution.MINUTE,
+            self.resolution(DAY if daily else period),
             fill_forward=req.fill_forward,
             extended_market_hours=req.session == "extended",
             data_normalization_mode=getattr(
@@ -140,14 +218,30 @@ class LeanAPI:
             local = security.exchange.hours.get_next_market_close(local, False)
         return self.to_utc(security, local)
 
-    def universe(self, algorithm, definition, selector, etf_ticker=None):
-        """Create a synchronous minute-resolution native fundamental or ETF universe source."""
+    def universe(self, algorithm, definition, selector, etf_ticker=None, feed=None, period=DAY):
+        """Create a synchronous native fundamental or ETF universe source.
+
+        Args:
+            feed (BarsRequirement | QuotesRequirement | None): The requirement that
+                reads this universe's members, or None when no node reads their prices.
+            period (timedelta): Feed period for the members LEAN adds (see
+                ``native_period``).
+
+        LEAN subscribes each selected member with these settings. They are made
+        identical to what ``subscribe`` asks for the same member, so the security
+        carries one subscription and not two.
+        """
         # Copy settings so this source does not mutate the algorithm defaults.
         # Synchronous selection fits the host's serial admission/decision boundary.
         settings = self.lean.UniverseSettings(algorithm.universe_settings)
         settings.asynchronous = False
         settings.minimum_time_in_universe = definition.minimum_residence
-        settings.resolution = self.lean.Resolution.MINUTE
+        settings.resolution = self.resolution(period)
+        settings.fill_forward = bool(getattr(feed, "fill_forward", False))
+        settings.extended_market_hours = getattr(feed, "session", "regular") == "extended"
+        settings.data_normalization_mode = getattr(
+            self.lean.DataNormalizationMode, getattr(feed, "normalization", "adjusted").upper()
+        )
         if isinstance(definition, LiquidityUniverse):
             return algorithm.add_universe(self.lean.FundamentalUniverse.usa(selector, settings))
         return algorithm.add_universe(algorithm.universe.etf(etf_ticker, settings, selector))
@@ -219,27 +313,59 @@ class LeanAPI:
         return float(fee.amount * rate)
 
     def submit(self, algorithm, symbol, intent):
-        """Submit an asynchronous native market order tagged with the intent identity.
+        """Submit an asynchronous native order tagged with the intent identity.
 
         Returns:
             (OrderTicket): Native ticket; submission or cancellation response is not a fill.
 
         Raises:
-            CapabilityError: Intent is not a day market order.
+            CapabilityError: The order type or time in force has no native call here.
+
+        The adapter chooses the native call and nothing else. When an order may be
+        sent and how it fills are LEAN's decisions, set by the backtest's brokerage
+        and fill models. (Observed natively on LEAN 2.5.0.18178: a market order
+        sent while the exchange is closed, or on a daily feed, becomes a
+        market-on-open order; a market-on-close order sent inside the last
+        quarter-hour, and a market-on-open order sent during the session on a
+        minute feed, come back invalid. A day order sent at the close on a daily
+        feed expires unfilled: its fill price arrives with the next daily bar, at
+        the close that ends its day.)
         """
-        if intent.order_type != "market" or intent.time_in_force != "day":
-            raise CapabilityError("QC gateway supports day market orders only")
+        if intent.order_type not in ORDER_TYPES or intent.time_in_force not in TIMES_IN_FORCE:
+            raise CapabilityError(
+                "QC gateway supports day or gtc market, open and close orders only"
+            )
         # Preserve the neutral intent ID in the native tag. The host can resolve
         # feedback even if a callback arrives before the ticket-ID map is updated.
         properties = self.lean.OrderProperties()
-        properties.time_in_force = self.lean.TimeInForce.DAY
-        return algorithm.market_order(
+        properties.time_in_force = getattr(
+            self.lean.TimeInForce, TIMES_IN_FORCE[intent.time_in_force]
+        )
+        send = {
+            "market": algorithm.market_order,
+            "market_on_open": algorithm.market_on_open_order,
+            "market_on_close": algorithm.market_on_close_order,
+        }[intent.order_type]
+        return send(
             symbol,
             intent.quantity,
             asynchronous=True,
             tag=intent.intent_id,
             order_properties=properties,
         )
+
+    def refusal(self, ticket):
+        """Return why LEAN refused to create an order, or None if it was accepted.
+
+        A refused order has no platform order behind it and produces no order
+        event, so the ticket is the only place the outcome is visible.
+        """
+        if str(ticket.status).split(".")[-1].lower() != "invalid":
+            return None
+        response = ticket.get_most_recent_order_response()
+        if response is None:
+            return "order refused"
+        return f"{response.error_code}: {response.error_message}"
 
     def indicator(self, requirement):
         """Construct manually updated native SMA, EMA, RSI, or Donchian resources.
@@ -384,7 +510,7 @@ class LeanAPI:
     def history_range(self, algorithm, symbol, source, start, end):
         """Typed, lazy native history; research admits these samples incrementally."""
         cls = self.lean.TradeBar
-        daily = source.interval == timedelta(days=1) and source.session == "regular"
+        # ``source`` describes a replay feed, so its interval is a native period.
         local_start = self.lean.Extensions.convert_from_utc(
             start.astimezone(UTC).replace(tzinfo=None), algorithm.time_zone
         )
@@ -397,7 +523,7 @@ class LeanAPI:
             symbol,
             local_start,
             local_end,
-            self.lean.Resolution.DAILY if daily else self.lean.Resolution.MINUTE,
+            self.resolution(native_period(source)),
             fill_forward=source.fill_forward,
             extended_market_hours=source.session == "extended",
             data_normalization_mode=getattr(

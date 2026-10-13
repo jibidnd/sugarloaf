@@ -160,3 +160,29 @@ def test_session_close_counts_trading_sessions_across_a_weekend():
     assert catalog.session_close(A, friday_close, 2) == tuesday_close
     with pytest.raises(NotReady, match="no such later session"):
         catalog.session_close(A, friday_close, 3)
+
+
+def test_liquidity_universe_can_require_fundamentals_before_taking_the_count():
+    from sugarloaf.adapters.base import select
+    from sugarloaf.core.errors import NotReady
+
+    rows = [
+        SelectionRow(A, 20, 5, 900, has_fundamentals=False),  # a fund: most liquid
+        SelectionRow(B, 20, 5, 100, has_fundamentals=True),
+    ]
+    assert select(LiquidityUniverse("all", 1), rows) == (A,)
+    stocks = LiquidityUniverse("stocks", 1, require_fundamentals=True)
+    assert select(stocks, rows) == (B,)
+    # A provider that cannot say is not taken to mean "no".
+    with pytest.raises(NotReady, match="fundamentals"):
+        select(stocks, [SelectionRow(A, 20, 5, 900)])
+
+
+def test_a_security_listed_twice_is_selected_once_and_does_not_use_up_a_place():
+    from sugarloaf.adapters.base import select
+
+    rows = [SelectionRow(A, 20, 5, 900), SelectionRow(A, 20, 5, 800), SelectionRow(B, 20, 5, 100)]
+    assert select(LiquidityUniverse("two", 2), rows) == (A, B)
+    etf = ETFConstituentsUniverse("etf", A, count=2)
+    weighted = [SelectionRow(A, weight=w) for w in (0.5, 0.4)] + [SelectionRow(B, weight=0.1)]
+    assert select(etf, weighted) == (A, B)

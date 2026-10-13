@@ -112,13 +112,102 @@ quotes; ETF-constituent universes; delistings and symbol changes; live data.
 The session, band and lifecycle runs predate the host fix; only comments changed
 in the engine after the final session run.
 
+## Native feeds, order types and feedback order, 11–12 October 2026
+
+Run on LEAN 2.5.0.0.18178 against the working tree on `403edf9`, after the
+adapter began subscribing each security at the coarsest native resolution its
+readers need and the engine stopped deciding when an order may be sent.
+
+**What LEAN does** (plain algorithm, no Sugarloaf code; project `37597459`,
+backtest `dfe6a1846c154ee680ff758bac880fe2`, source in
+`artifacts/qc-acceptance/probe/`):
+
+| Question | Observed |
+| --- | --- |
+| When does a daily bar arrive? | At 16:00 New York with `daily_precise_end_time` at its default, and an `IdentityDataConsolidator` on a daily subscription emits it then |
+| Which subscription feeds a consolidator when a security has two? | The first one added, whatever its resolution: daily-first received daily bars, minute-first received minute bars |
+| What happens to a market order sent while the exchange is closed? | It becomes a market-on-open order and fills at the next opening price, from a daily bar at 16:00 and from a minute security at 16:00:00 alike |
+| When is a market-on-close order accepted? | At 15:40 it filled at the close. At 15:55 the ticket came back invalid, with order ID −10 and no order event |
+| When is a market-on-open order accepted? | On a daily security at 09:32 it was accepted and filled at the next day's open. On a minute security during the session it came back invalid |
+| Does a daily subscription with fill-forward add data? | Yes: it puts a fill-forward bar in every minute slice when the algorithm also has a minute subscription |
+
+**A cross-sectional graph on daily bars.** A 250-stock native liquidity universe
+with a daily 757-bar lookback, a ranking node and a long-short converter,
+January–February 2024, USD 10 million (Sugarloaf Lab's short-reversal replay,
+project `37695106`). Each row is one backtest of the same graph.
+
+| Change | Backtest | Observed |
+| --- | --- | --- |
+| Before: minute feeds | `1a6521a198c57b5acd06c1dfdcc833ef` | 599 orders, +2.62%. 16.3 million data points, 249 seconds |
+| Daily feeds, default policy | `b2f4db9eeb1f6a29d278fc5a74d8f4dd` | 0.49 million data points, 29 seconds. 1,560 orders, none filled: each was sent at the close, held by LEAN for the next open, and cancelled at midnight by the engine's five-minute order lifetime, on every night that a corporate-action slice caused a reconciliation |
+| No engine cancel timer | `72269996aed86af5a5ef909271ae1a4a` | 961 orders, none filled: each day order expired at the next close, the instant the daily bar carrying its fill price arrived |
+| Market-on-open, good till cancelled | `fb4da6661e94af844c84c302df2a01c3` | 533 fills. At one close, 75 further orders: a drift order sent while the previous day's 44 orders were filling made LEAN fill the rest before the call returned; the engine then read holdings that included those fills while their feedback was queued, sent 37 orders reversing them and 37 undoing those. A new target cancelled all 75 in the same instant |
+| Feedback applied before each broker read | `01e7f614fee5c54084739ac094c41d2a` | The 75 became 1 (the drift order). Same fills and ending equity |
+| Stocks-only universe filter | `2ecef86ce87ef62714562b3f6acfe11f` | 619 orders, +2.61%, 0.51 million data points, 28.5 seconds |
+| A split leaves weight targets and rankings standing; orders good till cancelled by default | `8f789a06b7d9f988f8f9f84cb395cfb1` | 598 orders, +2.83%, no runtime diagnostics. The plain daily-bar algorithm made 587 orders and +2.86% on the same window (`148f18fa47294c689c46c2d41e09842e`) |
+
+- **Agreement with plain LEAN.** To 22 February the graph made 261 fills and
+  +0.98% (`28c607e2c8714f2d5ce449572f440a8e`); a plain daily-bar algorithm
+  applying the same rules made 269 fills and +1.01%
+  (`5b6894ac6648f411a3175614fb9a35a5`). On the first trading day 37 of 39 symbols
+  were common and 36 had identical quantities. The two differ in how they leave
+  funds out of the universe.
+- **Thirteen years.** The same graph from January 2014 to September 2026, on
+  the final source (`1e48b54acf52fd78fa5b7693d4c96e45`): 3,205 sessions, 129,335
+  orders, 35.8 million data points, 48 minutes, no runtime errors. It compounded
+  at 7.25% a year to USD 24.42 million with a 12.2% largest drawdown; the plain
+  daily-bar algorithm at 7.35% to USD 24.70 million with 11.7%, on 133,017
+  orders in 33 minutes (`980573343a17cd669e941113e0004b50`).
+- **Orders waiting through a split are sized again.** Apple and Tesla split on
+  31 August 2020. In the thirteen-year run the orders sent for both at Friday's
+  close were cancelled at midnight on the 31st and replaced in the same instant
+  (878 and 709 adjusted shares), and the replacements filled at that morning's
+  open. The weight target and the rankings stood throughout.
+- **A split used to cost a session.** Walmart split on 26 February. Under the
+  rule then in force the runtime withdrew every View naming it at midnight, the
+  target went with them, and the 56 orders waiting for that morning's open were
+  cancelled; the graph issued a new target at that day's close. With minute feeds
+  the same gap had lasted one minute. A split now withdraws only Views stated in
+  units of the instrument, and in the last row of the table those 56 orders fill.
+  Under the earlier rule the thirteen-year run recorded 131 not-ready
+  diagnostics (`c66fd34ee534f243113a78683197b744`, 7.26% a year); under this one
+  62; splits no longer cause any.
+- **A target that expires at the next close is cancelled and filled in one
+  instant.** On daily bars LEAN reports yesterday's orders at today's close. If
+  the target expires then, the engine asks to cancel the remaining orders after
+  the first fill; LEAN has them pending cancellation and fills them in the same
+  pass (event sequence submitted, cancel pending, filled, on about 45 orders a
+  day). The outcome is the intended one, and it rests on LEAN's ordering.
+- **New members have a price.** The security initializer now seeds a new
+  security with its last known price; without it a member selected in the
+  morning could not be valued at that day's close.
+- **A security can be listed twice in a day's selection data.** A run from 2014
+  stopped on 6 February 2014 with one stock twice in a ranking
+  (`c22f4aa9b27f2a21c551a5c4f75077e0`). Selection now returns each identity once,
+  and the first quarter of 2014 completes (`1b9628258b7eaa4228bb1c0d92718b4f`).
+
+Not covered: hourly feeds, quotes on a coarser feed, a feed made finer after its
+security was subscribed (the adapter refuses it), a market-on-close policy inside
+a graph, and a platform refusal reaching the engine from a live ticket. The
+refusal path, the feed planning and the order-type translation have local tests
+only.
+
 ## Parity with plain QuantConnect algorithms
 
-Five simple rules were each run twice in QC Cloud on 9 October 2026: once as a
-native `QCAlgorithm` with no Sugarloaf code, once as a Sugarloaf graph. All five
-pairs produced identical orders (fill time, symbol, quantity and fill price) and
-identical ending equity. The counts below are from the rerun after corporate-
-action handling moved into the adapter (working tree on `4a2907d`).
+Five simple rules are each run twice in QC Cloud: once as a native `QCAlgorithm`
+with no Sugarloaf code, once as a Sugarloaf graph. All five pairs produce
+identical orders (fill time, symbol, quantity and fill price) and identical
+ending equity. They were first run on 9 October 2026 and rerun on 12 October
+2026 after the feed and order changes above, with the same order counts.
+
+Two things changed on the native side for the rerun, because the graph no longer
+waits for the exchange to open before sending an order. The daily rule now
+subscribes daily bars and sends its market order at the close, which LEAN holds
+for the next open; and the five-minute rule sends the order from its 16:00 bar at
+16:00. Before, both sides traded those signals at 09:31. With day orders, the
+default at the time, the daily graph placed 56 orders and filled none
+(`c517d09fe788a304179166e140f9df18`); orders are now good till cancelled by
+default.
 
 | Rule | Orders |
 | --- | ---: |
@@ -143,8 +232,10 @@ algorithm. Each is intended behaviour that a strategy author needs to know:
   orders see NAV after the earlier orders' slippage and fees.
 - **Warm-up bars are not decisions.** The first decision comes from the first bar
   completed after the start, never from history used to prepare an indicator.
-- **A daily-close signal trades at the next session's first minute bar,** because
-  the market is closed when the daily bar completes.
+- **A daily-close signal trades at the next session's opening price.** The order
+  is sent at the close and LEAN holds it for the open. Orders are good till
+  cancelled by default; a day order sent at the close on daily bars expires
+  unfilled.
 - **A dividend does not disturb a signal.** The daily pair runs from 3 September
   2024 to 17 January 2025, across SPY's ex-dividend days of 20 September and
   20 December. The 19 September close crosses above the average, so a buy is due
@@ -155,12 +246,18 @@ algorithm. Each is intended behaviour that a strategy author needs to know:
   raw prices is not exercised by the pairs.
 
 The pairs do not cover partial fills, cancellations, shorting, universes or
-anything outside regular-session market orders.
+market-on-close orders.
 
 ## Capability limits
 
-- QC trading: US equities, regular-session day market orders; documented minute
-  through daily bar/quote consolidation and synchronous daily universes.
+- QC trading: US equities, regular-session day or good-till-cancelled market,
+  market-on-open and market-on-close orders; minute, hourly or daily feeds chosen
+  from the declared intervals, with native consolidation to coarser ones, and
+  synchronous daily universes.
+- A graph acts only when data arrives. One that reads only daily bars is evaluated
+  once a session, at the close.
+- On daily bars in a QuantConnect backtest a `day` order sent at the close never
+  fills. The default is `gtc`.
 - Native indicators: QC SMA, EMA, RSI and Donchian. No memory formula fallback or
   cross-provider parity promise. Older raw data cannot rewind native indicators.
 - QuantBook: explicit instruments, bars and native indicators; split/dividend

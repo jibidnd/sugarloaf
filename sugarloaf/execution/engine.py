@@ -9,7 +9,7 @@ from contextlib import ExitStack
 from dataclasses import dataclass, field
 from math import isfinite, trunc
 
-from sugarloaf.core.errors import ContractError, NotReady
+from sugarloaf.core.errors import ContractError, NotReady, OrderRefused
 from sugarloaf.core.primitives import InstrumentId
 from sugarloaf.core.services import AccountSnapshot, Context
 from sugarloaf.core.views import PositionView
@@ -69,19 +69,19 @@ class RiskGate:
             intent: Proposed signed whole-lot order.
             target: Active desired position target authorizing this order.
             ctx: Fresh broker/account services for this check.
-            policy: Session, lifetime, and target-age rules.
+            policy: Target-age rule.
             state: Local reservations that are absent from broker snapshots.
 
         Raises:
-            NotReady: Stale targets, closed sessions, exposure limits, borrow, or
-                buying power prevent submission.
+            NotReady: Stale targets, exposure limits, borrow, or buying power
+                prevent submission.
             ContractError: Instrument is unsupported or quantity is malformed.
 
         Possible buys and sells are bounded separately. An order may reduce an
         existing breach only when no breach worsens and no new breach appears.
         """
         # Check the proposed order at execution time, not only when the node decided.
-        # Fresh marks, sessions, holdings and outstanding orders can change permission.
+        # Fresh marks, holdings and outstanding orders can change permission.
         if (
             ctx.now >= target.metadata.expires_at
             or ctx.now < target.metadata.cutoff
@@ -93,8 +93,10 @@ class RiskGate:
             raise ContractError("Initial execution supports equities only")
         if not instrument.tradable:
             raise NotReady("RISK_NOT_TRADABLE")
-        if not ctx.instruments.is_open(intent.instrument, ctx.now, policy.session):
-            raise NotReady("RISK_SESSION_CLOSED")
+        # Whether the session is open is not checked here. When an order may be
+        # sent, and what happens to one sent outside the session, is the
+        # platform's decision: it may queue the order for the next open, convert
+        # it, or refuse it, and a refusal comes back as OrderRefused.
         if not isfinite(intent.quantity) or intent.quantity == 0:
             raise ContractError("Order quantity must be finite and nonzero")
         if (
@@ -215,7 +217,8 @@ class ExecutionEngine:
 
     Args:
         gateway: Platform boundary supplying fresh account state and order operations.
-        policy: Order and staleness rules; defaults to regular-session day market orders.
+        policy: Order and staleness rules; defaults to regular-session market orders,
+            good till cancelled.
         risk: Optional gate; defaults to timing and worst-case pending-exposure checks.
 
     Intents supplement broker state rather than replacing holdings. Hosts serialize
@@ -269,6 +272,17 @@ class ExecutionEngine:
             self._cancel_pending()
             self._forget_finished()
         self.reconcile()
+
+    def cancel_orders(self, instrument: InstrumentId) -> None:
+        """Request cancellation of this engine's unfilled orders in one instrument.
+
+        The target stays. Used when the orders' quantities no longer mean what they
+        did, as after a split; the next reconciliation sizes replacements once the
+        cancellations are confirmed.
+        """
+        for entry in tuple(self.state.intents.values()):
+            if entry.intent.instrument == instrument:
+                self._request_cancel(entry)
 
     def invalidate(self) -> None:
         """Withdraw the target and request cancellations; retain filled holdings."""
@@ -339,8 +353,10 @@ class ExecutionEngine:
         Raises:
             ContractError: Order identity, sign, total, or filled status is inconsistent.
 
-        Feedback during submission is queued until the platform ID is bound. Hosts
-        must drain all feedback before reconciling so holdings are not counted twice.
+        Feedback that arrives during a reconciliation is queued until the order
+        being submitted has its platform ID, and is applied before broker state is
+        next read. A host passes feedback on as it arrives; it must not hold it
+        back, or holdings and this ledger would describe different moments.
         """
         # The platform may call back before submit returns its order ID. Queue updates
         # during reconciliation so identity binding precedes cumulative fill accounting.
@@ -419,9 +435,13 @@ class ExecutionEngine:
                 self._reconcile(contexts)
         finally:
             self._busy = False
-            updates, self._updates = self._updates, []
-            for update in updates:
-                self._apply_update(update)
+            self._apply_queued()
+
+    def _apply_queued(self) -> None:
+        """Apply feedback queued while an order was being submitted."""
+        updates, self._updates = self._updates, []
+        for update in updates:
+            self._apply_update(update)
 
     def _desired(
         self,
@@ -517,6 +537,17 @@ class ExecutionEngine:
         for instrument in sorted(gaps, key=lambda i: (gaps[i], i.value)):
             # Second pass: re-read broker state before every submission. An earlier
             # order in this loop may already have filled and changed NAV or holdings.
+            #
+            # First bring the ledger to the same moment. Sending an order can make
+            # the platform fill other, older orders before it returns. Their fills
+            # are then in the holdings read below; if their feedback stayed queued
+            # they would also still count as pending, and the next instruments
+            # would be traded against a position counted twice. (Seen natively: on
+            # daily bars all of yesterday's orders fill in one instant, and one
+            # drift order sent in that instant produced 37 reversing orders.) The
+            # previous submission has returned, so every queued update now refers
+            # to an order whose platform ID is bound.
+            self._apply_queued()
             fresh = self.gateway.context()
             contexts.callback(fresh.close)
             actual = fresh.portfolio.snapshot()
@@ -599,7 +630,9 @@ class ExecutionEngine:
                 instrument,
                 quantity,
                 fresh.now,
-                fresh.now + self.policy.lifetime,
+                # Without a policy lifetime the order is bounded by its target,
+                # which is withdrawn at this age at the latest.
+                fresh.now + (self.policy.lifetime or self.policy.max_target_age),
                 self.policy.order_type,
                 self.policy.time_in_force,
             )
@@ -622,6 +655,18 @@ class ExecutionEngine:
                 # The returned ID is a submission identity, not evidence of a completed fill.
                 entry.order_id = self.gateway.submit(intent)
                 entry.status = "submitted"
+            except OrderRefused as error:
+                # The platform declined the order outright, so nothing is pending.
+                # Recorded as rejected: this target does not ask for it again.
+                entry.status = "rejected"
+                self._record(
+                    "ORDER_REFUSED",
+                    target_id=target.metadata.view_id,
+                    instrument=instrument.value,
+                    intent_id=identity,
+                    reason=str(error),
+                )
+                continue
             except Exception as error:
                 # Submission outcome may be unknown: reserve exposure until authoritative
                 # feedback resolves it. Blind retries could duplicate a filled order.

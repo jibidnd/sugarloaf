@@ -42,3 +42,26 @@ def test_report_receives_graph_and_emits_separate_serialized_records():
 def test_environment_rejects_nonfinite_account_settings(field, value):
     with pytest.raises(ContractError, match="finite"):
         Environment(**{field: value})
+
+
+def test_result_summary_counts_universe_members_and_lists_them_in_separate_records():
+    from sugarloaf.core.primitives import InstrumentId
+    from sugarloaf.market.contracts import UniverseMembership
+
+    at = datetime(2025, 1, 2, tzinfo=UTC)
+    members = tuple(InstrumentId(f"USA:{number:04d}") for number in range(250))
+    runtime = NS(graph=NS(nodes={}), diagnostic_count=0, diagnostics=[])
+    host = NS(runtime=runtime, sequence=2,
+              services=NS(memberships={"liquid": UniverseMembership("liquid", members, at, True)}),
+              execution=NS(diagnostic_count=0, diagnostics=[]))
+    logs, summaries = [], []
+    finish(NS(log=logs.append, debug=summaries.append), NS(report=None), host)
+    # QC cuts a log entry at about 8,000 characters; 250 identities would not fit.
+    assert all(len(line) < 8000 for line in logs + summaries)
+    result = json.loads(summaries[0].split(" ", 1)[1])
+    assert result["memberships"]["liquid"]["count"] == 250
+    assert "members" not in result["memberships"]["liquid"]
+    chunks = [json.loads(line.split(" ", 1)[1]) for line in logs
+              if line.startswith("SUGARLOAF_MEMBERS ")]
+    assert [chunk["first"] for chunk in chunks] == [0, 100, 200]
+    assert sum((chunk["members"] for chunk in chunks), []) == [m.value for m in members]

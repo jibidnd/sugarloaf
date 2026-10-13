@@ -28,12 +28,9 @@ class MemoryGateway:
         self.cancel_requests = set()
 
     def capability(self, policy):
-        """Accept regular-session day market orders only."""
+        """Accept regular-session orders of any type; the fixture never fills them itself."""
         return Capability(
-            policy.order_type == "market"
-            and policy.time_in_force == "day"
-            and policy.session == "regular",
-            "Memory fixture supports regular-session day market orders",
+            policy.session == "regular", "Memory fixture supports regular-session orders"
         )
 
     def context(self):

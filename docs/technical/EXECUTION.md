@@ -133,8 +133,9 @@ filled shares could count once in holdings and again in the local pending ledger
 ## RiskGate
 
 Before each submission, check target cutoff/expiry/age, supported
-equity instrument, tradability, session, finite nonzero whole-lot quantity, positive
-NAV and executable valuation.
+equity instrument, tradability, finite nonzero whole-lot quantity, positive
+NAV and executable valuation. Whether the exchange is open is not checked: see
+[order types and timing](#order-types-and-timing).
 
 Construct two weight vectors from authoritative holdings plus pending orders:
 lower adds only possible sells; upper adds only possible buys. Include local intents
@@ -151,6 +152,69 @@ valued is left out of that sum until it can trade. Borrow permission is
 required when a sell can leave a short position; covers are not blocked by a borrow
 test. Finally request platform buying-power approval.
 
+## Order types and timing
+
+`ExecutionPolicy.order_type` is `market`, `market_on_open` or `market_on_close`.
+The policy says what to ask for. The platform decides when such an order may be
+sent and how it fills, and those rules are a property of the backtest or brokerage
+configuration, not of a node or of the engine.
+
+- **No session check.** `RiskGate` does not refuse an order because the exchange
+  is closed. A decision on a daily bar arrives at the close; the order is sent and
+  the platform applies its rule.
+- **Observed on QuantConnect** (LEAN 2.5.0.18178, default brokerage and fill
+  models; [validation](../VALIDATION.md)): a market order sent while the exchange
+  is closed becomes a market-on-open order and fills at the next opening price. A
+  market-on-close order is refused inside the last quarter-hour of the session. A
+  market-on-open order sent during the session on a minute feed is refused.
+- **A refusal is final for that target.** When the platform declines to create an
+  order the gateway raises `OrderRefused`. The engine records the intent as
+  rejected with an `ORDER_REFUSED` diagnostic, reserves nothing, goes on to the
+  target's other instruments, and does not ask again until a new target arrives.
+  This differs from a submission whose outcome is unknown, which keeps its
+  reservation and re-raises.
+- **Time in force.** `time_in_force` is `gtc` (good till cancelled, the default)
+  or `day`. The platform applies it. A `gtc` order does not outlive its target:
+  when the target is replaced or expires the engine cancels whatever is unfilled.
+  `day` adds the platform's own end-of-day expiry. On QuantConnect a day order
+  sent at the close on a daily feed never fills: LEAN learns the next opening
+  price only when the next daily bar arrives, at the close that ends the order's
+  day, and it applies the expiry first. If the process stops, a `gtc` order stays
+  at the broker until it is cancelled there; restart recovery is not implemented.
+- **A split.** A weight target survives a split
+  ([runtime](RUNTIME.md)). Its orders still waiting in the split instrument were
+  counted in the old shares, so the session cancels them and the next
+  reconciliation sizes them again from fresh holdings and prices. Orders in other
+  instruments are untouched. A quantity target is withdrawn, and all its orders
+  are cancelled.
+- **No cancel timer by default.** `ExecutionPolicy.lifetime` is unset unless a
+  strategy sets it. An order then stands until it fills, the platform ends it (a
+  day order at the end of its day), or its target is replaced or expires. A
+  lifetime is wall time and the engine applies it at every reconciliation,
+  including one caused by a corporate-action batch at midnight. Seen natively:
+  with a five-minute lifetime, a daily-bar strategy's orders, sent at the close
+  and held by LEAN for the next open, were all cancelled at midnight on every
+  night that some universe member had a corporate action
+  ([validation](../VALIDATION.md)). Set a lifetime only to cancel sooner than the
+  platform would, and make it longer than any wait the order type implies.
+
+## Feedback and broker state
+
+Holdings come from the broker at every read; the engine's own ledger says which
+of its orders are still pending. The two must describe the same moment.
+
+- A gateway passes order feedback to `on_order_update` as it arrives. An idle
+  engine applies it at once. During a reconciliation it is queued until the order
+  being submitted has its platform ID, and applied before broker state is read
+  for the next instrument.
+- The reason: sending an order can make the platform fill other, older orders
+  before the call returns. Their fills are in the next holdings read; if their
+  feedback were still queued they would also count as pending, and each would be
+  traded against twice. Seen natively on daily bars, where all of yesterday's
+  orders fill in one instant: a single drift order sent in that instant produced
+  37 orders reversing fills, then 37 more undoing those
+  ([validation](../VALIDATION.md)).
+
 ## Extension boundaries
 
 Use policy for order settings and thresholds; use constraints for exposure limits.
@@ -159,7 +223,8 @@ engine/session composition for different reconciliation behavior, and implement
 gateway capabilities for new platform order types. The default QC host constructs
 its engine explicitly; there is no configuration-level custom-engine loader.
 
-Current executable scope is US equities, regular-session day market orders. Native
+Current executable scope is US equities, regular-session day or
+good-till-cancelled market, market-on-open and market-on-close orders. Native
 holdings adjustments belong to the platform. Unknown submission outcomes require
 authoritative resolution; restart/recovery and durable intent retention are not
 implemented. `max_target_age` defaults to four days so a Friday-close decision can

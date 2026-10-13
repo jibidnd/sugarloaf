@@ -105,14 +105,60 @@ warms it.
 
 Neutral IDs map to LEAN security IDs; ticker changes preserve identity.
 `register(instrument, ticker)` supplies an initial mapping. Metadata rejects
-non-equity/non-USA securities. Minute equity subscriptions feed requested
-whole-minute consolidations up to one day. Concurrent requests for one security
-must agree on session, normalization and fill-forward semantics. Schedule calendar
-instruments own implicit minute feeds without granting nodes price-read permission.
+non-equity/non-USA securities. Concurrent requests for one security must agree on
+session, normalization and fill-forward semantics.
+
+### Feed periods
+
+Each security is subscribed at the coarsest native resolution that serves every
+requirement on it, and no finer. LEAN delivers minute, hourly and daily trade
+bars; `native_period(requirement)` is the largest of those that divides the
+requested interval:
+
+| Requirement | Native feed |
+| --- | --- |
+| Daily bars, regular session | Daily |
+| 1-, 2-, 3-hour bars, regular session | Hourly |
+| 5-minute, 90-minute bars | Minute |
+| Any quotes; any extended-session request | Minute |
+
+- **The finest reader decides.** A security read daily by one node and at five
+  minutes by another has one minute subscription; the daily window is then built
+  from minutes by LEAN's session-calendar consolidator.
+- **LEAN does the consolidation.** Every window is fed by a native consolidator
+  registered on the security, which LEAN updates. When the feed already has the
+  requested interval that consolidator is `IdentityDataConsolidator`, which
+  passes each bar through as it arrives; otherwise it is `TradeBarConsolidator`
+  or `QuoteBarConsolidator`. The adapter updates a consolidator by hand only to
+  warm a new window from history, and in QuantBook replay.
+- **A universe adds its members with its readers' settings.** The native universe
+  source is created with the feed period, session, normalization and fill-forward
+  of the requirements that select it, so a member carries one subscription. A
+  universe whose members nobody reads prices from adds them daily. When a reader
+  of a finer interval is installed the source is recreated.
+- **A schedule's calendar security has a minute feed.** A schedule is checked when
+  data arrives, so the security whose sessions it follows must tick each minute.
+  It owns that feed without granting nodes price-read permission.
+- **A security named by a node starts at the finest universe period.** LEAN feeds
+  a consolidator from the first subscription a security was given and ignores
+  resolution (observed natively, see [validation](../VALIDATION.md)). A named
+  security is subscribed before any universe can select it, so it takes the finer
+  of its own period and the finest universe period at once.
+- **A feed is not made finer in place.** If a security already carries a coarser
+  subscription than a new requirement needs, the adapter raises `CapabilityError`
+  instead of serving bars of the wrong interval. Declare the finer interval from
+  the start. A feed is not made coarser while anything still reads the security.
+
+The graph clock follows the feeds. A graph that reads only daily bars receives one
+data boundary per session, at the close; nothing in it can act at 10:30. A node
+that must act inside the session declares the data it acts on (minute bars for
+"at 15:50") or a session-calendar schedule. Daily bars end at the session close
+(`daily_precise_end_time`, set explicitly by the launcher).
 
 Prefill uses typed history ending at an explicit cutoff. Regular daily requests
-use daily history; intraday and extended-session daily requests use minute history
-and native consolidators. Daily consolidation follows exchange sessions, including
+always use daily history, whatever the live feed; other requests use history at
+the feed's period and native consolidators. Daily consolidation from an intraday
+feed follows exchange sessions, including
 early closes. `Scan` flushes through the cutoff converted to exchange-local time.
 Prefill emits no strategy decisions. The finite history span is a warmup attempt;
 readiness still determines whether outputs are usable.
@@ -202,8 +248,10 @@ window spanning the split mixes both scales, so the rebuild restarts state but
 does not rescale old prices. A strategy that needs continuous prices should
 request an adjusted convention.
 
-Independently of any reset, the runtime withdraws Views that name a split
-instrument, under every convention. LEAN's own holdings adjustment remains native.
+Independently of any reset, the runtime withdraws Views stated in units of a
+split instrument (a quantity position, a price-level claim), under every
+convention. Weight positions, rankings and return claims stay unless their node's
+data was reset. LEAN's own holdings adjustment remains native.
 This rule does not describe live trading, which is unsupported.
 
 ## Account, costs and execution
@@ -218,13 +266,26 @@ the native order-fee estimate converted through account cash-book FX. Zero
 quantity costs zero. Missing/nonpositive fee FX conversion fails. Estimation does
 not charge the account; LEAN applies actual costs during execution. Deployment
 configures the same constant slippage and leverage through a security initializer.
+The initializer also gives a new security its last known price. Without it a
+security has no price until its first bar, which on a daily feed is the whole day
+it joins a universe, and LEAN refuses orders for it.
 
 Buying power uses LEAN's initial-margin model and available buying power. Borrow
 follows LEAN's `IShortableProvider` contract: a number is the shortable quantity
 and null means "shortable without restrictions". LEAN's default provider always
 returns null, so a default backtest never runs out of borrow; configure a
-shortable provider on the brokerage model to make borrow binding. The gateway supports regular-session day market orders,
-tags orders with intent identity, and obtains feedback from platform tickets.
+shortable provider on the brokerage model to make borrow binding.
+
+The gateway supports regular-session `day` or `gtc` orders of three types
+(`market`, `market_on_open`, `market_on_close`), tags orders with intent
+identity, and obtains feedback from platform tickets. The host hands each order
+event to the engine as it arrives and runs any further reconciliation after the
+current one ends. It chooses the native call and nothing
+else: when an order may be sent and how it fills are LEAN's rules, set by the
+backtest's brokerage and fill models
+([execution](EXECUTION.md#order-types-and-timing)). LEAN refuses some orders
+before creating them, returning an invalid ticket with no order and no order
+event; the gateway reads that from the ticket and raises `OrderRefused`.
 
 ## QuantBook and memory providers
 
@@ -239,9 +300,11 @@ not effective split facts. Future retrieved actions
 are not exposed before their boundary. This local causal contract does not establish
 native numerical parity or point-in-time adjustment-vintage correctness.
 
-`history_batches(start, end)` lazily merges minute native feeds by end timestamp,
-including calendar feeds. Daily-reading nodes receive deployment's intraday clock
-cadence. One batch of native inputs is staged; runtime `apply` must precede the
+`history_batches(start, end)` lazily merges native feeds by end timestamp,
+including calendar feeds. Each security is replayed at the
+[feed period](#feed-periods) a deployment would subscribe it at, so the replay
+ticks when the deployment does: a node that reads only daily bars is evaluated at
+each close. One batch of native inputs is staged; runtime `apply` must precede the
 next yield. Apply feeds and scans consolidators through that boundary, then admits
 completed inputs. Resource updates rebuild future history iterators without
 replaying admitted values. Retrieved future history is never visible to nodes.

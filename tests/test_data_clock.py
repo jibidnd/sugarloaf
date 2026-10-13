@@ -7,7 +7,7 @@ import pytest
 
 from sugarloaf.adapters.memory import MemoryServices
 from sugarloaf.core.errors import ContractError
-from sugarloaf.core.events import Event, EventBatch, LifecycleEvent
+from sugarloaf.core.events import DataReset, Event, EventBatch
 from sugarloaf.core.graph import Graph
 from sugarloaf.core.node import NodeOutputs, OutputSpec
 from sugarloaf.core.primitives import InstrumentId, Interval, Metadata
@@ -93,7 +93,7 @@ def test_predictive_graph_cannot_be_attached_to_execution():
         runtime.graph.require_positions()
 
 
-def test_late_lifecycle_event_cannot_lower_adjustment_basis_watermark():
+def test_late_data_reset_cannot_lower_adjustment_basis_watermark():
     class OldBasis(Forecast):
         def evaluate(self, inputs, ctx):
             output = super().evaluate(inputs, ctx)
@@ -109,18 +109,19 @@ def test_late_lifecycle_event_cannot_lower_adjustment_basis_watermark():
             )
 
     runtime = make_runtime(OldBasis())
-    split = LifecycleEvent("split", A, START, factor=0.5)
-    runtime.process(EventBatch(1, START, (Event("lifecycle", A, payload=split),)))
+    # The provider rebuilt the forecast node's prices on a new adjustment basis.
+    rebuilt = DataReset(A, ("forecast",), START)
+    runtime.process(EventBatch(1, START, (Event("data_reset", A, payload=rebuilt),)))
     assert not runtime.store.get("forecast", "forecast")
-    # A second, older split arrives late. Its effective time (START - 2h) is
+    # A second, older reset arrives late. Its effective time (START - 2h) is
     # before the forecast's information cutoff (START - 1h), so if it lowered the
     # watermark the stale forecast below would wrongly be accepted.
-    earlier = LifecycleEvent("split", A, START - timedelta(hours=2), factor=2)
+    earlier = DataReset(A, ("forecast",), START - timedelta(hours=2))
     runtime.process(
         EventBatch(
             2,
             START,
-            (Event("lifecycle", A, payload=earlier), Event("data")),
+            (Event("data_reset", A, payload=earlier), Event("data")),
             received_at=START + timedelta(seconds=1),
         )
     )

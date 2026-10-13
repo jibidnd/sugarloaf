@@ -29,6 +29,13 @@ class SnapshotError(SugarloafError):
     code = "SNAPSHOT_INVALID"
 
 
+class OrderRefused(SugarloafError):
+    # The platform definitely declined to create an order: nothing is outstanding
+    # and no exposure needs reserving. This differs from a submission whose
+    # outcome is unknown, which must keep its reservation.
+    code = "ORDER_REFUSED"
+
+
 class NumericalError(SugarloafError):
     # A declared calculation failed numerically. Runtime withdraws the node output
     # and records this cause rather than inventing a usable forecast.

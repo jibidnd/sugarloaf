@@ -35,6 +35,19 @@ bars = BarsRequirement(
 ema = IndicatorRequirement(bars, "ema", (("period", 20),), window=2)
 ```
 
+A requirement's interval is also how often the node can act. An adapter
+subscribes the coarsest feed that serves it, so a node that declares only daily
+bars is evaluated once a session, at the close. A node that must act at 15:50
+declares minute data, or a session schedule
+([adapter feed periods](ADAPTERS.md#feed-periods)).
+
+`LiquidityUniverse(..., require_fundamentals=True)` keeps only securities the
+provider has company fundamental data for, applied before the count is taken. In
+practice it drops funds and notes, which otherwise rank among the most liquid
+securities. A provider that cannot say reports the universe as not ready.
+Membership holds each security once, even when the provider's selection data
+lists it twice.
+
 Declare `ema` in the node's requirements. Within `evaluate`, read
 `ctx.market.indicator(ema, asset).points[-1].values["value"]`.
 Period 20 controls the native indicator; window 2 controls retained ready outputs.

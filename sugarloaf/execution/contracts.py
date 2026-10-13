@@ -12,6 +12,11 @@ from sugarloaf.market.contracts import Capability
 # Only terminal statuses release an order's remaining reservation. An open,
 # partial or pending-cancel order can still change holdings.
 TERMINAL_STATUSES = frozenset({"filled", "canceled", "rejected", "expired"})
+# Order types a policy may name. A gateway states which of them it can translate.
+ORDER_TYPES = frozenset({"market", "market_on_open", "market_on_close"})
+# How long the platform keeps an unfilled order: to the end of its trading day,
+# or until it is cancelled.
+TIMES_IN_FORCE = frozenset({"day", "gtc"})
 # Every status a gateway may report. Anything else is a contract error, so a new
 # brokerage state is noticed instead of being treated as "still open".
 ORDER_UPDATE_STATUSES = TERMINAL_STATUSES | {"open", "submitted", "partial", "pending_cancel"}
@@ -22,9 +27,24 @@ class ExecutionPolicy:
     """Order/session settings and staleness limits, separate from portfolio risk.
 
     Attributes:
-        order_type, session, time_in_force: Native order settings. An adapter
-            rejects unsupported combinations before trading.
-        lifetime: How long one order intent may stay open before cancellation.
+        order_type: ``market``, ``market_on_open`` or ``market_on_close``. The
+            policy names what to ask for; the platform decides when such an order
+            may be sent and how it fills (for example whether a market order sent
+            after the close waits for the next open).
+        time_in_force: ``gtc`` (good till cancelled, the default) or ``day``. The
+            platform applies it. A ``gtc`` order does not outlive its target: the
+            engine cancels whatever is unfilled when the target is replaced or
+            expires. ``day`` adds the platform's own end-of-day expiry; an order
+            sent at the close on daily bars then expires before it can fill.
+        session: Native order setting. An adapter rejects unsupported
+            combinations before trading.
+        lifetime: How long one order intent may stay open before the engine
+            cancels it. Left unset there is no engine timer: an order stands
+            until it fills, the platform ends it (a day order at the end of its
+            day), or its target is replaced or expires. Set it only to cancel
+            sooner than that. The clock is wall time, so a lifetime shorter than
+            the wait for an auction or for the next open cancels an order the
+            platform is holding.
         max_target_age: Maximum elapsed calendar time since the target's cutoff.
             It is a backstop: the target's own expiry is the precise control. The
             default spans a long weekend so a Friday-close decision can trade Monday.
@@ -42,8 +62,8 @@ class ExecutionPolicy:
 
     order_type: str = "market"
     session: str = "regular"
-    time_in_force: str = "day"
-    lifetime: timedelta = timedelta(minutes=5)
+    time_in_force: str = "gtc"
+    lifetime: timedelta | None = None
     max_target_age: timedelta = timedelta(days=4)
     min_trade_value: float = 0.0
     # 0.0025 is 0.25% of NAV: USD250 on a USD100,000 account. Set 0 to trade
@@ -51,13 +71,19 @@ class ExecutionPolicy:
     rebalance_band: float = 0.0025
 
     def __post_init__(self):
+        if self.order_type not in ORDER_TYPES:
+            raise ContractError("Unknown order type")
+        if self.time_in_force not in TIMES_IN_FORCE:
+            raise ContractError("Unknown time in force")
         # NaN would make the comparisons below False and silently disable a threshold.
         finite(self.min_trade_value, self.rebalance_band)
         if self.min_trade_value < 0:
             raise ContractError("Minimum trade value must be nonnegative in account currency")
         if not 0 <= self.rebalance_band < 1:
             raise ContractError("Rebalance band must be a NAV fraction in [0, 1)")
-        if self.lifetime <= timedelta(0) or self.max_target_age <= timedelta(0):
+        if (
+            self.lifetime is not None and self.lifetime <= timedelta(0)
+        ) or self.max_target_age <= timedelta(0):
             raise ContractError("Order lifetime and maximum target age must be positive")
         if self.session not in {"regular", "extended"}:
             raise ContractError("Unknown execution session")
@@ -81,7 +107,7 @@ class OrderIntent:
     # After this time the engine requests cancellation of whatever is unfilled.
     expires_at: datetime
     order_type: str = "market"
-    time_in_force: str = "day"
+    time_in_force: str = "gtc"
 
 
 @dataclass(frozen=True)

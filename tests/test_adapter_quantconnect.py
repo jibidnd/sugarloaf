@@ -10,7 +10,7 @@ import pytest
 from sugarloaf.adapters.memory import MemoryServices
 from sugarloaf.adapters.quantconnect import QuantConnectHost, QuantConnectServices
 from sugarloaf.adapters.quantconnect.host import QuantConnectGateway
-from sugarloaf.adapters.quantconnect.lean import LeanAPI
+from sugarloaf.adapters.quantconnect.lean import DAY, HOUR, MINUTE, LeanAPI, native_period
 from sugarloaf.core.errors import CapabilityError, ContractError, NotReady, SnapshotError
 from sugarloaf.core.events import DataReset, Event, EventBatch, LifecycleEvent
 from sugarloaf.core.graph import Graph
@@ -92,12 +92,21 @@ class API:
         self.disposed = []
         self.collected = []
         self.released = []
+        # Period of the first subscription each symbol was given. LEAN feeds a
+        # consolidator from that one, whatever is added later.
+        self.feeds = {}
+        self.subscriptions = []
+        self.consolidators = []
+        self.histories = []
+        self.universes = {}
 
     def setup(self, algorithm, slippage, leverage):
         self.setups.append((slippage, leverage))
 
-    def subscribe(self, algorithm, ticker, req):
+    def subscribe(self, algorithm, ticker, req, period=MINUTE):
         symbol = Symbol("stable:" + ticker, ticker)
+        self.feeds.setdefault(symbol, period)
+        self.subscriptions.append((ticker, period))
         if symbol not in algorithm.securities:
             algorithm.securities[symbol] = NS(
                 symbol=symbol,
@@ -114,15 +123,20 @@ class API:
     def window(self, count):
         return Window(count)
 
-    def consolidator(self, req, security):
+    def feed_period(self, algorithm, symbol, quotes=False):
+        return self.feeds.get(symbol)
+
+    def consolidator(self, req, security, period=MINUTE):
+        self.consolidators.append((security.symbol.value, req.interval, period))
         return Consolidator()
 
     def scan(self, consolidator, security, cutoff):
         if hasattr(consolidator, "scan"):
             consolidator.scan(cutoff)
 
-    def history(self, algorithm, symbol, req, cutoff, count):
+    def history(self, algorithm, symbol, req, cutoff, count, period=MINUTE):
         self.history_reads += 1
+        self.histories.append((symbol.value, req.interval, period))
         if isinstance(req, QuotesRequirement):
             return [
                 NS(
@@ -148,8 +162,9 @@ class API:
             for i in reversed(range(count))
         ]
 
-    def universe(self, algorithm, definition, selector, etf_ticker=None):
+    def universe(self, algorithm, definition, selector, etf_ticker=None, feed=None, period=DAY):
         self.selectors[definition.name] = selector
+        self.universes[definition.name] = (feed, period)
         return NS(name=definition.name, selected=[], members={})
 
     def dispose_universe(self, universe):
@@ -185,6 +200,9 @@ class API:
     def session_close(self, security, after, count):
         # Stand-in calendar: one regular session closes each day.
         return after + timedelta(days=count)
+
+    def refusal(self, ticket):
+        return getattr(ticket, "refused", None)
 
     def submit(self, algorithm, symbol, intent):
         self.submissions.append(intent)
@@ -542,9 +560,13 @@ def test_multi_instrument_synchronous_fills_are_drained_before_reconciliation():
     class SynchronousAPI(API):
         def submit(self, algorithm, symbol, intent):
             assert len(self.submissions) < 4, "Reconciliation created a phantom round trip"
-            # LEAN can enqueue Submitted and Filled before MarketOrder returns.
+            # LEAN registers the ticket, then can deliver Submitted and Filled before
+            # MarketOrder returns. The host passes each event on as it arrives.
+            order_id = len(self.submissions) + 1
+            algorithm.transactions.tickets[order_id] = NS(order_id=order_id, quantity_filled=0)
+            algorithm.transactions.orders[order_id] = NS(tag=intent.intent_id)
             self.host.on_order_event(
-                NS(order_id=len(self.submissions) + 1, status="Submitted", utc_time=NOW, message="")
+                NS(order_id=order_id, status="Submitted", utc_time=NOW, message="")
             )
             return super().submit(algorithm, symbol, intent)
 
@@ -769,10 +791,10 @@ def test_quantbook_scans_native_consolidation_at_each_admitted_boundary():
             self.working.append(bar)
 
     class PeriodAPI(IndicatorAPI):
-        def consolidator(self, req, security):
+        def consolidator(self, req, security, period=MINUTE):
             return PeriodConsolidator(req.interval)
 
-        def history(self, algorithm, symbol, req, cutoff, count):
+        def history(self, algorithm, symbol, req, cutoff, count, period=MINUTE):
             for i in reversed(range(count * 5)):
                 yield native_bar(cutoff - timedelta(minutes=i), 100)
 
@@ -810,7 +832,12 @@ def test_quantbook_scans_native_consolidation_at_each_admitted_boundary():
 
 
 @pytest.mark.parametrize("calendar_only", [False, True])
-def test_quantbook_schedules_use_upstream_minute_clock_not_daily_read_frequency(calendar_only):
+def test_quantbook_schedule_ticks_on_the_minute_feed_a_node_or_its_calendar_asks_for(
+    calendar_only,
+):
+    # A schedule is checked when data arrives. A node that must act inside the
+    # session therefore declares minute data (or a session calendar, which owns a
+    # minute feed); the daily bars it also reads do not move its clock.
     from sugarloaf.adapters.base import ProviderServices
     from sugarloaf.adapters.quantconnect import QuantBookServices
     from sugarloaf.market.contracts import Schedule
@@ -820,7 +847,7 @@ def test_quantbook_schedules_use_upstream_minute_clock_not_daily_read_frequency(
             pass  # No new daily close during this intraday replay interval.
 
     class ScheduledAPI(IndicatorAPI):
-        def consolidator(self, req, security):
+        def consolidator(self, req, security, period=MINUTE):
             return DailyConsolidator() if req.interval == timedelta(days=1) else Consolidator()
 
         def history_range(self, algorithm, symbol, source, start, end):
@@ -835,12 +862,13 @@ def test_quantbook_schedules_use_upstream_minute_clock_not_daily_read_frequency(
             return ProviderServices().schedule_due(schedule, after, through)
 
     source = BarsRequirement(Selection((A,)))
+    clock = BarsRequirement(Selection((A,)), timedelta(minutes=1))
     at = (NOW + timedelta(minutes=2)).time().replace(tzinfo=None)
 
     class ScheduledSignal(Signal):
         def __init__(self):
             super().__init__(source)
-            self.requirements = () if calendar_only else (source,)
+            self.requirements = () if calendar_only else (source, clock)
             self.triggers = (
                 Trigger(
                     "scheduled", schedule=Schedule(at=at, calendar=A if calendar_only else None)
@@ -1054,3 +1082,306 @@ def test_session_close_steps_whole_regular_sessions_through_the_native_calendar(
     assert api.session_close(security, friday_close, 1) == datetime(2025, 1, 13, 16, tzinfo=UTC)
     assert api.session_close(security, friday_close, 2) == datetime(2025, 1, 14, 16, tzinfo=UTC)
     assert requests == [False] * 3  # Regular sessions only, never extended hours.
+
+
+@pytest.mark.parametrize(
+    ("req", "period"),
+    [
+        (BarsRequirement(Selection((A,))), DAY),
+        (BarsRequirement(Selection((A,)), timedelta(hours=1)), HOUR),
+        (BarsRequirement(Selection((A,)), timedelta(hours=2)), HOUR),
+        (BarsRequirement(Selection((A,)), timedelta(minutes=90)), MINUTE),
+        (BarsRequirement(Selection((A,)), timedelta(minutes=5)), MINUTE),
+        # Native hourly and daily bars cover the regular session only.
+        (BarsRequirement(Selection((A,)), session="extended"), MINUTE),
+        # LEAN has no hourly or daily quote bars for equities.
+        (QuotesRequirement(Selection((A,)), timedelta(hours=1)), MINUTE),
+    ],
+)
+def test_native_period_is_the_coarsest_native_feed_that_divides_the_interval(req, period):
+    assert native_period(req) == period
+
+
+def feeds(*requirements, triggers=()):
+    api, platform = API(), algorithm()
+    services = QuantConnectServices(platform, api=api)
+    services.register(A, "A")
+    services.register(B, "B")
+    services.install("n", ResourceUpdate(tuple(requirements), tuple(triggers)))
+    services.apply(EventBatch(0, NOW))
+    return api, services
+
+
+B = InstrumentId("USA:B")
+
+
+def test_a_node_that_reads_daily_bars_gets_a_daily_feed_passed_through_unchanged():
+    api, _ = feeds(BarsRequirement(Selection((A,)), lookback=3))
+    assert api.subscriptions == [("A", DAY)]
+    # Interval equal to the feed period: the native identity path, no rebuilding.
+    assert api.consolidators == [("A", DAY, DAY)]
+    assert api.histories == [("A", DAY, DAY)]
+
+
+def test_the_finest_reader_sets_the_feed_and_coarser_intervals_are_built_from_it():
+    api, _ = feeds(
+        BarsRequirement(Selection((A,))),
+        BarsRequirement(Selection((A,)), timedelta(minutes=5)),
+        BarsRequirement(Selection((B,)), timedelta(hours=1)),
+        BarsRequirement(Selection((B,)), timedelta(hours=2)),
+    )
+    assert sorted(api.subscriptions) == [("A", MINUTE), ("B", HOUR)]
+    assert sorted(api.consolidators) == [
+        ("A", timedelta(minutes=5), MINUTE),
+        ("A", DAY, MINUTE),
+        ("B", HOUR, HOUR),
+        ("B", timedelta(hours=2), HOUR),
+    ]
+
+
+def test_a_session_schedule_gives_its_calendar_security_a_minute_feed():
+    from sugarloaf.market.contracts import Schedule
+
+    at = NOW.time().replace(tzinfo=None)
+    api, _ = feeds(
+        BarsRequirement(Selection((A,))),
+        BarsRequirement(Selection((B,))),
+        triggers=(Trigger("scheduled", schedule=Schedule(at=at, calendar=A)),),
+    )
+    # The schedule is checked when data arrives, so its calendar ticks each minute.
+    # B is read daily by the same node and stays daily.
+    assert sorted(api.subscriptions) == [("A", MINUTE), ("B", DAY)]
+
+
+def test_universe_members_are_subscribed_with_their_readers_feed_settings():
+    api, platform = API(), algorithm()
+    services = QuantConnectServices(platform, api=api)
+    definition = UniverseRequirement(LiquidityUniverse("u", 2))
+    daily = BarsRequirement(Selection(universe="u"), lookback=5)
+    services.install("n", ResourceUpdate((definition, daily), ()))
+    assert api.universes["u"] == (daily, DAY)
+    original = services.universes["u"]
+    # A reader of the members' minute bars arrives: the source is recreated so LEAN
+    # adds members at minute resolution from then on.
+    minute = BarsRequirement(Selection(universe="u"), timedelta(minutes=1))
+    services.install("m", ResourceUpdate((minute,), ()))
+    assert api.universes["u"][1] == MINUTE
+    assert api.disposed == [original]
+
+
+def test_a_universe_nobody_reads_prices_from_adds_daily_members():
+    api, platform = API(), algorithm()
+    services = QuantConnectServices(platform, api=api)
+    services.install("n", ResourceUpdate((UniverseRequirement(LiquidityUniverse("u", 2)),), ()))
+    assert api.universes["u"] == (None, DAY)
+
+
+def test_a_named_security_takes_the_finest_feed_it_could_get_as_a_universe_member():
+    # LEAN reads consolidators from a security's first subscription. A security a
+    # node names is subscribed before any universe selects it, so it must start at
+    # the universe's (finer) period or it would be stuck on the coarser one.
+    api, platform = API(), algorithm()
+    services = QuantConnectServices(platform, api=api)
+    services.register(A, "A")
+    services.install(
+        "n",
+        ResourceUpdate(
+            (
+                UniverseRequirement(LiquidityUniverse("u", 2)),
+                BarsRequirement(Selection(universe="u"), timedelta(minutes=1)),
+                BarsRequirement(Selection((A,))),
+            ),
+            (),
+        ),
+    )
+    services.apply(EventBatch(0, NOW))
+    assert ("A", MINUTE) in api.subscriptions
+    assert ("A", DAY, MINUTE) in api.consolidators
+
+
+def test_a_security_already_fed_at_a_coarser_period_is_refused_not_misread():
+    api, services = feeds(BarsRequirement(Selection((A,))))
+    assert api.subscriptions == [("A", DAY)]
+    # A later node wants minute bars. LEAN would keep feeding consolidators from the
+    # daily subscription, so the adapter stops instead of serving daily bars as minutes.
+    services.install("m", ResourceUpdate((BarsRequirement(Selection((A,)), MINUTE),), ()))
+    with pytest.raises(CapabilityError, match="request the finer interval from the start"):
+        services.apply(EventBatch(1, NOW))
+
+
+def test_a_feed_is_not_made_coarser_while_the_security_is_still_read():
+    api, services = feeds(
+        BarsRequirement(Selection((A,))), BarsRequirement(Selection((A,)), MINUTE)
+    )
+    services.install("n", ResourceUpdate((BarsRequirement(Selection((A,))),), ()))
+    services.apply(EventBatch(1, NOW))
+    # No second subscription, and the daily window is still built from minutes.
+    assert api.subscriptions == [("A", MINUTE)]
+    assert ("A", DAY, DAY) not in api.consolidators
+
+
+def lean_api(**members):
+    api = object.__new__(LeanAPI)
+    api.lean = NS(**members)
+    return api
+
+
+def test_lean_consolidator_is_the_identity_one_when_the_feed_has_the_requested_interval():
+    made = []
+
+    class Identity:
+        def __class_getitem__(cls, bar_type):
+            return lambda: made.append(bar_type) or ("identity", bar_type)
+
+    api = lean_api(
+        IdentityDataConsolidator=Identity,
+        TradeBar="TradeBar",
+        QuoteBar="QuoteBar",
+        TradeBarConsolidator=lambda period: ("built", period),
+        QuoteBarConsolidator=lambda period: ("built-quotes", period),
+    )
+    daily = BarsRequirement(Selection((A,)))
+    assert api.consolidator(daily, None, DAY) == ("identity", "TradeBar")
+    two_hours = BarsRequirement(Selection((A,)), timedelta(hours=2))
+    assert api.consolidator(two_hours, None, HOUR) == ("built", timedelta(hours=2))
+    quotes = QuotesRequirement(Selection((A,)), MINUTE)
+    assert api.consolidator(quotes, None, MINUTE) == ("identity", "QuoteBar")
+
+
+@pytest.mark.parametrize(
+    ("order_type", "method"),
+    [
+        ("market", "market_order"),
+        ("market_on_open", "market_on_open_order"),
+        ("market_on_close", "market_on_close_order"),
+    ],
+)
+def test_lean_submit_uses_the_native_call_for_each_order_type(order_type, method):
+    from sugarloaf.execution import OrderIntent
+
+    calls = []
+
+    def native(name):
+        return lambda symbol, quantity, **options: calls.append((name, symbol, quantity, options))
+
+    platform = NS(
+        market_order=native("market_order"),
+        market_on_open_order=native("market_on_open_order"),
+        market_on_close_order=native("market_on_close_order"),
+    )
+    api = lean_api(
+        OrderProperties=lambda: NS(time_in_force=None),
+        TimeInForce=NS(DAY="native day", GOOD_TIL_CANCELED="native gtc"),
+    )
+    intent = OrderIntent("i", "t", A, -3, NOW, NOW + timedelta(days=1), order_type)
+    api.submit(platform, "SYMBOL", intent)
+    name, symbol, quantity, options = calls[0]
+    assert (name, symbol, quantity) == (method, "SYMBOL", -3)
+    assert options["asynchronous"] is True and options["tag"] == "i"
+    assert options["order_properties"].time_in_force == "native gtc"
+    for_the_day = OrderIntent("k", "t", A, 1, NOW, NOW + DAY, order_type, "day")
+    api.submit(platform, "SYMBOL", for_the_day)
+    assert calls[1][3]["order_properties"].time_in_force == "native day"
+    with pytest.raises(CapabilityError, match="market, open and close"):
+        api.submit(platform, "SYMBOL", OrderIntent("j", "t", A, 1, NOW, NOW + DAY, "limit"))
+
+
+def test_lean_refusal_reads_an_invalid_ticket_and_passes_an_accepted_one():
+    api = lean_api()
+    response = NS(error_code="MarketOnCloseOrderTooLate", error_message="too late")
+    refused = NS(status="OrderStatus.Invalid", get_most_recent_order_response=lambda: response)
+    assert api.refusal(refused) == "MarketOnCloseOrderTooLate: too late"
+    assert api.refusal(NS(status="OrderStatus.Submitted")) is None
+
+
+def test_qc_gateway_accepts_three_order_types_and_reports_a_platform_refusal():
+    from sugarloaf.core.errors import OrderRefused
+    from sugarloaf.execution import ExecutionPolicy, OrderIntent
+
+    class RefusingAPI(API):
+        def submit(self, algorithm, symbol, intent):
+            # LEAN returns a ticket with no order behind it and sends no order event.
+            return NS(order_id=-10, refused="MarketOnCloseOrderTooLate: too late")
+
+    api, services = feeds(BarsRequirement(Selection((A,))))
+    gateway = QuantConnectGateway(services)
+    for order_type in ("market", "market_on_open", "market_on_close"):
+        for time_in_force in ("day", "gtc"):
+            policy = ExecutionPolicy(order_type=order_type, time_in_force=time_in_force)
+            assert gateway.capability(policy).supported
+    services.api = RefusingAPI()
+    intent = OrderIntent("i", "t", A, 1, NOW, NOW + DAY, "market_on_close")
+    with pytest.raises(OrderRefused, match="QC_ORDER_REFUSED: MarketOnCloseOrderTooLate"):
+        gateway.submit(intent)
+    assert gateway.orders == {}
+
+
+def test_qc_selection_passes_the_fundamentals_flag_to_a_universe_that_requires_it():
+    api, platform = API(), algorithm()
+    services = QuantConnectServices(platform, api=api)
+    definition = LiquidityUniverse("stocks", 1, require_fundamentals=True)
+    services.install("n", ResourceUpdate((UniverseRequirement(definition),), ()))
+    fund, stock = Symbol("f", "FUND"), Symbol("s", "STOCK")
+    rows = [
+        NS(symbol=fund, price=100, volume=10, dollar_volume=9000, has_fundamental_data=False),
+        NS(symbol=stock, price=100, volume=10, dollar_volume=1000, has_fundamental_data=True),
+    ]
+    # The fund is the more liquid of the two and is left out before the count.
+    assert api.selectors["stocks"](rows) == [stock]
+
+
+def test_lean_security_initializer_gives_a_new_security_its_last_known_price():
+    installed, applied = [], []
+    platform = NS(
+        add_security_initializer=installed.append,
+        get_last_known_prices=lambda symbol: [("last", symbol)],
+    )
+    api = lean_api(ConstantSlippageModel=lambda rate: ("slippage", rate))
+    api.setup(platform, 0.001, 2.0)
+    security = NS(
+        symbol="SYMBOL",
+        set_slippage_model=lambda model: applied.append(model),
+        set_leverage=lambda leverage: applied.append(("leverage", leverage)),
+        set_market_price=lambda data: applied.append(data),
+    )
+    installed[0](security)
+    assert applied == [("slippage", 0.001), ("leverage", 2.0), ("last", "SYMBOL")]
+
+
+def test_quantbook_replays_a_daily_reader_on_daily_bars_and_ticks_at_each_close():
+    from sugarloaf.adapters.quantconnect import QuantBookServices
+
+    class DailyAPI(IndicatorAPI):
+        def __init__(self):
+            super().__init__()
+            self.replayed = []
+
+        def history_range(self, algorithm, symbol, source, start, end):
+            self.replayed.append(source.interval)
+            for index in (1, 2):
+                yield native_bar(NOW + timedelta(days=index), 100 + index)
+
+    source = BarsRequirement(Selection((A,)), lookback=1)
+
+    class Reader(Signal):
+        def __init__(self):
+            super().__init__(source)
+            self.times = []
+
+        def evaluate(self, inputs, ctx):
+            self.times.append(ctx.now)
+            return super().evaluate(inputs, ctx)
+
+    api, reader = DailyAPI(), Reader()
+    provider = QuantBookServices(algorithm(), tickers={A: "A"}, api=api)
+    runtime = GraphRuntime(compiled(reader), provider)
+    end = NOW + timedelta(days=2)
+    provider.prepare(NOW, end)
+    for batch in provider.history_batches(NOW, end):
+        runtime.process(batch)
+    # The replay asks for the daily feed a deployment would subscribe, the identity
+    # consolidator passes each bar through, and the node sees two closes.
+    assert api.replayed == [DAY]
+    assert ("A", DAY, DAY) in api.consolidators
+    assert reader.times == [NOW + timedelta(days=1), NOW + timedelta(days=2)]
+    assert reader.reads == [(101.0,), (102.0,)]

@@ -34,6 +34,9 @@ class SelectionRow:
     volume: float | None = None
     dollar_volume: float | None = None
     weight: float | None = None
+    # Whether the provider has company fundamental data for the security; None
+    # when the provider cannot say.
+    has_fundamentals: bool | None = None
 
 
 def select(definition, rows):
@@ -56,16 +59,20 @@ def select(definition, rows):
     if isinstance(definition, LiquidityUniverse):
         if any(r.price is None or r.volume is None or r.dollar_volume is None for r in rows):
             raise NotReady("Liquidity selection fields missing")
+        if definition.require_fundamentals and any(r.has_fundamentals is None for r in rows):
+            # An unknown is not a no: selecting on a guess would change membership.
+            raise NotReady("Liquidity selection needs to know which securities have fundamentals")
         rows = [
             r
             for r in rows
             if all(isfinite(v) for v in (r.price, r.volume, r.dollar_volume))
             and r.price >= definition.min_price
             and r.volume >= definition.min_volume
+            and (r.has_fundamentals or not definition.require_fundamentals)
         ]
         # Stable identity makes ties independent of provider iteration order.
         rows.sort(key=lambda r: (-r.dollar_volume, r.instrument.value))
-        return tuple(r.instrument for r in rows[: definition.count])
+        return _first_distinct(rows, definition.count)
     if isinstance(definition, ETFConstituentsUniverse):
         if definition.missing_weight == "error" and any(r.weight is None for r in rows):
             raise NotReady("ETF constituent weight missing")
@@ -78,8 +85,18 @@ def select(definition, rows):
         if definition.min_weight is not None:
             rows = [r for r in rows if r.weight is not None and r.weight >= definition.min_weight]
         rows.sort(key=lambda r: (-(r.weight if r.weight is not None else -1), r.instrument.value))
-        return tuple(r.instrument for r in rows[: definition.count])
+        return _first_distinct(rows, definition.count)
     raise CapabilityError("Unsupported universe definition")
+
+
+def _first_distinct(rows, count):
+    """The first `count` distinct identities of ranked rows.
+
+    A provider can list one security twice in a day's selection data. A member is
+    selected once, by its best-ranked row, and a repeat does not use up a place.
+    """
+    members = dict.fromkeys(row.instrument for row in rows)
+    return tuple(members)[:count]
 
 
 def resource_key(req, instrument):

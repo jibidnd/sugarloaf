@@ -28,7 +28,7 @@ from sugarloaf.market.contracts import (
     UniverseRequirement,
 )
 
-from .lean import LeanAPI
+from .lean import DAY, MINUTE, LeanAPI, native_period
 
 
 def utc(value: datetime, zone: str = "UTC") -> datetime:
@@ -83,6 +83,11 @@ class QuantConnectDataServices(ProviderServices):
         self.consolidators = {}
         self.universes = {}
         self.universe_definitions = {}
+        # Feed settings each native universe source was created with: (period,
+        # session, normalization, fill-forward). A change recreates the source.
+        self._universe_feeds = {}
+        # Feed period planned for each security at the last resource sync.
+        self._feed_periods = {}
         self._selected_at = {}
         self.pending_events = []
         self.delisted = set()
@@ -167,14 +172,53 @@ class QuantConnectDataServices(ProviderServices):
         self.api.dispose_universe(universe)
         self._retired_universes.append((self._resource_epoch, universe))
         self.universe_definitions.pop(name, None)
+        self._universe_feeds.pop(name, None)
         self.memberships.pop(name, None)
         self._selected_at.pop(name, None)
         # Reject callbacks captured by the old source after its logical retirement.
         self._universe_generations[name] = self._universe_generations.get(name, 0) + 1
         self.pending_events.append(Event("universe", key=name))
 
+    def _universe_feed(self, name):
+        """The requirement that reads a universe's members, and the feed period they need.
+
+        Returns:
+            (feed, period): ``feed`` is a bars requirement selecting the universe
+            (a quotes requirement if there are no bars, None if no node reads the
+            members' prices); ``period`` is the finest ``native_period`` among them,
+            or one day when nothing reads prices.
+        """
+        feed, period = None, DAY
+        for update in self.resources.values():
+            for requested in update.requirements:
+                req = requested.source if isinstance(requested, IndicatorRequirement) else requested
+                if (
+                    not isinstance(req, (BarsRequirement, QuotesRequirement))
+                    or req.selection.universe != name
+                ):
+                    continue
+                period = min(period, native_period(req))
+                if feed is None or (
+                    isinstance(req, BarsRequirement) and not isinstance(feed, BarsRequirement)
+                ):
+                    feed = req
+        return feed, period
+
     def _install_universe(self, definition):
-        if self.universe_definitions.get(definition.name) == definition:
+        # LEAN subscribes each member it selects. Give the source the same feed
+        # settings the members' readers ask for, so a daily strategy gets daily
+        # members and each member carries a single subscription.
+        feed, period = self._universe_feed(definition.name)
+        settings = (
+            period,
+            getattr(feed, "session", "regular"),
+            getattr(feed, "normalization", "adjusted"),
+            bool(getattr(feed, "fill_forward", False)),
+        )
+        if (
+            self.universe_definitions.get(definition.name) == definition
+            and self._universe_feeds.get(definition.name) == settings
+        ):
             return
         self._validate_universe(definition)
         # Each LEAN source factory generates a unique platform universe symbol.
@@ -200,6 +244,9 @@ class QuantConnectDataServices(ProviderServices):
                             float(item.price),
                             float(item.volume),
                             float(item.dollar_volume),
+                            # None when the row does not say, which a universe
+                            # that requires fundamentals reports as not ready.
+                            has_fundamentals=getattr(item, "has_fundamental_data", None),
                         )
                     )
                 else:
@@ -228,12 +275,13 @@ class QuantConnectDataServices(ProviderServices):
                 raise CapabilityError("ETF universe requires a stable-identity ticker binding")
         # Construct the replacement before retiring the prior source. Its closure
         # will become authoritative when the generation is installed below.
-        universe = self.api.universe(self.algorithm, definition, selector, ticker)
+        universe = self.api.universe(self.algorithm, definition, selector, ticker, feed, period)
         if definition.name in self.universes:
             self._retire_universe(definition.name)
         self._universe_generations[definition.name] = generation
         self.universes[definition.name] = universe
         self.universe_definitions[definition.name] = definition
+        self._universe_feeds[definition.name] = settings
 
     def apply(self, batch: EventBatch) -> list[Event]:
         """Admit queued inputs after lifecycle resets, ownership changes, and native warmup.
@@ -324,10 +372,9 @@ class QuantConnectDataServices(ProviderServices):
 
     def _sync_resources(self, cutoff):
         """Share compatible windows, warm new resources, then release unused owners."""
-        # Indicator prefill has its own native warmup length. Window prefill below
-        # suppresses indicator updates to avoid feeding the same history twice.
-        self._sync_indicators(cutoff)
         desired = {}
+        # Securities a node names itself, as opposed to members a universe supplies.
+        explicit = set()
         for update in self.resources.values():
             for requested in update.requirements:
                 req = requested.source if isinstance(requested, IndicatorRequirement) else requested
@@ -335,22 +382,51 @@ class QuantConnectDataServices(ProviderServices):
                     continue
                 membership = self.memberships.get(req.selection.universe)
                 ids = membership.members if membership else req.selection.instruments
+                if not membership:
+                    explicit.update(ids)
                 for instrument in ids:
                     key = resource_key(req, instrument)
                     # Backing storage serves the largest compatible requested
                     # lookback; shared Context checks still bound each node's read.
                     if key not in desired or desired[key].lookback < req.lookback:
                         desired[key] = req
-        # A session schedule owns its calendar subscription even when no node reads
-        # that instrument's prices. Declaration checks still prohibit such reads.
+        # A schedule is checked whenever data arrives, so the security whose calendar
+        # it uses must tick at least once a minute. It owns a minute feed even when
+        # no node reads that security's prices; declaration checks still prohibit
+        # such reads.
+        calendars = set()
         for update in self.resources.values():
             for trigger in update.triggers:
                 calendar = trigger.schedule.calendar if trigger.schedule else None
-                if calendar is not None and not any(key[1] == calendar for key in desired):
-                    request = BarsRequirement(
-                        Selection((calendar,)), timedelta(minutes=1), normalization="raw"
-                    )
+                if calendar is None:
+                    continue
+                calendars.add(calendar)
+                if not any(key[1] == calendar for key in desired):
+                    request = BarsRequirement(Selection((calendar,)), MINUTE, normalization="raw")
                     desired[resource_key(request, calendar)] = request
+        # Each security is fed at the finest period any of its readers needs, and no
+        # finer: a node that reads daily bars does not cause a minute feed.
+        periods = {}
+        for key, req in desired.items():
+            periods[key[1]] = min(periods.get(key[1], DAY), native_period(req))
+        # LEAN reads a consolidator from the first subscription a security was given
+        # and ignores resolution. A security named explicitly is subscribed before
+        # any universe selects it, so give it at once the finest feed it could need
+        # as a member; a later, coarser universe subscription then changes nothing.
+        finest_universe = min((feed[0] for feed in self._universe_feeds.values()), default=DAY)
+        for instrument in explicit | calendars:
+            periods[instrument] = min(periods[instrument], finest_universe)
+        for calendar in calendars:
+            periods[calendar] = MINUTE
+        for instrument, period in periods.items():
+            # A feed is never made coarser while something still reads the security.
+            current = self._subscriptions.get(instrument)
+            if current is not None:
+                periods[instrument] = min(period, current[3])
+        self._feed_periods = periods
+        # Indicator prefill has its own native warmup length. Window prefill below
+        # suppresses indicator updates to avoid feeding the same history twice.
+        self._sync_indicators(cutoff, periods)
         # LEAN equity securities cannot carry incompatible adjustment/session subscriptions here.
         by_instrument = {}
         primary = {}
@@ -368,10 +444,12 @@ class QuantConnectDataServices(ProviderServices):
             if prior != semantics:
                 raise CapabilityError("Incompatible subscriptions for one LEAN equity security")
         for instrument, semantics in by_instrument.items():
+            semantics = (*semantics, periods[instrument])
             if self._subscriptions.get(instrument) == semantics:
                 continue
-            # The native subscription itself is changing (session, adjustment or
-            # fill-forward), so every window built on the old one is discarded.
+            # The native subscription itself is changing (session, adjustment,
+            # fill-forward or feed period), so every window built on the old one is
+            # discarded.
             for key in tuple(self.windows):
                 if key[1] == instrument:
                     self.algorithm.subscription_manager.remove_consolidator(
@@ -384,9 +462,22 @@ class QuantConnectDataServices(ProviderServices):
             ticker = existing.value if existing is not None else self.tickers.get(instrument)
             if ticker is None:
                 raise CapabilityError(f"No ticker binding for {instrument.value}")
-            symbol = self.api.subscribe(self.algorithm, ticker, primary[instrument])
+            period = periods[instrument]
+            symbol = self.api.subscribe(self.algorithm, ticker, primary[instrument], period)
             self.symbols[instrument] = symbol
             self.reverse[str(symbol.id)] = instrument
+            # The security may already carry a coarser subscription, added by a
+            # universe or an earlier declaration, and LEAN would feed consolidators
+            # from that one. Fail here instead of handing nodes bars of the wrong
+            # interval.
+            feeding = self.api.feed_period(
+                self.algorithm, symbol, not isinstance(primary[instrument], BarsRequirement)
+            )
+            if feeding is not None and feeding != period:
+                raise CapabilityError(
+                    f"{instrument.value} is already subscribed with a {feeding} feed and now "
+                    f"needs {period}; request the finer interval from the start"
+                )
             self._subscriptions[instrument] = semantics
         # Create or enlarge only the required windows. Replacing a consolidator
         # prevents the old handler from continuing to own the same resource key.
@@ -399,7 +490,8 @@ class QuantConnectDataServices(ProviderServices):
                 )
             instrument = key[1]
             symbol = self.symbols[instrument]
-            consolidator = self.api.consolidator(req, self.algorithm.securities[symbol])
+            period = periods[instrument]
+            consolidator = self.api.consolidator(req, self.algorithm.securities[symbol], period)
             # maxlen makes the deque drop its oldest value by itself once the
             # largest declared lookback is reached, so memory stays bounded.
             self.windows[key] = deque(maxlen=req.lookback)
@@ -428,11 +520,14 @@ class QuantConnectDataServices(ProviderServices):
             # The native history span may still be too short to satisfy readiness.
             self._prefilling = True
             try:
-                for bar in self.api.history(self.algorithm, symbol, req, cutoff, req.lookback):
+                history = self.api.history(
+                    self.algorithm, symbol, req, cutoff, req.lookback, period
+                )
+                for bar in history:
                     if self.api.to_utc(self.algorithm.securities[symbol], bar.end_time) <= cutoff:
                         # Native regular-session daily history is already
                         # consolidated; other histories feed the interval builder.
-                        if req.interval == timedelta(days=1) and req.session == "regular":
+                        if req.interval == DAY and req.session == "regular":
                             completed(consolidator, bar)
                         else:
                             consolidator.update(bar)
@@ -574,7 +669,7 @@ class QuantConnectDataServices(ProviderServices):
             resource_key(requirement.source, instrument),
         )
 
-    def _sync_indicators(self, cutoff):
+    def _sync_indicators(self, cutoff, periods):
         # Share equal kind/parameters/source semantics and retain the largest
         # output window requested by any owner. Window size is not indicator identity.
         desired = {}
@@ -598,7 +693,9 @@ class QuantConnectDataServices(ProviderServices):
                 ticker = self.tickers.get(instrument)
                 if ticker is None:
                     raise CapabilityError("Indicator instrument has no ticker binding")
-                symbol = self.api.subscribe(self.algorithm, ticker, req.source)
+                symbol = self.api.subscribe(
+                    self.algorithm, ticker, req.source, periods[instrument]
+                )
                 self.symbols[instrument] = symbol
                 self.reverse[str(symbol.id)] = instrument
             native, outputs, field = self.api.indicator(req)
@@ -618,7 +715,7 @@ class QuantConnectDataServices(ProviderServices):
             # Becoming ready gives one valid point; a window of N ready points
             # needs N-1 more inputs beyond the native indicator warmup period.
             warmup = int(native.warm_up_period) + req.window - 1
-            consolidator = self.api.consolidator(req.source, security)
+            consolidator = self.api.consolidator(req.source, security, periods[instrument])
 
             # This temporary consolidator initializes only this native indicator.
             # It is not registered as another streaming update path.
@@ -627,8 +724,10 @@ class QuantConnectDataServices(ProviderServices):
                     self._update_indicator(key, bar)
 
             consolidator.data_consolidated += warm
-            for bar in self.api.history(self.algorithm, symbol, req.source, cutoff, warmup):
-                if req.source.interval == timedelta(days=1) and req.source.session == "regular":
+            for bar in self.api.history(
+                self.algorithm, symbol, req.source, cutoff, warmup, periods[instrument]
+            ):
+                if req.source.interval == DAY and req.source.session == "regular":
                     warm(consolidator, bar)
                 else:
                     consolidator.update(bar)

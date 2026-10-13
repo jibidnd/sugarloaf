@@ -38,7 +38,7 @@ class ActionsAPI(IndicatorAPI):
     def corporate_actions(self, algorithm, symbol, start, end):
         return self.actions
 
-    def history(self, algorithm, symbol, req, cutoff, count):
+    def history(self, algorithm, symbol, req, cutoff, count, period=None):
         self.price = 50 if cutoff >= NOW + timedelta(minutes=2) else 100
         return super().history(algorithm, symbol, req, cutoff, count)
 

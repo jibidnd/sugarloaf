@@ -23,6 +23,7 @@ from sugarloaf.market.contracts import (
     UniverseRequirement,
 )
 
+from .lean import native_period
 from .services import QuantConnectDataServices
 
 
@@ -147,12 +148,14 @@ class QuantBookServices(QuantConnectDataServices):
                 )
                 if not isinstance(source, BarsRequirement):
                     continue
-                # Deployment subscribes minute upstream data even for daily nodes.
-                # Replay the same clock ticks so a 10:30 decision cannot see the
-                # day's later close merely because its node reads daily bars.
-                source = replace(source, interval=timedelta(minutes=1), lookback=1)
+                # Replay each security at the feed period a deployment subscribes
+                # it at (planned in _sync_resources), so the replay ticks exactly
+                # when the deployment would. A node that reads only daily bars
+                # ticks at the close; a 10:30 decision needs a reader of intraday
+                # data, or a schedule, whose minute feed then supplies the ticks.
                 for instrument in source.selection.instruments:
-                    feeds[instrument] = source
+                    period = self._feed_periods.get(instrument, native_period(source))
+                    feeds[instrument] = replace(source, interval=period, lookback=1)
             # A session schedule still needs its calendar instrument's feed even
             # when no node is authorized to read that instrument's prices.
             for trigger in update.triggers:
@@ -164,7 +167,7 @@ class QuantBookServices(QuantConnectDataServices):
         return feeds
 
     def history_batches(self, start: datetime, end: datetime) -> Iterator[EventBatch]:
-        """Merge native minute feeds and lifecycle facts by observation end.
+        """Merge native feeds and lifecycle facts by observation end.
 
         Args:
             start: Exact prepared start boundary.
@@ -271,8 +274,9 @@ class QuantBookServices(QuantConnectDataServices):
             for key, consolidator in tuple(self.consolidators.items()):
                 if key[1] != instrument:
                     continue
-                # Replay feeds are always minute bars; native consolidators build
-                # every declared interval, including exchange-session daily bars.
+                # A replay feed carries bars of the security's feed period. The
+                # native consolidators pass that interval through and build every
+                # coarser declared one.
                 consolidator.update(bar)
         # Flush any interval due at the cutoff, even without a sample exactly at
         # its close. The cutoff still prevents a later completed bar from leaking in.

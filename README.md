@@ -97,7 +97,8 @@ Sugarloaf does not import strategy packages by name.
 ## Current scope
 
 QuantConnect is the first native platform adapter. Trading currently supports US
-equities with regular-session day market orders. Native indicators depend on
+equities with regular-session day or good-till-cancelled market, market-on-open
+and market-on-close orders. Native indicators depend on
 LEAN; memory services supply deterministic fixtures, not a market simulator.
 Live restart/recovery and durable runtime state are not implemented.
 

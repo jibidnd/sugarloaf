@@ -250,9 +250,14 @@ def test_data_reset_withdraws_only_the_nodes_the_provider_names():
     runtime.process(lifecycle_batch(2, "dividend", A, amount=1.0))
     assert [node.calls for node in nodes.values()] == [2, 1, 1]
 
-    # A split changes what a share of A is, whichever vendor supplies the data.
-    # Every View naming A is withdrawn; the other stock is still untouched.
+    # A split changes what a share of A is, but these are scores about A's
+    # return, which mean what they did. Nothing is withdrawn.
     runtime.process(lifecycle_batch(3, "split", A, factor=0.5))
+    assert [node.calls for node in nodes.values()] == [2, 1, 1]
+
+    # A delisting ends A, whichever vendor supplies the data. Every View naming
+    # it is withdrawn; the other stock is still untouched.
+    runtime.process(lifecycle_batch(4, "delisting", A))
     assert [node.calls for node in nodes.values()] == [3, 2, 1]
     assert runtime.store.get("reads_b", "views") == before["reads_b"]
 
@@ -290,6 +295,26 @@ def test_split_withdraws_views_naming_the_instrument_but_a_dividend_does_not():
     runtime.process(lifecycle_batch(2, "split", A, factor=0.5))
     assert (source.calls, consumer.calls) == (calls[0] + 1, calls[1] + 1)
     assert runtime.store.get("c", "p") != kept
+
+
+def test_split_leaves_weight_targets_and_return_claims_standing():
+    class Weights(Source):
+        def evaluate(self, inputs, ctx):
+            self.calls += 1
+            identity, end = f"{ctx.node_id}:{ctx.snapshot_id}", ctx.now + timedelta(days=1)
+            meta = Metadata(identity, ctx.node_id, ctx.now, end)
+            return NodeOutputs({"p": (PositionView({A: 0.2}, "weight", "account", meta),)})
+
+    source = Weights()
+    runtime = GraphRuntime(graph(source), MemoryServices())
+    runtime.process(EventBatch(0, NOW, (Event("data"),)))
+    kept = runtime.store.get("s", "p")
+    # "20% of NAV in A" is the same position before and after a split.
+    runtime.process(lifecycle_batch(1, "split", A, factor=0.5))
+    assert runtime.store.get("s", "p") == kept and source.calls == 1
+    # A delisting ends it.
+    runtime.process(lifecycle_batch(2, "delisting", A))
+    assert source.calls == 2 and runtime.store.get("s", "p") != kept
 
 
 def test_identity_ledger_remembers_only_the_most_recent_identities():

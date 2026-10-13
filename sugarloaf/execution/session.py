@@ -1,6 +1,6 @@
 """Host-level composition of graph decisions and strategy execution."""
 
-from sugarloaf.core.events import EventBatch
+from sugarloaf.core.events import RESCALING, EventBatch, LifecycleEvent
 from sugarloaf.core.graph import CompiledGraph
 from sugarloaf.core.views import PositionView
 from sugarloaf.runtime import GraphRuntime
@@ -41,6 +41,8 @@ class TradingSession:
         holdings. That includes a corporate action: the runtime withdraws the
         Views it affects, so an affected target disappears here and its orders are
         cancelled, while a target that does not involve the instrument carries on.
+        A weight target survives a split; only its waiting orders in the split
+        instrument are cancelled, and they are sized again.
         Exceptions also invalidate execution and propagate to the host.
         """
         # This is the shared bridge from an admitted market batch to order authority.
@@ -53,6 +55,13 @@ class TradingSession:
             return runtime.store
         try:
             store = runtime.process(batch)
+            # A split leaves a weight target standing, but orders already waiting
+            # in that instrument were counted in the old shares. Cancel them; the
+            # reconciliation below sizes again from fresh holdings and prices.
+            for event in batch.events:
+                fact = event.payload
+                if isinstance(fact, LifecycleEvent) and fact.kind in RESCALING:
+                    self.execution.cancel_orders(fact.instrument)
             # A compiled PositionView declaration is necessary but insufficient: each batch
             # must actually leave exactly one usable terminal target in the ViewStore.
             outputs = store.get(*runtime.graph.output)

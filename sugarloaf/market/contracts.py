@@ -349,6 +349,10 @@ class LiquidityUniverse:
     count: int
     min_price: float = 0
     min_volume: float = 0
+    # Keep only securities the provider has company fundamental data for. In
+    # practice this drops funds and notes, which otherwise rank among the most
+    # liquid "stocks". The filter is applied before the count is taken.
+    require_fundamentals: bool = False
     # Membership is recomputed only when this trigger fires.
     refresh: Trigger = Trigger("universe")
     # How long a member's data resources are kept after it drops out, so a brief

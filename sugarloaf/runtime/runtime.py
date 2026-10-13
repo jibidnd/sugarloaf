@@ -6,19 +6,12 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 
 from sugarloaf.core.errors import ContractError, NotReady, NumericalError
-from sugarloaf.core.events import DataReset, EventBatch, LifecycleEvent
+from sugarloaf.core.events import ENDING, RESCALING, DataReset, EventBatch, LifecycleEvent
 from sugarloaf.core.graph import CompiledGraph
 from sugarloaf.core.node import InputSpec, NodeInputs, NodeOutputs
 from sugarloaf.core.primitives import InstrumentId
 from sugarloaf.core.views import PositionView, View
 from sugarloaf.market.contracts import ResourceUpdate, UniverseRequirement
-
-# Lifecycle kinds that change what one unit of an instrument is, or whether it
-# can be held at all. This is true of the instrument itself, whichever vendor
-# supplies the data: after a 10-for-1 split "hold 10 shares" is a tenth of the
-# position it described, and a delisted instrument cannot be held. A dividend or
-# a ticker change alters neither, so those kinds are not listed.
-_UNIT_CHANGING = frozenset({"split", "delisting", "expiry", "exercise", "assignment"})
 
 # Ledger marker for an identity withdrawn by a data reset or a lifecycle event.
 # It is a distinct object so it can never compare equal to a real View.
@@ -35,6 +28,26 @@ def _subjects(view: View) -> set:
         subject = target.subject
         subjects.update(subject if isinstance(subject, tuple) else (subject,))
     return subjects
+
+
+def _unit_free(target) -> bool:
+    # A return is a ratio of prices of the same unit; a difference of returns too.
+    if target.quantity == "difference":
+        return all(_unit_free(component) for component in target.components)
+    return target.quantity == "return"
+
+
+def _in_units(view: View) -> bool:
+    """Whether a View is stated in units of its subject (shares, a price level).
+
+    A quantity position is; a weight position is not. A claim about a return, or
+    a difference of returns, is not; a claim about anything else (a price, a
+    volume) is taken to be.
+    """
+    if isinstance(view, PositionView):
+        return view.units == "quantity"
+    target = getattr(view, "target", None)
+    return target is None or not _unit_free(target)
 
 
 @dataclass(frozen=True)
@@ -185,11 +198,14 @@ class GraphRuntime:
         self.batch: EventBatch | None = None
         self._pending = {}
         self._processing = False
-        # (node ID, instrument) -> time of the latest data reset or unit-changing
+        # (node ID, instrument) -> time of the latest data reset or ending
         # lifecycle event that applies to that node and instrument. A View from
         # that node about that instrument must be based on information at or
         # after this time. See _withdraw_invalidated for what sets it.
         self._valid_from: dict[tuple[str, InstrumentId], datetime] = {}
+        # The same watermark for the latest split. It binds only Views stated in
+        # units of the instrument.
+        self._units_from: dict[tuple[str, InstrumentId], datetime] = {}
         for node_id in graph.topological_order:
             node = graph.nodes[node_id]
             services.install(
@@ -381,10 +397,16 @@ class GraphRuntime:
           declared. Whether a corporate action required that is the provider's
           decision; the runtime does not reason about dividends or price
           conventions. A provider that rebuilt nothing reports nothing.
-        * A lifecycle event changed what a unit of the instrument is (a split, a
-          delisting, an option expiry and so on). Every active View that names the
-          instrument is withdrawn, whatever data its node read, because a share
-          count or a forecast about it no longer means what it did.
+        * A lifecycle event ended the instrument or changed what one unit of it
+          is, whatever data a node read:
+
+          - A delisting, expiry, exercise or assignment withdraws every active
+            View that names the instrument.
+          - A split withdraws the Views stated in units of it: a quantity
+            position, a claim about a price level. A weight position, a ranking
+            or a return forecast means what it did and stays. (If the split
+            also made the provider rebuild a node's data, that arrives as a
+            ``DataReset`` and withdraws the node by the first rule.)
 
         Only that part of the graph is touched. A dividend on one stock of a
         large universe must not withdraw every other forecast and cancel every
@@ -399,28 +421,32 @@ class GraphRuntime:
                 # more than one consumer.
                 nodes = self._descendants(set(fact.nodes) & set(self.graph.nodes))
                 # Only the rebuilt nodes are barred from publishing older claims.
-                bound = nodes
-            elif isinstance(fact, LifecycleEvent) and fact.kind in _UNIT_CHANGING:
+                bound, watermark = nodes, self._valid_from
+            elif isinstance(fact, LifecycleEvent) and fact.kind in ENDING | RESCALING:
+                rescaled = fact.kind in RESCALING
                 nodes = self._descendants(
                     {
                         node
                         for node in self.graph.nodes
                         for views in self.store.get(node).by_port.values()
-                        if any(fact.instrument in _subjects(view) for view in views)
+                        if any(
+                            fact.instrument in _subjects(view)
+                            and (_in_units(view) or not rescaled)
+                            for view in views
+                        )
                     }
                 )
-                # Every node is barred: after a split no node may publish a claim
-                # about the instrument that rests on information from before it,
-                # whether or not it had an active View to withdraw at this moment.
+                # Every node is barred: afterwards no node may publish such a claim
+                # about the instrument resting on information from before the
+                # event, whether or not it had an active View to withdraw now.
                 bound = self.graph.nodes
+                watermark = self._units_from if rescaled else self._valid_from
             else:
                 continue
             for node in bound:
                 key = (node, fact.instrument)
                 # A late older fact cannot lower the last known boundary.
-                self._valid_from[key] = max(
-                    fact.effective_at, self._valid_from.get(key, fact.effective_at)
-                )
+                watermark[key] = max(fact.effective_at, watermark.get(key, fact.effective_at))
             affected |= nodes
         for node in affected:
             self.store.retire(node)
@@ -450,10 +476,12 @@ class GraphRuntime:
                 # information from after the reset or lifecycle event. In practice
                 # a node re-evaluated in the event's own batch is refused here and
                 # publishes again on its next bar, once it has seen newer data.
+                watermarks = (self._valid_from, *((self._units_from,) * _in_units(view)))
                 if any(
-                    view.metadata.cutoff < self._valid_from[node_id, instrument]
+                    view.metadata.cutoff < watermark[node_id, instrument]
+                    for watermark in watermarks
                     for instrument in _subjects(view)
-                    if (node_id, instrument) in self._valid_from
+                    if (node_id, instrument) in watermark
                 ):
                     raise NotReady("View information cutoff predates instrument lifecycle change")
                 if (

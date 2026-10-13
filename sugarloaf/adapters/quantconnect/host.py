@@ -1,10 +1,14 @@
 """A thin serial event boundary around LEAN callbacks and neutral execution."""
 
-from collections import deque
 
-from sugarloaf.core.errors import ContractError, NotReady
+from sugarloaf.core.errors import ContractError, NotReady, OrderRefused
 from sugarloaf.core.events import Event, EventBatch, LifecycleEvent
-from sugarloaf.execution.contracts import ExecutionPolicy, OrderUpdate
+from sugarloaf.execution.contracts import (
+    ORDER_TYPES,
+    TIMES_IN_FORCE,
+    ExecutionPolicy,
+    OrderUpdate,
+)
 from sugarloaf.execution.session import TradingSession
 from sugarloaf.market.contracts import Capability
 
@@ -21,12 +25,12 @@ class QuantConnectGateway:
         self.orders = {}
 
     def capability(self, policy: ExecutionPolicy) -> Capability:
-        """Accept regular-session day market orders only."""
+        """Accept regular-session day or gtc orders: market, market-on-open, market-on-close."""
         return Capability(
-            policy.order_type == "market"
-            and policy.time_in_force == "day"
+            policy.order_type in ORDER_TYPES
+            and policy.time_in_force in TIMES_IN_FORCE
             and policy.session == "regular",
-            "QC gateway supports regular-session day market orders",
+            "QC gateway supports regular-session day or gtc market, open and close orders",
         )
 
     def context(self):
@@ -46,8 +50,14 @@ class QuantConnectGateway:
         ticket = services.api.submit(
             services.algorithm, services.symbols[intent.instrument], intent
         )
-        self.orders[str(ticket.order_id)] = intent.intent_id
         services._changed()
+        # LEAN refuses some orders before creating them (a market-on-close order
+        # sent too late, for instance). Such a ticket has no order behind it and
+        # no order event follows, so report the refusal now.
+        refusal = services.api.refusal(ticket)
+        if refusal is not None:
+            raise OrderRefused("QC_ORDER_REFUSED: " + refusal)
+        self.orders[str(ticket.order_id)] = intent.intent_id
         return str(ticket.order_id)
 
     def cancel(self, order_id: str) -> None:
@@ -132,10 +142,10 @@ class QuantConnectHost:
         # Share the session's one runtime for clock checks and final reports.
         self.runtime = self.session.runtime
         self.sequence = 0
-        # Serialize reentrant feedback instead of nesting reconciliation while
-        # submission is still establishing an order identity.
+        # Serialize reconciliation: feedback that arrives while a decision or a
+        # reconciliation is running asks for another pass instead of nesting one.
         self._busy = False
-        self._feedback = deque()
+        self._reconcile_due = False
         # Callback-queued facts waiting for the next slice that carries data.
         self._held: list[Event] = []
         # The session installed node declarations. Create/warm their resources
@@ -271,11 +281,15 @@ class QuantConnectHost:
         self._drain_feedback()
 
     def on_order_event(self, event):
-        """Queue feedback even when LEAN calls synchronously during submission."""
+        """Pass feedback to execution at once, even when LEAN calls during submission."""
+        # The provider version change invalidates any cached account Context.
         self.services._changed()
-        # The provider version above invalidates any cached account Context.
-        # Keep this event queued if submission/decision work is still active.
-        self._feedback.append(event)
+        # LEAN has already put this event's fill into holdings. The engine must
+        # learn of it before it reads holdings again, so it is handed over now and
+        # not held here. An idle engine applies it immediately; a reconciling one
+        # queues it until the order it is submitting has its ID.
+        self.execution.on_order_update(self._order_update(event))
+        self._reconcile_due = True
         if not self._busy:
             self._drain_feedback()
 
@@ -284,14 +298,10 @@ class QuantConnectHost:
             return
         self._busy = True
         try:
-            while self._feedback:
-                # Holdings already include every synchronous fill. Apply all queued
-                # intent updates before comparing holdings with local pending quantities.
-                while self._feedback:
-                    event = self._feedback.popleft()
-                    self.execution.on_order_update(self._order_update(event))
-                # Reconciliation can submit/cancel and queue more callbacks. The
-                # outer loop drains that work before releasing the boundary.
+            # Reconciliation can submit or cancel and so cause more feedback; repeat
+            # until a pass ends with none before releasing the boundary.
+            while self._reconcile_due:
+                self._reconcile_due = False
                 self.execution.reconcile()
         finally:
             self._busy = False

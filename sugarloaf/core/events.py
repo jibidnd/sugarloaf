@@ -29,6 +29,18 @@ def _immutable_payload(value):
     raise ContractError("Events require neutral immutable payloads")
 
 
+# Lifecycle kinds after which the instrument cannot be held as before: it is gone,
+# or has become something else. Every View naming it is void. A dividend or a
+# ticker change does neither, so those kinds are in neither set.
+ENDING = frozenset({"delisting", "expiry", "exercise", "assignment"})
+# A split changes what one unit is and nothing else. After a 10-for-1 split "hold
+# 10 shares" is a tenth of the position it described, while "hold 2% of NAV" and
+# "expect a 1% return" mean exactly what they did. Only Views stated in units of
+# the instrument are void.
+RESCALING = frozenset({"split"})
+UNIT_CHANGING = ENDING | RESCALING
+
+
 @dataclass(frozen=True)
 class LifecycleEvent:
     """An instrument lifecycle fact with an aware effective time.
