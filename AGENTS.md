@@ -129,3 +129,8 @@ capital allocation require explicit authorization for those actions.
 Obtain explicit approval before every commit and separately before every push.
 Preserve unrelated user changes. Implementation approval does not authorize
 publication, merging, release, or outbound messages.
+
+Name a branch for its work, as `<kind>/<topic>`: `fix/order-feedback`,
+`adapter/native-feeds`, `docs/execution`. A session that starts on an
+automatically named branch renames it before its first push. A branch name does
+not name an assistant or a tool.
