@@ -6,7 +6,7 @@ from typing import Mapping
 
 from sugarloaf.core.errors import ContractError
 from sugarloaf.core.node import Node
-from sugarloaf.core.views import PositionView, View
+from sugarloaf.core.views import Message, PositionView
 
 
 @dataclass(frozen=True)
@@ -146,8 +146,8 @@ class Graph:
         if output_node not in self._nodes or output_port not in self._nodes[output_node].outputs:
             raise ContractError("Unknown graph output")
         emits = self._nodes[output_node].outputs[output_port].emits
-        if not emits or any(not issubclass(kind, View) for kind in emits):
-            raise ContractError("Graph output must emit View types")
+        if not emits or any(not issubclass(kind, Message) for kind in emits):
+            raise ContractError("Graph output must emit message types")
         if any(e.source_node == output_node for e in self._edges):
             raise ContractError("Graph output node must be terminal")
         for node_id, node in self._nodes.items():

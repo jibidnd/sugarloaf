@@ -22,26 +22,51 @@ by the research archive; it never rewrites View metadata.
 `Target(subject, quantity, time, units='decimal', convention='price_return',
 components=())` specifies what a prediction concerns. Subjects may be scalar/joint
 instruments or another explicit subject; time is an observation, interval or tuple
-of intervals. A difference target contains two component targets. Constructing
-a general Target does not imply that a particular consumer supports it.
+of intervals, so the forecast horizon is part of the target. A difference target
+contains two component targets. `return_target(instrument, interval)` builds a
+scalar return and `relative_return(left, right, interval)` the left-minus-right
+difference of two aligned returns. Constructing a general Target does not imply
+that a particular consumer supports it.
 
-| View | Payload and meaning |
-| --- | --- |
-| `ReturnView` | Scalar return target + `Estimate(value, forecast_error_scale, property, quantile)` |
-| `RelativeReturnView` | Left-minus-right return target + estimate |
-| `ProbabilityView` | Target + events/probabilities; each event is lower < return <= upper |
-| `DistributionView` | Target + law with explicit support/units; law owns joint dependence |
-| `RankingView` | Joint return target + highest-to-lowest tied groups and positive temperature |
-| `ScoreView` | Target + scalar value and calibration identity; not an implied return/probability |
-| `PositionView` | Instrument→amount map, `weight` or `quantity`, branch scope, metadata, optional attribution |
+A predictive claim is `View(target, statement, metadata)`: what is forecast and
+how the forecast is stated. The statement is one of five representations.
 
-Estimate can represent mean, variance or quantile, but ReturnView and
-RelativeReturnView currently accept **mean only**. Error scale is positive and
-describes forecast uncertainty, not asset volatility. Exhaustive probabilities
-must partition the real line and sum to one; other events remain separate.
-Rankings contain each instrument once. Distribution laws must behave immutably.
-View constructors validate their concrete semantics. Each consumer node declares
-the View types and statement semantics it supports.
+| Representation | States | Answers |
+| --- | --- | --- |
+| `Estimate(value, forecast_error_scale, property='mean', level=None)` | One property of the target: mean, variance or the quantile at `level` | That property only |
+| `Probability(events, probabilities, exhaustive=False)` | Probabilities of named events, each lower < return <= upper | The stated events only |
+| `Distribution` (abstract) | A full law with `units`, `support` and `dimension` | Whatever the subclass implements, plus what follows from it |
+| `Ordering(groups, temperature)` | Highest-to-lowest tied groups of the target's instruments | The order |
+| `Score(value, calibration_id)` | A scalar on a named calibration; not an implied return or probability | Nothing beyond itself |
+
+`Probability` is a partial claim about events; `Distribution` is a complete law.
+Every representation has `capabilities` and `supports(query)` and the queries
+`mean()`, `variance()`, `quantile(p)` and `probability(lower, upper)`; a query the
+statement cannot answer raises `CapabilityError`. A `Distribution` subclass
+implements what it can (`cdf`, `quantile`, `pdf` or `logpdf`, `mean`,
+`variance`) and the base class derives event probabilities from the CDF and
+density from log density or the reverse. Moments are not inferred from a
+quantile function, which does not show whether they exist. A subclass may not
+use a query name as a field. A joint law sets
+`dimension` to its number of coordinates and owns its dependence assumptions.
+`QuantileDistribution(levels, values, lower_bound, tail_scale_low,
+tail_scale_high)` is the concrete scalar law built from stated quantiles: linear
+quantile function between them, exponential tails beyond, closed-form moments.
+
+`View` validates the pair: estimates and probabilities need a scalar or relative
+return target; a distribution's units match the target and its dimension equals
+the number of joint instruments; an ordering's instruments equal the target's
+subject. Named subclasses fix one combination and remain for existing code:
+`ReturnView` (scalar return + mean Estimate), `RelativeReturnView` (relative
+return + mean Estimate), `ProbabilityView`, `DistributionView`, `RankingView` and
+`ScoreView`. `PositionView` is not a View: it is an instrument→amount map,
+`weight` or `quantity`, branch scope, metadata and optional attribution.
+
+Error scale is positive and describes forecast uncertainty, not asset volatility.
+Exhaustive probabilities must partition the real line and sum to one; other
+events remain separate. Orderings contain each instrument once. Distributions
+must behave immutably. Each consumer declares the representations it accepts and,
+through `InputSpec.needs`, the queries it will ask, such as `("mean",)`.
 
 ## Node and graph interfaces
 
@@ -50,8 +75,8 @@ the View types and statement semantics it supports.
 
 | Object | Contract |
 | --- | --- |
-| `InputSpec` | Accepted View classes; min/max count; optional statement classes, quantities and properties |
-| `OutputSpec` | Emitted View classes and optional semantic guarantees |
+| `InputSpec` | Accepted message classes; min/max count; optional statement classes, quantities and properties; `needs` queries every statement must answer |
+| `OutputSpec` | Emitted message classes and optional semantic guarantees |
 | `NodeInputs.by_port` | Immutable port→View tuples; incoming edges concatenate in registration order |
 | `NodeOutputs.by_port` | Complete replacement of every output port; omission/empty tuple withdraws old Views |
 | `NodeOutputs.resources` | None retains declarations; `ResourceUpdate(requirements,triggers)` replaces them next batch |

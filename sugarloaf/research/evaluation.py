@@ -17,14 +17,12 @@ from scipy.stats import kendalltau, rankdata
 from sugarloaf.core.errors import CapabilityError, ContractError, NotReady
 from sugarloaf.core.primitives import InstrumentId, Interval, aware, finite, frozen_map
 from sugarloaf.core.views import (
-    DistributionView,
+    Distribution,
+    Estimate,
+    Ordering,
     Probability,
-    ProbabilityView,
-    RankingView,
-    RelativeReturnView,
     ReturnEvent,
-    ReturnView,
-    ScoreView,
+    Score,
     Target,
     View,
 )
@@ -252,7 +250,7 @@ def _probability_metrics(statement: Probability, value: float) -> dict[str, floa
     return metrics
 
 
-def _ranking_metrics(view: RankingView, outcome: Outcome) -> dict[str, float | None]:
+def _ranking_metrics(view: View, outcome: Outcome) -> dict[str, float | None]:
     if not isinstance(outcome.value, tuple) or len(outcome.value) != len(view.target.subject):
         raise CapabilityError("Ranking outcome must follow its target's instrument order")
     # Resolve values by stable instrument identity before comparing predicted
@@ -290,8 +288,8 @@ def _ranking_metrics(view: RankingView, outcome: Outcome) -> dict[str, float | N
     }
 
 
-def _distribution_metrics(view: DistributionView, outcome: Outcome) -> dict[str, float]:
-    law = view.statement.law
+def _distribution_metrics(view: View, outcome: Outcome) -> dict[str, float]:
+    law = view.statement
     # Joint predictions must be scored at their full realized coordinate vector.
     # Multiplying marginal densities would silently discard the stated dependence.
     dimension = len(outcome.value) if isinstance(outcome.value, tuple) else 1
@@ -303,26 +301,20 @@ def _distribution_metrics(view: DistributionView, outcome: Outcome) -> dict[str,
         return _probability_metrics(
             Probability(tuple(law.events), tuple(law.masses), exhaustive=True), _scalar(outcome)
         )
-    if not callable(getattr(law, "logpdf", None)) and not callable(getattr(law, "pdf", None)):
+    if not law.supports("pdf"):
         raise CapabilityError(
             "Distribution scoring requires a joint/scalar density or event masses"
         )
-    # Prefer log density for numerical stability. Continuous densities can exceed
+    # Log density is used for numerical stability. Continuous densities can exceed
     # one, so negative log scores can be negative and depend on units/dimension.
-    if callable(getattr(law, "logpdf", None)):
-        log_density = float(law.logpdf(outcome.value))
-        if np.isnan(log_density) or log_density == float("inf"):
-            raise ContractError("Predictive law returned an invalid log density")
-        score = -log_density
-    else:
-        density = float(law.pdf(outcome.value))
-        if density < 0 or not isfinite(density):
-            raise ContractError("Predictive law returned an invalid density")
-        score = _log_loss(density)
+    log_density = float(law.logpdf(outcome.value))
+    if np.isnan(log_density) or log_density == float("inf"):
+        raise ContractError("Predictive distribution returned an invalid log density")
+    score = -log_density
     metrics = {"log_score": score}
     # Scalar PIT describes where the realization falls in the predicted CDF.
     # Do not invent a scalar CDF transform for a joint distribution.
-    if not isinstance(outcome.value, tuple) and callable(getattr(law, "cdf", None)):
+    if not isinstance(outcome.value, tuple) and law.supports("cdf"):
         pit = float(law.cdf(outcome.value))
         if not isfinite(pit) or not 0 <= pit <= 1:
             raise ContractError("Predictive law returned an invalid CDF")
@@ -349,7 +341,9 @@ def default_metrics(view: View, outcome: Outcome) -> Mapping[str, float | None]:
     """
     if outcome.status != "resolved" or outcome.target != view.target:
         raise ContractError("Metrics require a resolved outcome for the exact View target")
-    if isinstance(view, (ReturnView, RelativeReturnView)):
+    # Metrics follow the representation, whatever named View class carries it.
+    statement = view.statement
+    if isinstance(statement, Estimate) and statement.property == "mean":
         realized = _scalar(outcome)
         # Error direction is predicted minus realized. Standardization uses the
         # claim's stated forecast-error scale; it does not fit calibration here.
@@ -361,15 +355,15 @@ def default_metrics(view: View, outcome: Outcome) -> Mapping[str, float | None]:
             "standardized_error": error / view.statement.forecast_error_scale,
             "zero_baseline_squared_error": realized**2,
         }
-    if isinstance(view, ProbabilityView):
+    if isinstance(statement, Probability):
         return _probability_metrics(view.statement, _scalar(outcome))
     # Raw scores stay raw. Association is summarized across comparable forecasts;
     # no default mapping turns an arbitrary score into a calibrated return estimate.
-    if isinstance(view, ScoreView):
+    if isinstance(statement, Score):
         return {"score": view.statement.value, "realized": _scalar(outcome)}
-    if isinstance(view, RankingView):
+    if isinstance(statement, Ordering):
         return _ranking_metrics(view, outcome)
-    if isinstance(view, DistributionView):
+    if isinstance(statement, Distribution):
         return _distribution_metrics(view, outcome)
     raise CapabilityError(f"No default predictive metrics for {type(view).__name__}")
 
@@ -406,19 +400,25 @@ def _cohort(record: ForecastRecord, pool_horizons: bool = False) -> tuple:
     # Model/target semantics alone do not identify calibration or event meanings.
     # Preserve those distinctions so incompatible predictive claims do not pool.
     detail = ()
-    if isinstance(view, ScoreView):
+    if isinstance(statement, Score):
         detail = (statement.calibration_id,)
-    elif isinstance(view, ProbabilityView):
+    elif isinstance(statement, Estimate):
+        detail = (statement.property, statement.level)
+    elif isinstance(statement, Probability):
         detail = (statement.events, statement.exhaustive)
-    elif isinstance(view, DistributionView):
-        law = statement.law
-        detail = (type(law).__module__, type(law).__qualname__, getattr(law, "events", ()))
+    elif isinstance(statement, Distribution):
+        detail = (
+            type(statement).__module__,
+            type(statement).__qualname__,
+            getattr(statement, "events", ()),
+        )
     target_group = _target_group(view.target, record.received_at, pool_horizons)
-    if isinstance(view, RankingView):
+    if isinstance(statement, Ordering):
         # Cohorts describe the same ranked universe, not the forecast's ordering.
         target_group = (tuple(sorted(view.target.subject)), *target_group[1:])
     return (
-        type(view).__name__,
+        # Cohorts follow the representation, not the named View class carrying it.
+        type(view.statement).__name__,
         record.node_id,
         view.metadata.model_version,
         target_group,
@@ -471,7 +471,7 @@ def _probability_calibration(rows: list[EvaluationRow], names: set[str]) -> dict
     calibration = {}
     for name in names:
         if not isinstance(
-            rows[0].forecast.view, (ProbabilityView, DistributionView)
+            rows[0].forecast.view.statement, (Probability, Distribution)
         ) or not name.startswith("probability_"):
             continue
         suffix = name.removeprefix("probability_")
@@ -566,7 +566,7 @@ class EvaluationReport:
                 ),
                 "issued_after_target_end": sum(row.issued_after_target_end for row in rows),
             }
-            if isinstance(rows[0].forecast.view, ScoreView):
+            if isinstance(rows[0].forecast.view.statement, Score):
                 item.update(_score_correlations(rows))
             calibration = _probability_calibration(rows, names)
             if calibration:
