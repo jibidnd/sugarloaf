@@ -22,7 +22,7 @@ from scipy.stats import rankdata
 
 from sugarloaf.core.errors import ContractError
 from sugarloaf.core.primitives import InstrumentId, Interval
-from sugarloaf.core.views import ReturnView, ScoreView
+from sugarloaf.core.views import Estimate, Score
 from sugarloaf.research.evaluation import EvaluationRow
 
 
@@ -115,7 +115,9 @@ def block_bootstrap_interval(
 def _cross_section_key(row: EvaluationRow, pool_horizons: bool) -> tuple | None:
     """Return the cohort a row's forecast belongs to, or None when it cannot be ranked."""
     view = row.forecast.view
-    if row.status != "scored" or not isinstance(view, (ScoreView, ReturnView)):
+    statement = view.statement
+    is_mean = isinstance(statement, Estimate) and statement.property == "mean"
+    if row.status != "scored" or not (isinstance(statement, Score) or is_mean):
         return None
     target = view.target
     # A cross-section ranks single instruments over one shared interval, against
@@ -129,10 +131,11 @@ def _cross_section_key(row: EvaluationRow, pool_horizons: bool) -> tuple | None:
         return None
     # Scores under different calibration identities mean different things and
     # must not be ranked against each other.
-    meaning = view.statement.calibration_id if isinstance(view, ScoreView) else None
+    meaning = statement.calibration_id if isinstance(statement, Score) else None
     duration = None if pool_horizons else (target.time.end - target.time.start).total_seconds()
     return (
-        type(view).__name__,
+        # Cohorts follow the representation, not the named View class carrying it.
+        type(view.statement).__name__,
         view.metadata.model_version,
         meaning,
         target.quantity,

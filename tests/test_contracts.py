@@ -69,16 +69,19 @@ def test_probability_partition_validation_does_not_normalize_independent_events(
 
 
 def test_joint_distribution_retains_dependence_and_units():
-    class JointLaw:
+    class JointReturns(Distribution):
         support = ((-1, float("inf")), (-1, float("inf")))
         units = "decimal"
+        dimension = 2
         correlation = ((1, 0.7), (0.7, 1))
 
-    law = JointLaw()
-    view = DistributionView(Target((A, B), "return", INTERVAL), Distribution(law), META)
-    assert view.statement.law.correlation[0][1] == 0.7
+    joint = JointReturns()
+    view = DistributionView(Target((A, B), "return", INTERVAL), joint, META)
+    assert view.statement.correlation[0][1] == 0.7
     with pytest.raises(ContractError, match="units"):
-        DistributionView(Target((A, B), "return", INTERVAL, units="USD"), Distribution(law), META)
+        DistributionView(Target((A, B), "return", INTERVAL, units="USD"), joint, META)
+    with pytest.raises(ContractError, match="dimension"):
+        DistributionView(Target(A, "return", INTERVAL), joint, META)
 
 
 def test_position_maps_are_immutable_and_finite():

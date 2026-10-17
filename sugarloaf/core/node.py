@@ -6,7 +6,7 @@ from typing import Mapping, Protocol, Sequence
 from sugarloaf.core.errors import ContractError, NotReady
 from sugarloaf.core.primitives import frozen_map
 from sugarloaf.core.services import Context
-from sugarloaf.core.views import View
+from sugarloaf.core.views import Message
 from sugarloaf.market.contracts import Requirement, ResourceUpdate, Trigger
 
 
@@ -16,14 +16,17 @@ class InputSpec:
 
     # Cardinality is per destination port after connected producer outputs have
     # been concatenated. Semantic filters add requirements beyond Python View type.
-    accepts: tuple[type[View], ...]
+    accepts: tuple[type[Message], ...]
     min_count: int = 1
     max_count: int | None = None
     statements: tuple[type, ...] = ()
     quantities: tuple[str, ...] = ()
     properties: tuple[str, ...] = ()
+    # Queries every statement must answer, such as ("mean",): a consumer that needs a
+    # mean accepts an Estimate of the mean and a full Distribution alike.
+    needs: tuple[str, ...] = ()
 
-    def validate(self, views: tuple[View, ...]) -> None:
+    def validate(self, views: tuple[Message, ...]) -> None:
         """Check actual input count, View classes, and declared statement semantics.
 
         Raises:
@@ -47,6 +50,9 @@ class InputSpec:
                 raise ContractError("Unsupported target quantity")
             if self.properties and getattr(statement, "property", None) not in self.properties:
                 raise ContractError("Unsupported statement property")
+            for query in self.needs:
+                if statement is None or not statement.supports(query):
+                    raise ContractError(f"Statement cannot answer the required query: {query}")
 
 
 @dataclass(frozen=True)
@@ -55,7 +61,7 @@ class OutputSpec:
 
     # Declare capabilities for graph compilation; the runtime still checks each
     # actual emitted View against these guarantees.
-    emits: tuple[type[View], ...]
+    emits: tuple[type[Message], ...]
     statements: tuple[type, ...] = ()
     quantities: tuple[str, ...] = ()
     properties: tuple[str, ...] = ()
@@ -67,7 +73,7 @@ class NodeInputs:
 
     # These are the current upstream snapshots for one evaluation. Retaining old
     # inputs in node state does not keep their authority alive after expiry.
-    by_port: Mapping[str, tuple[View, ...]]
+    by_port: Mapping[str, tuple[Message, ...]]
 
     def __post_init__(self):
         object.__setattr__(
@@ -86,7 +92,7 @@ class NodeOutputs:
 
     # Return every port you intend to keep active. An omitted port withdraws old
     # messages; a ResourceUpdate changes permissions only at the next batch boundary.
-    by_port: Mapping[str, tuple[View, ...]]
+    by_port: Mapping[str, tuple[Message, ...]]
     resources: ResourceUpdate | None = None
 
     def __post_init__(self):

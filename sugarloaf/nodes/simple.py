@@ -15,14 +15,38 @@ from statistics import fmean
 from sugarloaf.core.errors import ContractError, NotReady
 from sugarloaf.core.node import InputSpec, NodeOutputs, OutputSpec
 from sugarloaf.core.primitives import InstrumentId, Interval, Metadata
-from sugarloaf.core.views import PositionView, ProbabilityView, ReturnEvent, ReturnView, ScoreView
+from sugarloaf.core.views import (
+    Distribution,
+    Estimate,
+    PositionView,
+    Probability,
+    ReturnEvent,
+    Score,
+    View,
+)
 
-SUPPORTED = (ReturnView, ScoreView, ProbabilityView)
+SUPPORTED = (View,)
+
+
+def _kind(view) -> str:
+    """Which claim family a View belongs to for these baselines."""
+    statement = view.statement
+    if isinstance(statement, Score):
+        return "score"
+    if isinstance(statement, Probability):
+        return "probability"
+    if isinstance(statement, Estimate) and statement.property == "mean":
+        return "mean"
+    if isinstance(statement, Distribution) and statement.supports("mean"):
+        return "distribution"
+    raise ContractError(f"Unsupported statement for this baseline: {type(statement).__name__}")
 
 
 def _current_views(inputs, ctx):
     views = inputs.by_port.get("views", ())
     InputSpec(SUPPORTED).validate(views)
+    for view in views:
+        _kind(view)
     # Duplicate identity represents repeated evidence, not another independent forecast.
     if len({v.metadata.view_id for v in views}) != len(views):
         raise ContractError("Duplicate forecast identity would double-count evidence")
@@ -81,19 +105,38 @@ class MeanViewAggregator:
         """Average compatible claims independently and emit fresh parent-linked Views."""
         groups = defaultdict(list)
         for view in _current_views(inputs, ctx):
-            detail = None
-            if isinstance(view, ScoreView):
+            kind, detail = _kind(view), None
+            if kind == "score":
                 # A zero/scale from one calibration cannot be averaged with another meaning.
                 detail = view.statement.calibration_id
-            elif isinstance(view, ProbabilityView):
+            elif kind == "probability":
                 # Probabilities align by ordered event definitions and partition semantics.
                 detail = (view.statement.events, view.statement.exhaustive)
-            # Exact type and Target preserve subject, units, return convention and horizon.
-            groups[type(view), view.target, detail].append(view)
+            # Claim family and exact Target preserve subject, units, convention and horizon.
+            groups[kind, view.target, detail].append(view)
         outputs = []
-        for index, views in enumerate(groups.values()):
+        for index, ((kind, _, _), views) in enumerate(groups.items()):
             first = views[0]
-            if isinstance(first, ProbabilityView):
+            metadata = _metadata(
+                views, ctx, f"{ctx.node_id}:{ctx.snapshot_id}:{index}", self.lifetime
+            )
+            if kind == "distribution":
+                # A distribution's spread describes the outcome, not the uncertainty of its
+                # mean, so it cannot supply an Estimate's forecast error scale.
+                raise ContractError("This baseline averages mean Estimates, not distributions")
+            if kind == "mean":
+                # Average the stated means; retain the largest error scale without
+                # claiming independence or a confidence gain.
+                statement = Estimate(
+                    fmean(v.statement.value for v in views),
+                    max(v.statement.forecast_error_scale for v in views),
+                )
+                if all(type(v) is type(first) for v in views):
+                    outputs.append(replace(first, statement=statement, metadata=metadata))
+                else:
+                    outputs.append(View(first.target, statement, metadata))
+                continue
+            if kind == "probability":
                 # Average each matching event separately; do not reorder or relabel categories.
                 statement = replace(
                     first.statement,
@@ -104,15 +147,6 @@ class MeanViewAggregator:
                 )
             else:
                 statement = replace(first.statement, value=fmean(v.statement.value for v in views))
-                if isinstance(first, ReturnView):
-                    # Retain the largest reported error scale without claiming independence.
-                    statement = replace(
-                        statement,
-                        forecast_error_scale=max(v.statement.forecast_error_scale for v in views),
-                    )
-            metadata = _metadata(
-                views, ctx, f"{ctx.node_id}:{ctx.snapshot_id}:{index}", self.lifetime
-            )
             # Reuse only the compatible target/statement structure, with fresh issuance identity.
             outputs.append(replace(first, statement=statement, metadata=metadata))
         return NodeOutputs({"views": tuple(outputs)})
@@ -185,12 +219,15 @@ class PositiveSignalPositions:
             raise ContractError("Position signals must share a horizon and return convention")
         passing = set()
         for instrument, view in by_instrument.items():
-            if isinstance(view, ProbabilityView):
+            kind = _kind(view)
+            if kind == "probability":
                 events = view.statement.events
                 # Use an explicit positive-return event, not the first arbitrary probability bin.
                 if ReturnEvent(lower=0) not in events:
                     raise ContractError("Probability conversion needs an explicit return > 0 event")
                 positive = view.statement.probabilities[events.index(ReturnEvent(lower=0))] > 0.5
+            elif kind in ("mean", "distribution"):
+                positive = view.statement.mean() > 0
             else:
                 # The strategy must give a meaningful zero to a raw score before using this rule.
                 positive = view.statement.value > 0

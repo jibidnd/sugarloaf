@@ -36,24 +36,24 @@ from sugarloaf.research import (
 
 
 @dataclass(frozen=True)
-class GaussianReturns:
+class GaussianReturns(Distribution):
     """Test-only joint density; scoring depends on the law protocol, not a model."""
 
-    mean: tuple
+    location: tuple
     covariance: tuple
     units: str = "decimal"
     support: tuple = (-float("inf"), float("inf"))
 
     @property
     def dimension(self):
-        return len(self.mean)
+        return len(self.location)
 
     def logpdf(self, value):
-        return float(multivariate_normal.logpdf(value, self.mean, self.covariance))
+        return float(multivariate_normal.logpdf(value, self.location, self.covariance))
 
 
 @dataclass(frozen=True)
-class EventMasses:
+class EventMasses(Distribution):
     events: tuple
     masses: tuple
     units: str = "decimal"
@@ -235,8 +235,8 @@ def test_distribution_log_score_retains_joint_dependence_and_discrete_support():
     outcome = Outcome(target, (0.1, -0.05), END)
     independent = GaussianReturns((0, 0), ((0.04, 0), (0, 0.04)))
     correlated = replace(independent, covariance=((0.04, 0.03), (0.03, 0.04)))
-    first = DistributionView(target, Distribution(independent), metadata("independent"))
-    second = DistributionView(target, Distribution(correlated), metadata("correlated"))
+    first = DistributionView(target, independent, metadata("independent"))
+    second = DistributionView(target, correlated, metadata("correlated"))
     assert default_metrics(first, outcome)["log_score"] == pytest.approx(
         -independent.logpdf(outcome.value)
     )
@@ -246,7 +246,7 @@ def test_distribution_log_score_retains_joint_dependence_and_discrete_support():
     )
     scalar = return_target(A, INTERVAL)
     law = EventMasses((ReturnEvent(upper=0), ReturnEvent(lower=0)), (1, 0))
-    bins = DistributionView(scalar, Distribution(law), metadata("discrete"))
+    bins = DistributionView(scalar, law, metadata("discrete"))
     assert default_metrics(bins, Outcome(scalar, 0.1, END))["log_loss"] == float("inf")
 
 
@@ -316,15 +316,15 @@ def test_receipt_after_target_end_is_flagged_as_retrospective_evidence():
 def test_distribution_dimensions_and_missing_density_are_explicit():
     target = return_target(A, INTERVAL)
     joint_law = GaussianReturns((0, 0), ((0.04, 0), (0, 0.04)))
-    mismatch = DistributionView(target, Distribution(joint_law), metadata("mismatch"))
+    # A joint distribution cannot describe a scalar target; the View rejects it.
     with pytest.raises(ContractError, match="dimension"):
-        default_metrics(mismatch, Outcome(target, 0.1, END))
+        DistributionView(target, joint_law, metadata("mismatch"))
 
-    class UnsupportedLaw:
+    class UnsupportedLaw(Distribution):
         units = "decimal"
         support = (-1, float("inf"))
 
-    unsupported = DistributionView(target, Distribution(UnsupportedLaw()), metadata("unsupported"))
+    unsupported = DistributionView(target, UnsupportedLaw(), metadata("unsupported"))
     report = evaluate(archive_views(unsupported), ReturnOutcomeResolver(anchors), as_of=END)
     assert report.rows[0].status == "unsupported"
     assert "density" in report.rows[0].reason
