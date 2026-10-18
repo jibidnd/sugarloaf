@@ -5,14 +5,15 @@
 from AlgorithmImports import QCAlgorithm
 from deployment_config import load_deployment
 
-from sugarloaf.adapters.quantconnect.launcher import finish, start
+from sugarloaf.adapters.quantconnect.launcher import finish, load, start
 
 
 class SugarloafAlgorithm(QCAlgorithm):
-    # LEAN calls initialize once. The factory reads native string parameters and
-    # returns shared settings plus a factory for fresh graph/node state.
+    # LEAN calls initialize once. The factory reads native string parameters (and,
+    # if it asks, stored platform files) and returns shared settings plus a factory
+    # for fresh graph/node state.
     def initialize(self):
-        self.deployment = load_deployment(self.get_parameter)
+        self.deployment = load(load_deployment, self)
         # Apply account/backtest settings and connect the graph to native services
         # and the execution engine through one callback-serializing host.
         self.host = start(self, self.deployment)

@@ -37,6 +37,13 @@ when reproducing another implementation. Framework defaults are not replication.
 The factory decides which names it reads through `parameter`; passing an override
 does not automatically change node or environment fields.
 
+A factory that needs a file built on the platform declares a keyword `stored`:
+`deployment(parameter, stored)`. On QuantConnect, `stored(key)` returns the text the
+account keeps under that Object Store key, or `None` if there is none; it cannot
+write. Use it for inputs prepared in a research run that may not leave the
+platform, such as a table derived from licensed data. A factory without `stored`
+is called with `parameter` only.
+
 An optional `report(context)` callback inspects `context.runtime.graph` and returns
 summary diagnostics. Use `context.record(label, value)` for individual diagnostic
 records; the adapter owns their serialization and output. The shared `ReportContext`
