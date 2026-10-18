@@ -1,5 +1,6 @@
 """Platform initialization and generic reports for any configured strategy."""
 
+import inspect
 import json
 import platform
 
@@ -16,6 +17,32 @@ def emit(algorithm, label, record):
     # Shared conversion handles dates/dataclasses; QC owns the output transport.
     # Stable labels let retained logs identify the configuration/result records.
     algorithm.debug(label + " " + json.dumps(serialize(record), default=str, sort_keys=True))
+
+
+def stored_reader(algorithm):
+    """Read-only access to files the account keeps on the platform (QC's Object Store).
+
+    Returns a function of a key that gives the stored text, or None when the key is absent.
+    Strategies use it for inputs that are built on the platform and may not leave it, such as
+    derived tables of licensed data; nothing is written.
+    """
+    store = algorithm.object_store
+
+    def read(key: str) -> str | None:
+        return store.read(key) if store.contains_key(key) else None
+
+    return read
+
+
+def load(factory, algorithm):
+    """Call a deployment factory with the native parameters, and stored files if it asks.
+
+    A factory takes ``parameter`` and may also take a keyword ``stored``, which receives the
+    reader of ``stored_reader``. Factories without it are called as before.
+    """
+    if "stored" in inspect.signature(factory).parameters:
+        return factory(algorithm.get_parameter, stored=stored_reader(algorithm))
+    return factory(algorithm.get_parameter)
 
 
 def start(algorithm, deployment):

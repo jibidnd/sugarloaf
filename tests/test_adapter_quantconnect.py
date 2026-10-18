@@ -1385,3 +1385,20 @@ def test_quantbook_replays_a_daily_reader_on_daily_bars_and_ticks_at_each_close(
     assert ("A", DAY, DAY) in api.consolidators
     assert reader.times == [NOW + timedelta(days=1), NOW + timedelta(days=2)]
     assert reader.reads == [(101.0,), (102.0,)]
+
+
+def test_factories_receive_stored_files_only_when_they_ask():
+    from sugarloaf.adapters.quantconnect.launcher import load
+
+    store = {"lab/list.json": "[1, 2]"}
+    algorithm = NS(get_parameter=lambda name: {"start_date": "2024-01-02"}.get(name),
+                   object_store=NS(contains_key=store.__contains__, read=store.__getitem__))
+
+    def plain(parameter):
+        return parameter("start_date")
+
+    def with_files(parameter, stored):
+        return parameter("start_date"), stored("lab/list.json"), stored("missing")
+
+    assert load(plain, algorithm) == "2024-01-02"
+    assert load(with_files, algorithm) == ("2024-01-02", "[1, 2]", None)
