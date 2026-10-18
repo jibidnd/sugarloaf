@@ -12,6 +12,8 @@ from sugarloaf.core.services import Context
 from sugarloaf.market.contracts import (
     BarsRequirement,
     ETFConstituentsUniverse,
+    FundamentalsRequirement,
+    FundamentalUniverse,
     IndicatorRequirement,
     InstrumentRequirement,
     LiquidityUniverse,
@@ -19,6 +21,7 @@ from sugarloaf.market.contracts import (
     QuotesRequirement,
     ResourceUpdate,
     Schedule,
+    ShortAvailabilityRequirement,
     UniverseMembership,
     UniverseRequirement,
 )
@@ -39,13 +42,15 @@ class SelectionRow:
     has_fundamentals: bool | None = None
 
 
-def select(definition, rows):
+def select(definition, rows, at=None):
     """Select point-in-time members with stable identity breaking ranking ties.
 
     Args:
-        definition (LiquidityUniverse | ETFConstituentsUniverse): Liquidity or historical ETF
-            constituent selection rule.
-        rows (Sequence[SelectionRow]): Available SelectionRow values at the selection boundary.
+        definition (LiquidityUniverse | ETFConstituentsUniverse | FundamentalUniverse):
+            Liquidity, historical ETF constituent or fundamental selection rule.
+        rows (Sequence[SelectionRow | FundamentalRecord]): Available rows at the selection
+            boundary; FundamentalRecord rows for a FundamentalUniverse.
+        at (datetime | None): The selection time, required by a FundamentalUniverse.
 
     Returns:
         (tuple[InstrumentId, ...]): Ordered selected identities.
@@ -86,6 +91,15 @@ def select(definition, rows):
             rows = [r for r in rows if r.weight is not None and r.weight >= definition.min_weight]
         rows.sort(key=lambda r: (-(r.weight if r.weight is not None else -1), r.instrument.value))
         return _first_distinct(rows, definition.count)
+    if isinstance(definition, FundamentalUniverse):
+        if at is None:
+            raise ContractError("Fundamental selection needs its selection time")
+        rows = tuple(rows)
+        available = {r.instrument for r in rows}
+        # The rule chooses; selection keeps only securities the provider listed, once
+        # each, in the rule's order.
+        chosen = dict.fromkeys(i for i in definition.rule(at, rows) if i in available)
+        return tuple(chosen)
     raise CapabilityError("Unsupported universe definition")
 
 
@@ -169,6 +183,8 @@ class ProviderServices:
             BarsRequirement,
             IndicatorRequirement,
             QuotesRequirement,
+            FundamentalsRequirement,
+            ShortAvailabilityRequirement,
             PortfolioRequirement,
             InstrumentRequirement,
             UniverseRequirement,
@@ -272,7 +288,7 @@ class ProviderServices:
                 if source is not None and source[1] <= batch.cutoff:
                     old = self.memberships.get(definition.name)
                     try:
-                        members = select(definition, list(source[0]))
+                        members = select(definition, list(source[0]), source[1])
                         self.memberships[definition.name] = UniverseMembership(
                             definition.name, members, source[1]
                         )
@@ -395,7 +411,16 @@ class ProviderServices:
         # a declared universe to the subset whose history happens to be ready.
         for req in self.resources[node_id].requirements:
             if (
-                isinstance(req, (BarsRequirement, QuotesRequirement, IndicatorRequirement))
+                isinstance(
+                    req,
+                    (
+                        BarsRequirement,
+                        QuotesRequirement,
+                        IndicatorRequirement,
+                        FundamentalsRequirement,
+                        ShortAvailabilityRequirement,
+                    ),
+                )
                 and not req.require_all
             ):
                 # The node has taken responsibility for a partial selection: it
@@ -414,6 +439,12 @@ class ProviderServices:
                 for instrument in ctx.market.resolve(req.selection):
                     if not ctx.market.indicator(req, instrument).ready:
                         raise NotReady("Indicator or requested output window not ready")
+            elif isinstance(req, FundamentalsRequirement):
+                for instrument in ctx.market.resolve(req.selection):
+                    ctx.market.fundamentals(req, instrument)
+            elif isinstance(req, ShortAvailabilityRequirement):
+                for instrument in ctx.market.resolve(req.selection):
+                    ctx.market.short_availability(req, instrument)
             elif isinstance(req, UniverseRequirement):
                 ctx.market.membership(req.definition.name)
             elif isinstance(req, InstrumentRequirement):
@@ -433,6 +464,14 @@ class ProviderServices:
 
     def _data(self, requirement, instrument, cutoff):
         raise CapabilityError("Market data source unavailable")
+
+    def _fundamentals(self, instrument, cutoff):
+        """The latest FundamentalRecord known at ``cutoff``, or None."""
+        raise CapabilityError("Provider has no fundamental data")
+
+    def _short_availability(self, instrument, cutoff):
+        """The latest ShortAvailability known at ``cutoff``, or None."""
+        raise CapabilityError("Provider has no borrow data")
 
     def _session_times(self, instrument, day):
         raise CapabilityError("Provider calendar unavailable")
@@ -577,6 +616,32 @@ class _ContextServices:
     def bars(self, requirement, instrument):
         return self._read(requirement, instrument)
 
+    def fundamentals(self, requirement, instrument):
+        """The selected security's latest fundamental record known at graph time."""
+        self._check(requirement)
+        if instrument not in self.resolve(requirement.selection):
+            raise CapabilityError("Instrument outside declared selection")
+        record = self.ctx.compute("fundamentals", (instrument,), (), "1",
+                                  lambda: self.owner._fundamentals(instrument, self.ctx.now))
+        # A record dated after graph time is never shown; a missing or old one is not
+        # replaced by a guess.
+        if record is None or record.time > self.ctx.now:
+            raise NotReady(f"No fundamental record: {instrument.value}")
+        if self.ctx.now - record.time > requirement.max_age:
+            raise NotReady(f"Stale fundamental record: {instrument.value}")
+        return record
+
+    def short_availability(self, requirement, instrument):
+        """The selected security's latest borrow terms known at graph time."""
+        self._check(requirement)
+        if instrument not in self.resolve(requirement.selection):
+            raise CapabilityError("Instrument outside declared selection")
+        record = self.ctx.compute("short_availability", (instrument,), (), "1",
+                                  lambda: self.owner._short_availability(instrument, self.ctx.now))
+        if record is None or record.time > self.ctx.now:
+            raise NotReady(f"No borrow record: {instrument.value}")
+        return record
+
     def quotes(self, requirement, instrument):
         return self._read(requirement, instrument)
 
@@ -595,6 +660,10 @@ class _ContextServices:
                     # that through its ready flag rather than by raising.
                     if not self.indicator(requirement, instrument).ready:
                         continue
+                elif isinstance(requirement, FundamentalsRequirement):
+                    self.fundamentals(requirement, instrument)
+                elif isinstance(requirement, ShortAvailabilityRequirement):
+                    self.short_availability(requirement, instrument)
                 else:
                     self._read(requirement, instrument)
             except NotReady:

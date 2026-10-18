@@ -1,6 +1,6 @@
 """Neutral data, instrument, universe and resource declarations."""
 
-from collections.abc import Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta
 
@@ -407,13 +407,105 @@ class ETFConstituentsUniverse:
 
 
 @dataclass(frozen=True)
+class FundamentalRecord:
+    """A security's company fundamentals as known at ``time``.
+
+    Fields the provider does not have are None. ``price`` is the record's traded price,
+    not a price adjusted for later corporate actions. ``cik`` is the issuer's SEC
+    Central Index Key, as text without leading zeros.
+    """
+
+    instrument: InstrumentId
+    time: datetime
+    cik: str | None = None
+    market_cap: float | None = None
+    price: float | None = None
+    dollar_volume: float | None = None
+
+    def __post_init__(self):
+        aware(self.time)
+        finite(*(x for x in (self.market_cap, self.price, self.dollar_volume) if x is not None))
+
+
+@dataclass(frozen=True)
+class FundamentalUniverse:
+    """Members chosen by a rule over the provider's daily fundamental records.
+
+    ``rule(at, records)`` receives the selection time and one FundamentalRecord per
+    security, and returns the instruments to hold; any it returns that are not among the
+    records are ignored. The rule must use only what is known at ``at``: the records, and
+    any source the strategy reads point-in-time. Keep the same rule object across
+    declarations, since the definition is compared to decide whether to rebuild the source.
+    """
+
+    # Example: stocks of issuers that filed with the SEC in the last 30 days, where
+    # filers(at) is the strategy's own point-in-time source of CIKs:
+    #   FundamentalUniverse("recent-filers",
+    #                       lambda at, rows: [r.instrument for r in rows if r.cik in filers(at)])
+    name: str
+    rule: Callable[[datetime, tuple[FundamentalRecord, ...]], Iterable[InstrumentId]]
+    refresh: Trigger = Trigger("universe")
+    minimum_residence: timedelta = timedelta(0)
+    source: str = "us_equity_fundamental"
+
+    def __post_init__(self):
+        if not self.name or not callable(self.rule) or self.minimum_residence < timedelta(0):
+            raise ContractError("Invalid fundamental selection")
+
+
+@dataclass(frozen=True)
 class UniverseRequirement(Requirement):
     """Declare ownership of a named universe selection source.
 
     Other nodes may read the same name. Every owner must give the same definition.
     """
 
-    definition: LiquidityUniverse | ETFConstituentsUniverse
+    definition: LiquidityUniverse | ETFConstituentsUniverse | FundamentalUniverse
+
+
+@dataclass(frozen=True)
+class FundamentalsRequirement(DataRequirement):
+    """Read authorization for the selected securities' latest fundamental records.
+
+    Attributes:
+        selection: Explicit instruments or named universe.
+        max_age: Oldest record accepted, relative to graph time.
+        require_all: Withdraw the node unless every selected security has a record.
+    """
+
+    selection: Selection
+    max_age: timedelta = timedelta(days=4)
+    require_all: bool = False
+
+    def __post_init__(self):
+        if self.max_age < timedelta(0):
+            raise ContractError("Invalid fundamentals freshness")
+
+
+@dataclass(frozen=True)
+class ShortAvailability:
+    """Borrow terms for shorting a security, as reported at ``time``.
+
+    ``fee_rate`` is the annual borrow fee as a decimal; ``shortable`` the quantity the
+    provider reports as available. Either is None when the provider does not report it.
+    """
+
+    instrument: InstrumentId
+    time: datetime
+    fee_rate: float | None = None
+    shortable: float | None = None
+
+    def __post_init__(self):
+        aware(self.time)
+        finite(*(x for x in (self.fee_rate, self.shortable) if x is not None))
+
+
+@dataclass(frozen=True)
+class ShortAvailabilityRequirement(DataRequirement):
+    """Read authorization for the selected securities' borrow terms."""
+
+    selection: Selection
+    require_all: bool = False
 
 
 @dataclass(frozen=True)

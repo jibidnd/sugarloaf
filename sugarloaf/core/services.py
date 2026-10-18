@@ -12,12 +12,16 @@ from sugarloaf.market.contracts import (
     BarsRequirement,
     Capability,
     DataRequirement,
+    FundamentalRecord,
+    FundamentalsRequirement,
     IndicatorRequirement,
     IndicatorSnapshot,
     Instrument,
     Quote,
     QuotesRequirement,
     Selection,
+    ShortAvailability,
+    ShortAvailabilityRequirement,
     UniverseMembership,
 )
 
@@ -101,6 +105,16 @@ class MarketData(Protocol):
         ...
     def anchor(self, instrument: InstrumentId, at: datetime, convention: str) -> float:
         """Read an exact declared price anchor; never substitute a nearby observation."""
+        ...
+    def fundamentals(
+        self, requirement: FundamentalsRequirement, instrument: InstrumentId
+    ) -> FundamentalRecord:
+        """Return the latest declared fundamental record known at graph time."""
+        ...
+    def short_availability(
+        self, requirement: ShortAvailabilityRequirement, instrument: InstrumentId
+    ) -> ShortAvailability:
+        """Return the latest declared borrow terms known at graph time."""
         ...
 
 

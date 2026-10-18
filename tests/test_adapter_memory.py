@@ -186,3 +186,51 @@ def test_a_security_listed_twice_is_selected_once_and_does_not_use_up_a_place():
     etf = ETFConstituentsUniverse("etf", A, count=2)
     weighted = [SelectionRow(A, weight=w) for w in (0.5, 0.4)] + [SelectionRow(B, weight=0.1)]
     assert select(etf, weighted) == (A, B)
+
+
+def test_fundamental_universe_and_reads_are_point_in_time():
+    from sugarloaf.market.contracts import (
+        FundamentalRecord,
+        FundamentalsRequirement,
+        FundamentalUniverse,
+        ShortAvailability,
+        ShortAvailabilityRequirement,
+    )
+
+    C = InstrumentId("C")
+    seen = []
+
+    def rule(at, rows):
+        seen.append(at)
+        # Issuers on a strategy's own list; an instrument absent from the rows is ignored.
+        return [r.instrument for r in rows if r.cik in {"111", "222"}] + [InstrumentId("Z")]
+
+    definition = FundamentalUniverse("filers", rule)
+    fundamentals = FundamentalsRequirement(Selection(universe="filers"), max_age=timedelta(days=2))
+    short = ShortAvailabilityRequirement(Selection(universe="filers"))
+    earlier, later = NOW - timedelta(days=1), NOW + timedelta(days=1)
+    services = MemoryServices(
+        fundamentals={A: [FundamentalRecord(A, earlier, "111", 3e7, 2.5),
+                          FundamentalRecord(A, later, "111", 9e7, 7.5)]},
+        short={A: [ShortAvailability(A, earlier, fee_rate=0.4, shortable=5000)]},
+    )
+    declared = (UniverseRequirement(definition), fundamentals, short)
+    services.install("n", ResourceUpdate(declared, ()))
+    rows = [FundamentalRecord(i, NOW, cik) for i, cik in ((A, "111"), (B, "999"), (C, "222"))]
+    services.set_selection("filers", rows, NOW)
+    services.apply(EventBatch(0, NOW, (Event("universe"),)))
+    assert services.memberships["filers"].members == (A, C) and seen == [NOW]
+    ctx = services.context(node_id="n")
+    record = ctx.market.fundamentals(fundamentals, A)
+    # The later record is not yet known; the earlier one is within max_age.
+    assert (record.market_cap, record.price) == (3e7, 2.5)
+    assert ctx.market.short_availability(short, A).fee_rate == 0.4
+    assert ctx.market.ready(fundamentals) == (A,)
+    with pytest.raises(NotReady):
+        ctx.market.fundamentals(fundamentals, C)
+    with pytest.raises(CapabilityError):
+        ctx.market.fundamentals(fundamentals, B)
+    # Four days on, the newest record (dated a day after NOW) is three days old: stale.
+    services.apply(EventBatch(1, NOW + timedelta(days=4)))
+    with pytest.raises(NotReady, match="Stale"):
+        services.context(node_id="n").market.fundamentals(fundamentals, A)

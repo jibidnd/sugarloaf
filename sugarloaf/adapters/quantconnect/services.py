@@ -14,6 +14,8 @@ from sugarloaf.market.contracts import (
     Bar,
     BarsRequirement,
     Capability,
+    FundamentalRecord,
+    FundamentalUniverse,
     IndicatorPoint,
     IndicatorRequirement,
     IndicatorSnapshot,
@@ -23,6 +25,7 @@ from sugarloaf.market.contracts import (
     QuotesRequirement,
     ResourceUpdate,
     Selection,
+    ShortAvailability,
     Trigger,
     UniverseMembership,
     UniverseRequirement,
@@ -160,7 +163,9 @@ class QuantConnectDataServices(ProviderServices):
         expected = (
             "us_equity_liquidity"
             if isinstance(definition, LiquidityUniverse)
-            else ("historical_etf_constituents")
+            else "us_equity_fundamental"
+            if isinstance(definition, FundamentalUniverse)
+            else "historical_etf_constituents"
         )
         if definition.source != expected:
             raise CapabilityError("Unsupported QC universe source")
@@ -237,7 +242,9 @@ class QuantConnectDataServices(ProviderServices):
             rows = []
             for item in data:
                 instrument = self.bind(item.symbol)
-                if isinstance(definition, LiquidityUniverse):
+                if isinstance(definition, FundamentalUniverse):
+                    rows.append(_fundamental_record(instrument, item, now))
+                elif isinstance(definition, LiquidityUniverse):
                     rows.append(
                         SelectionRow(
                             instrument,
@@ -258,7 +265,7 @@ class QuantConnectDataServices(ProviderServices):
                     )
             # Native data supplies available fields; shared selection applies the
             # declared ranking/filter rules with stable identity tie breaking.
-            members = select(definition, rows)
+            members = select(definition, rows, now)
             self.memberships[definition.name] = UniverseMembership(definition.name, members, now)
             self._selected_at[definition.name] = now
             # Publish membership now and queue a trigger for the next data boundary;
@@ -268,7 +275,7 @@ class QuantConnectDataServices(ProviderServices):
             return [self.symbols[i] for i in members]
 
         ticker = None
-        if not isinstance(definition, LiquidityUniverse):
+        if not isinstance(definition, (LiquidityUniverse, FundamentalUniverse)):
             symbol = self.symbols.get(definition.etf)
             ticker = symbol.value if symbol is not None else self.tickers.get(definition.etf)
             if ticker is None:
@@ -943,6 +950,32 @@ class QuantConnectDataServices(ProviderServices):
         # LEAN's exchange-hours database owns holidays, early closes and DST.
         return self.api.session_close(self.algorithm.securities[symbol], after, count)
 
+    def _fundamentals(self, instrument, cutoff):
+        # The security's own record: LEAN keeps it point-in-time and attaches it to
+        # every subscribed equity, so a member of any universe has one.
+        symbol = self.symbols.get(instrument)
+        if symbol is None:
+            raise CapabilityError("Instrument has no platform Symbol")
+        record = self.algorithm.securities[symbol].fundamentals
+        if record is None or not getattr(record, "has_fundamental_data", True):
+            return None
+        return _fundamental_record(instrument, record, cutoff)
+
+    def _short_availability(self, instrument, cutoff):
+        symbol = self.symbols.get(instrument)
+        if symbol is None:
+            raise CapabilityError("Instrument has no platform Symbol")
+        provider = self.algorithm.securities[symbol].shortable_provider
+        at = self.algorithm.time
+        quantity = provider.shortable_quantity(symbol, at)
+        fee = provider.fee_rate(symbol, at) if hasattr(provider, "fee_rate") else None
+        return ShortAvailability(
+            instrument,
+            cutoff,
+            fee_rate=_number(fee),
+            shortable=_number(quantity),
+        )
+
     def _borrow(self, instrument, quantity):
         security = self.algorithm.securities[self.symbols[instrument]]
         available = security.shortable_provider.shortable_quantity(
@@ -991,3 +1024,26 @@ class QuantConnectServices(QuantConnectDataServices):
         super().__init__(
             algorithm, symbols, constraints, api, cost_rate, leverage, account_services=True
         )
+
+
+def _number(value):
+    """A finite float, or None for a missing or non-finite native value."""
+    if value is None:
+        return None
+    value = float(value)
+    return value if isfinite(value) else None
+
+
+def _fundamental_record(instrument, item, at):
+    """Neutral FundamentalRecord from a LEAN Fundamental object."""
+    reference = getattr(item, "company_reference", None)
+    cik = getattr(reference, "cik", None) if reference is not None else None
+    cik = (str(cik).strip().lstrip("0") or None) if cik is not None else None
+    return FundamentalRecord(
+        instrument,
+        at,
+        cik=cik,
+        market_cap=_number(getattr(item, "market_cap", None)) or None,
+        price=_number(getattr(item, "price", None)) or None,
+        dollar_volume=_number(getattr(item, "dollar_volume", None)),
+    )

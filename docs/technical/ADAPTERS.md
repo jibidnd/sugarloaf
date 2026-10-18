@@ -222,6 +222,21 @@ owner/reference disappears, the source is disposed. Its manager entry is collect
 only after a later boundary and empty selected/member sets, preserving LEAN's
 held/open-order retention.
 
+A `FundamentalUniverse` uses the same daily fundamental callback as liquidity
+selection; its rule receives one record per security from the callback's objects
+(CIK from the company reference, market cap, price, dollar volume). Observed in a
+backtest (March 2024): the callback runs at 00:00 each day, Saturdays included, with
+records of the previous close; a security first selected at 00:00 has its
+fundamentals and daily history at the first bar after the open, while its own
+`price` stays 0 until its first bar arrives. QuantConnect documents live
+fundamental selection at 7–8 AM Eastern.
+
+Fundamental reads come from each subscribed security's `fundamentals` record, which
+LEAN keeps point-in-time; a security must be subscribed (a universe member or a bar
+reader) to have one. Borrow terms come from the security's shortable provider:
+`shortable_quantity` and, where the provider has it (Interactive Brokers),
+`fee_rate`. LEAN's default provider reports neither.
+
 Symbol changes preserve identity; delistings mark instruments untradable.
 
 ## Corporate actions and data resets
@@ -241,7 +256,11 @@ The QuantConnect rule, for backtests and QuantBook research:
 | Split | Nothing rebuilt | Windows and indicators rebuilt; `DataReset` reported |
 
 LEAN adjusts those series with the whole factor file from the first bar, so they
-are continuous through an ex-date or a split and do not change on it. A raw price
+are continuous through an ex-date or a split and do not change on it. The level of
+an adjusted price is therefore not the price traded on its date: in a March 2024
+backtest, NVDA's adjusted close was about 85 against about 850 raw, because of the
+10-for-1 split of June 2024. Returns from adjusted bars are right; a price level
+(a price filter, a market value) needs raw bars or a fundamental record's price. A raw price
 that opens lower by a dividend is a real price move. Only a split puts raw prices
 on a different per-share scale. The rebuilt raw history is still as traded: a
 window spanning the split mixes both scales, so the rebuild restarts state but

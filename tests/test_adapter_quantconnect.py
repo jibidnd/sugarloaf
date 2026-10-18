@@ -1402,3 +1402,53 @@ def test_factories_receive_stored_files_only_when_they_ask():
 
     assert load(plain, algorithm) == "2024-01-02"
     assert load(with_files, algorithm) == ("2024-01-02", "[1, 2]", None)
+
+
+def test_qc_fundamental_universe_records_and_borrow_terms():
+    from sugarloaf.market.contracts import (
+        FundamentalsRequirement,
+        FundamentalUniverse,
+        ShortAvailabilityRequirement,
+    )
+
+    api, platform = API(), algorithm()
+    services = QuantConnectServices(platform, api=api)
+    def apple_only(at, rows):
+        return [r.instrument for r in rows if r.cik == "320193"]
+
+    definition = FundamentalUniverse("filers", apple_only)
+    fundamentals = FundamentalsRequirement(Selection(universe="filers"))
+    short = ShortAvailabilityRequirement(Selection(universe="filers"))
+    declared = (UniverseRequirement(definition), fundamentals, short)
+    services.install("n", ResourceUpdate(declared, ()))
+    apple, other = Symbol("aapl", "AAPL"), Symbol("x", "X")
+
+    def native(cik, cap, price):
+        return NS(company_reference=NS(cik=cik), market_cap=cap, price=price, dollar_volume=1e9,
+                  has_fundamental_data=True)
+
+    rows = [NS(symbol=apple, **vars(native("0000320193", 2.7e12, 179.66))),
+            NS(symbol=other, **vars(native(None, 1e8, 5.0)))]
+    assert api.selectors["filers"](rows) == [apple]
+    member = services.memberships["filers"].members[0]
+    platform.securities[apple] = NS(symbol=apple, fundamentals=native("320193", 2.8e12, 181.0),
+                                    shortable_provider=NS(shortable_quantity=lambda *_: 1000,
+                                                          fee_rate=lambda *_: 0.0025))
+    record = services._fundamentals(member, NOW)
+    assert (record.cik, record.market_cap, record.price) == ("320193", 2.8e12, 181.0)
+    terms = services._short_availability(member, NOW)
+    assert (terms.fee_rate, terms.shortable) == (0.0025, 1000.0)
+
+
+def test_factories_receive_fetch_when_they_ask():
+    from sugarloaf.adapters.quantconnect.launcher import load
+
+    calls = []
+    algorithm_ = NS(get_parameter=lambda name: None, object_store=NS(contains_key=lambda k: False),
+                    download=lambda url, headers: calls.append((url, headers)) or "body")
+
+    def factory(parameter, fetch):
+        return fetch("https://example.test/a", {"User-Agent": "x"})
+
+    assert load(factory, algorithm_) == "body"
+    assert calls == [("https://example.test/a", {"User-Agent": "x"})]

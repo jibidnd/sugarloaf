@@ -7,7 +7,12 @@ Tests inject an API object implementing these operations, not a fake core graph.
 from datetime import UTC, datetime, timedelta
 
 from sugarloaf.core.errors import CapabilityError
-from sugarloaf.market.contracts import BarsRequirement, LiquidityUniverse, QuotesRequirement
+from sugarloaf.market.contracts import (
+    BarsRequirement,
+    FundamentalUniverse,
+    LiquidityUniverse,
+    QuotesRequirement,
+)
 
 # The bar periods LEAN delivers natively for US equities at the resolutions this
 # adapter uses. A subscription is described by its period, a neutral timedelta.
@@ -242,7 +247,7 @@ class LeanAPI:
         settings.data_normalization_mode = getattr(
             self.lean.DataNormalizationMode, getattr(feed, "normalization", "adjusted").upper()
         )
-        if isinstance(definition, LiquidityUniverse):
+        if isinstance(definition, (LiquidityUniverse, FundamentalUniverse)):
             return algorithm.add_universe(self.lean.FundamentalUniverse.usa(selector, settings))
         return algorithm.add_universe(algorithm.universe.etf(etf_ticker, settings, selector))
 
