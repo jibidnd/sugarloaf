@@ -109,6 +109,7 @@ def start(algorithm, deployment):
         policy=deployment.execution,
         cost_rate=env.slippage,
         leverage=env.leverage,
+        borrow_data=env.borrow_data,
     )
     # Startup diagnostics record settings and versions. Actual source identity
     # is retained separately by the cloud packaging/submission tools.

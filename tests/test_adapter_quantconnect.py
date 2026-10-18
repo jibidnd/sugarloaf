@@ -100,7 +100,7 @@ class API:
         self.histories = []
         self.universes = {}
 
-    def setup(self, algorithm, slippage, leverage):
+    def setup(self, algorithm, slippage, leverage, borrow_data=None):
         self.setups.append((slippage, leverage))
 
     def subscribe(self, algorithm, ticker, req, period=MINUTE):

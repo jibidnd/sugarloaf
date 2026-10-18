@@ -236,7 +236,10 @@ LEAN keeps point-in-time; a security must be subscribed (a universe member or a 
 reader) to have one. Borrow terms come from the security's shortable provider: `shortable_quantity`
 and `fee_rate` (Interactive Brokers data, for example). LEAN's default provider
 reports a zero fee and unlimited quantity for everything; the adapter treats that
-as no data and returns no record. Records are stamped with the time LEAN read them,
+as no data and returns no record. The brokerage model does not attach Interactive
+Brokers' provider even under its own name: set `Environment(borrow_data=
+"interactive_brokers")` and the security initializer gives every security,
+including later universe members, that provider. Records are stamped with the time LEAN read them,
 so a read after the Context's cutoff is refused; their `max_age` therefore bounds
 read lag, not the vendor's own update date. A rule that raises `NotReady` leaves
 the universe unready and its members subscribed.

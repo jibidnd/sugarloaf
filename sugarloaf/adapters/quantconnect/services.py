@@ -64,6 +64,7 @@ class QuantConnectDataServices(ProviderServices):
         cost_rate=0.0005,
         leverage=1.0,
         account_services=False,
+        borrow_data=None,
     ):
         # ProviderServices owns declaration checks, Context versions and readiness;
         # this subclass supplies the native resources behind its lazy read hooks.
@@ -105,7 +106,7 @@ class QuantConnectDataServices(ProviderServices):
         self._pending_data = []
         self._prefilling = False
         if account_services:
-            self.api.setup(algorithm, cost_rate, leverage)
+            self.api.setup(algorithm, cost_rate, leverage, borrow_data)
 
     def bind(self, symbol) -> InstrumentId:
         """Preserve identity across ticker changes using the platform security ID."""
@@ -1034,10 +1035,12 @@ class QuantConnectServices(QuantConnectDataServices):
     """
 
     def __init__(
-        self, algorithm, symbols=None, constraints=None, api=None, cost_rate=0.0005, leverage=1.0
+        self, algorithm, symbols=None, constraints=None, api=None, cost_rate=0.0005, leverage=1.0,
+        borrow_data=None,
     ):
         super().__init__(
-            algorithm, symbols, constraints, api, cost_rate, leverage, account_services=True
+            algorithm, symbols, constraints, api, cost_rate, leverage, account_services=True,
+            borrow_data=borrow_data,
         )
 
 

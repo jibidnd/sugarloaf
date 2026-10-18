@@ -55,13 +55,18 @@ class LeanAPI:
 
         self.lean = lean
 
-    def setup(self, algorithm, slippage, leverage):
-        """Install a native security initializer: slippage, leverage and a starting price."""
+    def setup(self, algorithm, slippage, leverage, borrow_data=None):
+        """Install a native security initializer: slippage, leverage, borrow data and a
+        starting price."""
         # Apply models when native securities are initialized, including those
         # admitted later by a dynamic universe, not only the initial tickers.
         def initialize_security(security):
             security.set_slippage_model(self.lean.ConstantSlippageModel(slippage))
             security.set_leverage(leverage)
+            if borrow_data == "interactive_brokers":
+                # The brokerage model does not attach it; without it LEAN reports no
+                # borrow data at all.
+                security.set_shortable_provider(self.lean.InteractiveBrokersShortableProvider())
             # A new security has no price until its first bar arrives, and LEAN
             # refuses an order for it. On a daily feed that is the whole first
             # day (seen natively: members selected in the morning could not be
