@@ -1452,3 +1452,44 @@ def test_factories_receive_fetch_when_they_ask():
 
     assert load(factory, algorithm_) == "body"
     assert calls == [("https://example.test/a", {"User-Agent": "x"})]
+
+
+def test_qc_fundamental_rule_failures_and_missing_borrow_data_are_not_silent():
+    from sugarloaf.adapters.base import select
+    from sugarloaf.market.contracts import FundamentalRecord, FundamentalUniverse
+
+    api, platform = API(), algorithm()
+    services = QuantConnectServices(platform, api=api)
+
+    def unavailable(at, rows):
+        raise NotReady("filing source does not cover this date")
+
+    universe = UniverseRequirement(FundamentalUniverse("f", unavailable))
+    services.install("n", ResourceUpdate((universe,), ()))
+    apple = Symbol("aapl", "AAPL")
+    row = NS(symbol=apple, company_reference=NS(cik="320193"), market_cap=1.0, price=1.0,
+             dollar_volume=1.0)
+    # The universe is unready rather than empty, and LEAN keeps the members it had.
+    assert api.selectors["f"]([row]) == "UNCHANGED"
+    assert services.memberships["f"].ready is False
+    # A rule returning tickers instead of identities is an error, not an empty universe.
+    tickers = FundamentalUniverse("t", lambda at, rows: ["AAPL"])
+    with pytest.raises(ContractError):
+        select(tickers, [FundamentalRecord(A, NOW, "320193")], NOW)
+    # Definitions compare by name and version, not by the rule object; CIKs are unpadded.
+    assert FundamentalUniverse("f", lambda a, r: []) == FundamentalUniverse("f", lambda a, r: [])
+    assert FundamentalRecord(A, NOW, "0000320193").cik == "320193"
+    # LEAN's default shortable provider is no data, not free and unlimited borrow.
+
+    class NullShortableProvider:
+        def fee_rate(self, *_):
+            return 0.0
+
+        def shortable_quantity(self, *_):
+            return None
+
+    services.symbols[A] = apple
+    platform.securities[apple] = NS(symbol=apple, shortable_provider=NullShortableProvider())
+    assert services._short_availability(A, NOW) is None
+    with pytest.raises(CapabilityError):
+        services._fundamentals(InstrumentId("unsubscribed"), NOW)

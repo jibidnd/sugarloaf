@@ -35,15 +35,18 @@ def stored_reader(algorithm):
 
 
 def fetcher(algorithm):
-    """HTTP GET through the platform: returns the response text ('' on failure).
+    """HTTP GET through the platform: the response text, or None when nothing came back.
 
-    QuantConnect limits these calls (about 100 a backtest, about 20 a minute live), so a
-    strategy reads recorded responses through ``stored`` first and fetches only what is
-    missing.
+    LEAN's download returns an empty string on failure, which a caller could not tell from an
+    empty page; None makes the failure explicit. QuantConnect staff have described limits of
+    about 100 calls a backtest and about 20 a minute live (forum, 2020-21), so a strategy reads
+    recorded responses through ``stored`` first and fetches only what is missing. Headers are
+    a dict, as QuantBook research calls pass them.
     """
 
-    def fetch(url: str, headers: dict[str, str] | None = None) -> str:
-        return algorithm.download(url, headers or {})
+    def fetch(url: str, headers: dict[str, str] | None = None) -> str | None:
+        text = algorithm.download(url, headers or {})
+        return text or None
 
     return fetch
 

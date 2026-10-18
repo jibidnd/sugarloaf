@@ -1,7 +1,7 @@
 """Neutral data, instrument, universe and resource declarations."""
 
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta
 
 from sugarloaf.core.errors import CapabilityError, ContractError
@@ -410,9 +410,10 @@ class ETFConstituentsUniverse:
 class FundamentalRecord:
     """A security's company fundamentals as known at ``time``.
 
-    Fields the provider does not have are None. ``price`` is the record's traded price,
-    not a price adjusted for later corporate actions. ``cik`` is the issuer's SEC
-    Central Index Key, as text without leading zeros.
+    ``time`` is when the provider read the record: it is both the as-of and the knowledge
+    time. Fields the provider does not have are None. ``price`` is the record's traded price,
+    not a price adjusted for later corporate actions. ``cik`` is the issuer's SEC Central
+    Index Key, stored as text without leading zeros.
     """
 
     instrument: InstrumentId
@@ -425,6 +426,13 @@ class FundamentalRecord:
     def __post_init__(self):
         aware(self.time)
         finite(*(x for x in (self.market_cap, self.price, self.dollar_volume) if x is not None))
+        # One form for every provider: EDGAR's indexes give CIKs unpadded, its JSON APIs
+        # padded to ten digits.
+        if self.cik is not None:
+            cik = str(self.cik).strip().lstrip("0")
+            if cik and not cik.isdigit():
+                raise ContractError("A CIK is a number")
+            object.__setattr__(self, "cik", cik or None)
 
 
 @dataclass(frozen=True)
@@ -434,8 +442,12 @@ class FundamentalUniverse:
     ``rule(at, records)`` receives the selection time and one FundamentalRecord per
     security, and returns the instruments to hold; any it returns that are not among the
     records are ignored. The rule must use only what is known at ``at``: the records, and
-    any source the strategy reads point-in-time. Keep the same rule object across
-    declarations, since the definition is compared to decide whether to rebuild the source.
+    any source the strategy reads point-in-time. A rule that cannot decide (its source does
+    not cover ``at``) raises NotReady, which leaves the universe unready.
+
+    Definitions compare by name, version and settings, not by the rule object, so a node may
+    rebuild its rule without rebuilding the native source. Change ``version`` when the rule's
+    meaning changes.
     """
 
     # Example: stocks of issuers that filed with the SEC in the last 30 days, where
@@ -443,7 +455,10 @@ class FundamentalUniverse:
     #   FundamentalUniverse("recent-filers",
     #                       lambda at, rows: [r.instrument for r in rows if r.cik in filers(at)])
     name: str
-    rule: Callable[[datetime, tuple[FundamentalRecord, ...]], Iterable[InstrumentId]]
+    rule: Callable[[datetime, tuple[FundamentalRecord, ...]], Iterable[InstrumentId]] = field(
+        compare=False
+    )
+    version: str = "1"
     refresh: Trigger = Trigger("universe")
     minimum_residence: timedelta = timedelta(0)
     source: str = "us_equity_fundamental"
@@ -486,8 +501,10 @@ class FundamentalsRequirement(DataRequirement):
 class ShortAvailability:
     """Borrow terms for shorting a security, as reported at ``time``.
 
-    ``fee_rate`` is the annual borrow fee as a decimal; ``shortable`` the quantity the
-    provider reports as available. Either is None when the provider does not report it.
+    ``fee_rate`` is the annual borrow fee as a decimal and ``shortable`` the quantity the
+    provider reports as available; None means the provider reports no limit for that field.
+    A provider without real borrow data returns no record at all, so that a reader cannot
+    mistake missing data for free, unlimited borrow.
     """
 
     instrument: InstrumentId

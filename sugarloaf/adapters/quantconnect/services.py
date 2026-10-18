@@ -265,7 +265,18 @@ class QuantConnectDataServices(ProviderServices):
                     )
             # Native data supplies available fields; shared selection applies the
             # declared ranking/filter rules with stable identity tie breaking.
-            members = select(definition, rows, now)
+            try:
+                members = select(definition, rows, now)
+            except NotReady:
+                # As in the shared path: the universe is unready, not empty. Members keep
+                # their subscriptions until a selection can be made.
+                self.memberships[definition.name] = UniverseMembership(
+                    definition.name, (), now, False
+                )
+                self._selected_at[definition.name] = now
+                self.pending_events.append(Event("universe", key=definition.name))
+                self._changed()
+                return self.api.unchanged()
             self.memberships[definition.name] = UniverseMembership(definition.name, members, now)
             self._selected_at[definition.name] = now
             # Publish membership now and queue a trigger for the next data boundary;
@@ -950,30 +961,34 @@ class QuantConnectDataServices(ProviderServices):
         # LEAN's exchange-hours database owns holidays, early closes and DST.
         return self.api.session_close(self.algorithm.securities[symbol], after, count)
 
-    def _fundamentals(self, instrument, cutoff):
-        # The security's own record: LEAN keeps it point-in-time and attaches it to
-        # every subscribed equity, so a member of any universe has one.
+    def _subscribed(self, instrument):
         symbol = self.symbols.get(instrument)
-        if symbol is None:
-            raise CapabilityError("Instrument has no platform Symbol")
-        record = self.algorithm.securities[symbol].fundamentals
+        if symbol is None or symbol not in self.algorithm.securities:
+            raise CapabilityError(f"{instrument.value} is not subscribed on the platform")
+        return self.algorithm.securities[symbol]
+
+    def _fundamentals(self, instrument, cutoff):
+        # The security's own record: LEAN keeps it point-in-time and attaches it to every
+        # subscribed equity. It is stamped with the time LEAN read it, so a read made after
+        # the Context's cutoff is refused by the shared check instead of passing as current.
+        record = self._subscribed(instrument).fundamentals
         if record is None or not getattr(record, "has_fundamental_data", True):
             return None
-        return _fundamental_record(instrument, record, cutoff)
+        return _fundamental_record(instrument, record, utc(self.algorithm.utc_time, "UTC"))
 
     def _short_availability(self, instrument, cutoff):
-        symbol = self.symbols.get(instrument)
-        if symbol is None:
-            raise CapabilityError("Instrument has no platform Symbol")
-        provider = self.algorithm.securities[symbol].shortable_provider
+        security = self._subscribed(instrument)
+        provider = security.shortable_provider
+        # LEAN's default provider reports a zero fee and unlimited quantity for every
+        # security; that is an absence of data, not free borrow, so no record is returned.
+        if provider is None or type(provider).__name__ == "NullShortableProvider":
+            return None
         at = self.algorithm.time
-        quantity = provider.shortable_quantity(symbol, at)
-        fee = provider.fee_rate(symbol, at) if hasattr(provider, "fee_rate") else None
         return ShortAvailability(
             instrument,
-            cutoff,
-            fee_rate=_number(fee),
-            shortable=_number(quantity),
+            utc(self.algorithm.utc_time, "UTC"),
+            fee_rate=_number(provider.fee_rate(security.symbol, at)),
+            shortable=_number(provider.shortable_quantity(security.symbol, at)),
         )
 
     def _borrow(self, instrument, quantity):

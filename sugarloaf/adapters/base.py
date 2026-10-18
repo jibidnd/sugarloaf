@@ -96,10 +96,13 @@ def select(definition, rows, at=None):
             raise ContractError("Fundamental selection needs its selection time")
         rows = tuple(rows)
         available = {r.instrument for r in rows}
+        picked = list(definition.rule(at, rows))
+        # A ticker or native symbol would match nothing and leave a silently empty universe.
+        if any(not isinstance(i, InstrumentId) for i in picked):
+            raise ContractError("A fundamental rule must return InstrumentId values")
         # The rule chooses; selection keeps only securities the provider listed, once
         # each, in the rule's order.
-        chosen = dict.fromkeys(i for i in definition.rule(at, rows) if i in available)
-        return tuple(chosen)
+        return tuple(dict.fromkeys(i for i in picked if i in available))
     raise CapabilityError("Unsupported universe definition")
 
 
@@ -621,7 +624,9 @@ class _ContextServices:
         self._check(requirement)
         if instrument not in self.resolve(requirement.selection):
             raise CapabilityError("Instrument outside declared selection")
-        record = self.ctx.compute("fundamentals", (instrument,), (), "1",
+        # Graph and execution Contexts can share a sequence number at different times, so
+        # the read time is part of the cached computation's identity.
+        record = self.ctx.compute("fundamentals", (instrument,), (self.ctx.now,), "1",
                                   lambda: self.owner._fundamentals(instrument, self.ctx.now))
         # A record dated after graph time is never shown; a missing or old one is not
         # replaced by a guess.
@@ -636,7 +641,7 @@ class _ContextServices:
         self._check(requirement)
         if instrument not in self.resolve(requirement.selection):
             raise CapabilityError("Instrument outside declared selection")
-        record = self.ctx.compute("short_availability", (instrument,), (), "1",
+        record = self.ctx.compute("short_availability", (instrument,), (self.ctx.now,), "1",
                                   lambda: self.owner._short_availability(instrument, self.ctx.now))
         if record is None or record.time > self.ctx.now:
             raise NotReady(f"No borrow record: {instrument.value}")

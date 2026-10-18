@@ -233,9 +233,13 @@ fundamental selection at 7–8 AM Eastern.
 
 Fundamental reads come from each subscribed security's `fundamentals` record, which
 LEAN keeps point-in-time; a security must be subscribed (a universe member or a bar
-reader) to have one. Borrow terms come from the security's shortable provider:
-`shortable_quantity` and, where the provider has it (Interactive Brokers),
-`fee_rate`. LEAN's default provider reports neither.
+reader) to have one. Borrow terms come from the security's shortable provider: `shortable_quantity`
+and `fee_rate` (Interactive Brokers data, for example). LEAN's default provider
+reports a zero fee and unlimited quantity for everything; the adapter treats that
+as no data and returns no record. Records are stamped with the time LEAN read them,
+so a read after the Context's cutoff is refused; their `max_age` therefore bounds
+read lag, not the vendor's own update date. A rule that raises `NotReady` leaves
+the universe unready and its members subscribed.
 
 Symbol changes preserve identity; delistings mark instruments untradable.
 

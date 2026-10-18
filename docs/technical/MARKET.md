@@ -55,8 +55,10 @@ fundamental records: `rule(at, records)` receives the selection time and one
 `FundamentalRecord` per security (CIK, market value, traded price, dollar volume)
 and returns the instruments to hold. The rule may read other point-in-time sources
 the strategy owns, such as a list of recent SEC filers; it must use nothing dated
-after `at`. Keep the same rule object across declarations: the definition is compared
-to decide whether the native source is rebuilt.
+after `at`, and it returns `InstrumentId` values. A rule that cannot decide raises
+`NotReady`, which leaves the universe unready. Definitions compare by name, `version`
+and settings, not by the rule object; change `version` when the rule's meaning
+changes. CIKs are stored without leading zeros.
 
 `ctx.market.fundamentals(req, instrument)` returns the security's latest
 `FundamentalRecord` known at graph time, and `ctx.market.short_availability(req,
