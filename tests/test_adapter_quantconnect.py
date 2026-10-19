@@ -204,6 +204,10 @@ class API:
     def session_open(self, security, after, count):
         return after + timedelta(days=count)
 
+    def session_bounds(self, security, at, extended):
+        # Stand-in calendar: the replayed minutes sit inside one session.
+        return at - timedelta(days=1), at + timedelta(days=1)
+
     def refusal(self, ticket):
         return getattr(ticket, "refused", None)
 

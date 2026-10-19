@@ -78,6 +78,15 @@ class MemoryServices(ProviderServices):
             raise NotReady("Calendar fixture has no such later session")
         return closes[count - 1]
 
+    def _session_bounds(self, instrument, at, extended):
+        if instrument not in self.calendars:
+            raise CapabilityError("An explicit exchange calendar fixture is required")
+        sessions = self.calendars[instrument].get("extended" if extended else "regular", ())
+        started = [(start, end) for start, end in sessions if start <= at]
+        if not started:
+            raise NotReady("Calendar fixture has no session at or before this time")
+        return max(started)
+
     def _session_open(self, instrument, after, count):
         if instrument not in self.calendars:
             raise CapabilityError("An explicit exchange calendar fixture is required")
