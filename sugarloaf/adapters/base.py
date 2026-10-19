@@ -1,6 +1,7 @@
 """Provider-neutral declaration checks, snapshots, readiness and ownership."""
 
 from bisect import bisect_left
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from math import isfinite
@@ -11,6 +12,7 @@ from sugarloaf.core.events import DataReset, Event, EventBatch, LifecycleEvent
 from sugarloaf.core.primitives import InstrumentId
 from sugarloaf.core.services import Context
 from sugarloaf.market.contracts import (
+    Bar,
     BarsRequirement,
     ETFConstituentsUniverse,
     FundamentalsRequirement,
@@ -117,7 +119,13 @@ def _first_distinct(rows, count):
     return tuple(members)[:count]
 
 
-def price_at_tick(bars, tick, session_open, session_close, through):
+def price_at_tick(
+    bars: Sequence[Bar],
+    tick: datetime,
+    session_open: datetime,
+    session_close: datetime,
+    through: datetime,
+) -> tuple[float, datetime]:
     """The instrument's price at a clock tick, and when that price became known.
 
     The clock moves only when data arrives, from any instrument, so a price asked
@@ -137,9 +145,8 @@ def price_at_tick(bars, tick, session_open, session_close, through):
     4. No trade in the session at all: the data is missing.
 
     Args:
-        bars: The instrument's bars, earliest first, with ``end``, ``available_at``,
-            ``close`` and ``fill_forward``. Bars the provider repeated because
-            nothing traded (``fill_forward``) are not trades and are ignored.
+        bars: The instrument's bars, earliest first. Bars the provider repeated
+            because nothing traded (``fill_forward``) are not trades and are ignored.
         tick: The first clock tick at or after the requested time.
         session_open: Open of the session containing the tick, or the latest one
             before it.

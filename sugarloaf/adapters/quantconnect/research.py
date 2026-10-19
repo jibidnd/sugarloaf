@@ -9,7 +9,6 @@ from collections.abc import Iterator
 from dataclasses import replace
 from datetime import datetime, timedelta
 from heapq import heappop, heappush
-from typing import NamedTuple
 
 from sugarloaf.core.errors import CapabilityError, ContractError, NotReady
 from sugarloaf.core.events import Event, EventBatch, LifecycleEvent
@@ -27,15 +26,6 @@ from sugarloaf.market.contracts import (
 from ..base import price_at_tick
 from .lean import native_period
 from .services import QuantConnectDataServices
-
-
-class _Trade(NamedTuple):
-    """A history bar reduced to what price_at_tick reads."""
-
-    end: datetime
-    available_at: datetime
-    close: float
-    fill_forward: bool
 
 
 class QuantBookServices(QuantConnectDataServices):
@@ -353,13 +343,10 @@ class QuantBookServices(QuantConnectDataServices):
         # History from the session open through the later of the tick and the
         # session close, never past the availability boundary.
         through = min(as_of, max(tick, closes))
+        # Replay receipt equals event time, so each bar is available at its end.
+        key = (BarsRequirement.__name__, instrument)
         bars = [
-            _Trade(
-                self.api.to_utc(security, bar.end_time),
-                self.api.to_utc(security, bar.end_time),  # replay receipt = event time
-                float(bar.close),
-                bool(getattr(bar, "is_fill_forward", False)),
-            )
+            self._neutral(key, bar, self.api.to_utc(security, bar.end_time))
             for bar in self.api.history_range(self.algorithm, symbol, source, opened, through)
         ]
         try:
