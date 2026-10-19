@@ -41,8 +41,13 @@ A factory that needs a file built on the platform declares a keyword `stored`:
 `deployment(parameter, stored)`. On QuantConnect, `stored(key)` returns the text the
 account keeps under that Object Store key, or `None` if there is none; it cannot
 write. Use it for inputs prepared in a research run that may not leave the
-platform, such as a table derived from licensed data. A factory without `stored`
-is called with `parameter` only.
+platform, such as a table derived from licensed data. A factory may also declare
+`fetch`: `fetch(url, headers)` is an HTTP GET through the platform that returns the
+response text. QuantConnect limits it (about 100 calls a backtest, about 20 a minute
+live), so read recorded responses through `stored` first and fetch only what is
+missing: the same code then serves a backtest, which finds everything recorded, and
+a live session, which fetches. A factory without these keywords is called with
+`parameter` only.
 
 An optional `report(context)` callback inspects `context.runtime.graph` and returns
 summary diagnostics. Use `context.record(label, value)` for individual diagnostic

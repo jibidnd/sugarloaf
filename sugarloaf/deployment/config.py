@@ -34,6 +34,10 @@ class Environment:
     account_type: str = "MARGIN"
     slippage: float = 0.0005
     leverage: float = 1.0
+    # Borrow data for short-availability reads: None for the platform's default, or
+    # "interactive_brokers" for Interactive Brokers' fee and shortable-quantity history. On
+    # QuantConnect the same source also charges the borrow fee on short holdings.
+    borrow_data: str | None = None
 
     def __post_init__(self):
         # Reject nonsensical environment settings before any provider request or order.
@@ -41,6 +45,8 @@ class Environment:
         finite(self.cash, self.slippage, self.leverage)
         if self.end < self.start or self.cash <= 0 or self.slippage < 0 or self.leverage <= 0:
             raise ContractError("Invalid deployment environment settings")
+        if self.borrow_data not in (None, "interactive_brokers"):
+            raise ContractError("Unknown borrow data source")
 
 
 @dataclass(frozen=True)

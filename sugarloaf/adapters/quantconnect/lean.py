@@ -7,7 +7,12 @@ Tests inject an API object implementing these operations, not a fake core graph.
 from datetime import UTC, datetime, timedelta
 
 from sugarloaf.core.errors import CapabilityError
-from sugarloaf.market.contracts import BarsRequirement, LiquidityUniverse, QuotesRequirement
+from sugarloaf.market.contracts import (
+    BarsRequirement,
+    FundamentalUniverse,
+    LiquidityUniverse,
+    QuotesRequirement,
+)
 
 # The bar periods LEAN delivers natively for US equities at the resolutions this
 # adapter uses. A subscription is described by its period, a neutral timedelta.
@@ -50,13 +55,21 @@ class LeanAPI:
 
         self.lean = lean
 
-    def setup(self, algorithm, slippage, leverage):
-        """Install a native security initializer: slippage, leverage and a starting price."""
+    def setup(self, algorithm, slippage, leverage, borrow_data=None):
+        """Install a native security initializer: slippage, leverage, borrow data and a
+        starting price."""
         # Apply models when native securities are initialized, including those
         # admitted later by a dynamic universe, not only the initial tickers.
         def initialize_security(security):
             security.set_slippage_model(self.lean.ConstantSlippageModel(slippage))
             security.set_leverage(leverage)
+            if borrow_data == "interactive_brokers":
+                # The brokerage model does not attach it; without it LEAN reports no
+                # borrow data at all.
+                security.set_shortable_provider(self.lean.InteractiveBrokersShortableProvider())
+                # Charge the provider's borrow fee on short holdings (and credit its rebate);
+                # LEAN's default margin interest model charges nothing.
+                security.margin_interest_rate_model = self.lean.ShortMarginInterestRateModel()
             # A new security has no price until its first bar arrives, and LEAN
             # refuses an order for it. On a daily feed that is the whole first
             # day (seen natively: members selected in the morning could not be
@@ -242,7 +255,7 @@ class LeanAPI:
         settings.data_normalization_mode = getattr(
             self.lean.DataNormalizationMode, getattr(feed, "normalization", "adjusted").upper()
         )
-        if isinstance(definition, LiquidityUniverse):
+        if isinstance(definition, (LiquidityUniverse, FundamentalUniverse)):
             return algorithm.add_universe(self.lean.FundamentalUniverse.usa(selector, settings))
         return algorithm.add_universe(algorithm.universe.etf(etf_ticker, settings, selector))
 

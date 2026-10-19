@@ -125,6 +125,7 @@ class QuantConnectHost:
         api=None,
         cost_rate=0.0005,
         leverage=1.0,
+        borrow_data=None,
     ):
         from sugarloaf.execution.engine import ExecutionEngine
 
@@ -132,7 +133,7 @@ class QuantConnectHost:
         # The session owns graph evaluation; this host owns callback ordering.
         self.algorithm = algorithm
         self.services = QuantConnectServices(
-            algorithm, symbols, constraints, api, cost_rate, leverage
+            algorithm, symbols, constraints, api, cost_rate, leverage, borrow_data
         )
         for instrument, ticker in (tickers or {}).items():
             self.services.register(instrument, ticker)

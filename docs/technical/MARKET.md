@@ -12,7 +12,9 @@ service protocols and Context live in [core/services.py](../../sugarloaf/core/se
 | `BarsRequirement` | Selection, interval, lookback, session, normalization, fill-forward, maximum age and `require_all` |
 | `QuotesRequirement` | Bid/ask observations, interval, lookback, session and freshness |
 | `IndicatorRequirement` | Native indicator over a bar source, immutable parameters and valid output window |
-| `UniverseRequirement` | Named liquidity or historical ETF-constituent definition |
+| `UniverseRequirement` | Named liquidity, historical ETF-constituent or fundamental-rule definition |
+| `FundamentalsRequirement` | The selected securities' latest fundamental records, with a maximum age |
+| `ShortAvailabilityRequirement` | The selected securities' latest borrow terms |
 | `InstrumentRequirement` | Metadata/calendar access for a selection |
 | `PortfolioRequirement` | Account access and selection |
 
@@ -47,6 +49,23 @@ practice it drops funds and notes, which otherwise rank among the most liquid
 securities. A provider that cannot say reports the universe as not ready.
 Membership holds each security once, even when the provider's selection data
 lists it twice.
+
+`FundamentalUniverse(name, rule)` selects with a rule over the provider's daily
+fundamental records: `rule(at, records)` receives the selection time and one
+`FundamentalRecord` per security (CIK, market value, traded price, dollar volume)
+and returns the instruments to hold. The rule may read other point-in-time sources
+the strategy owns, such as a list of recent SEC filers; it must use nothing dated
+after `at`, and it returns `InstrumentId` values. A rule that cannot decide raises
+`NotReady`, which leaves the universe unready. Definitions compare by name, `version`
+and settings, not by the rule object; change `version` when the rule's meaning
+changes. CIKs are stored without leading zeros.
+
+`ctx.market.fundamentals(req, instrument)` returns the security's latest
+`FundamentalRecord` known at graph time, and `ctx.market.short_availability(req,
+instrument)` its latest `ShortAvailability` (annual fee rate, shortable quantity).
+A missing, future-dated or (for fundamentals) older-than-`max_age` record raises
+`NotReady`. The price in a fundamental record is the traded price of its date; use it,
+or raw bars, for price levels (see [corporate actions](ADAPTERS.md#corporate-actions-and-data-resets)).
 
 Declare `ema` in the node's requirements. Within `evaluate`, read
 `ctx.market.indicator(ema, asset).points[-1].values["value"]`.

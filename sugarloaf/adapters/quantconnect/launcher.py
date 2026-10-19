@@ -34,15 +34,37 @@ def stored_reader(algorithm):
     return read
 
 
-def load(factory, algorithm):
-    """Call a deployment factory with the native parameters, and stored files if it asks.
+def fetcher(algorithm):
+    """HTTP GET through the platform: the response text, or None when nothing came back.
 
-    A factory takes ``parameter`` and may also take a keyword ``stored``, which receives the
-    reader of ``stored_reader``. Factories without it are called as before.
+    LEAN's download returns an empty string on failure, which a caller could not tell from an
+    empty page; None makes the failure explicit. QuantConnect staff have described limits of
+    about 100 calls a backtest and about 20 a minute live (forum, 2020-21), so a strategy reads
+    recorded responses through ``stored`` first and fetches only what is missing. Headers are
+    a dict, as QuantBook research calls pass them.
     """
-    if "stored" in inspect.signature(factory).parameters:
-        return factory(algorithm.get_parameter, stored=stored_reader(algorithm))
-    return factory(algorithm.get_parameter)
+
+    def fetch(url: str, headers: dict[str, str] | None = None) -> str | None:
+        text = algorithm.download(url, headers or {})
+        return text or None
+
+    return fetch
+
+
+def load(factory, algorithm):
+    """Call a deployment factory with the native parameters, and platform access if it asks.
+
+    A factory takes ``parameter`` and may also take keywords ``stored`` (the reader of
+    ``stored_reader``) and ``fetch`` (the getter of ``fetcher``). Factories without them are
+    called as before.
+    """
+    wanted = inspect.signature(factory).parameters
+    extra = {}
+    if "stored" in wanted:
+        extra["stored"] = stored_reader(algorithm)
+    if "fetch" in wanted:
+        extra["fetch"] = fetcher(algorithm)
+    return factory(algorithm.get_parameter, **extra)
 
 
 def start(algorithm, deployment):
@@ -87,6 +109,7 @@ def start(algorithm, deployment):
         policy=deployment.execution,
         cost_rate=env.slippage,
         leverage=env.leverage,
+        borrow_data=env.borrow_data,
     )
     # Startup diagnostics record settings and versions. Actual source identity
     # is retained separately by the cloud packaging/submission tools.

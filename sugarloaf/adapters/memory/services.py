@@ -18,6 +18,9 @@ class MemoryServices(ProviderServices):
         constraints (PortfolioConstraints | None): Execution/Context exposure limits.
         calendars (Mapping | None): Instrument-to-session mappings of aware open/close pairs.
         borrow (Mapping[InstrumentId, float] | None): Confirmed shortable quantities by instrument.
+        fundamentals (Mapping[InstrumentId, Sequence[FundamentalRecord]] | None): Records by
+            instrument, any order; a read gives the latest one dated at or before graph time.
+        short (Mapping[InstrumentId, Sequence[ShortAvailability]] | None): Borrow terms likewise.
         cost_rate (float): Proportional fixture cost per absolute trade notional.
 
     Writes invalidate existing Contexts; timestamps govern later visibility.
@@ -32,6 +35,8 @@ class MemoryServices(ProviderServices):
         calendars=None,
         borrow=None,
         cost_rate=0.0,
+        fundamentals=None,
+        short=None,
     ):
         # Share declaration guards, readiness and causal read filtering with other
         # providers. Only the backing observations/account/calendar are fixtures.
@@ -40,6 +45,8 @@ class MemoryServices(ProviderServices):
         self.account = account or AccountSnapshot({}, 100000, {"USD": 100000}, {})
         self.calendars = calendars or {}
         self.borrow_available = borrow or {}
+        self.fundamental_records = {k: tuple(v) for k, v in (fundamentals or {}).items()}
+        self.short_records = {k: tuple(v) for k, v in (short or {}).items()}
         self.cost_rate = cost_rate
         # Buffers store supplied neutral observations, not simulated market ticks.
         # Their observation and availability timestamps determine later visibility.
@@ -110,6 +117,12 @@ class MemoryServices(ProviderServices):
         # lookback and freshness separately for each authorized node read.
         return self.buffers.get(resource_key(req, instrument), ())
 
+    def _fundamentals(self, instrument, cutoff):
+        return _latest(self.fundamental_records.get(instrument, ()), cutoff)
+
+    def _short_availability(self, instrument, cutoff):
+        return _latest(self.short_records.get(instrument, ()), cutoff)
+
     def _instrument(self, instrument):
         if instrument not in self.instruments:
             raise CapabilityError(f"Unknown instrument: {instrument}")
@@ -150,3 +163,8 @@ class MemoryServices(ProviderServices):
         # Return an estimate only. MemoryGateway does not automatically charge
         # fees/slippage or synthesize a fill from this proportional cost setting.
         return abs(quantity * price) * self.cost_rate
+
+
+def _latest(records, cutoff):
+    known = [r for r in records if r.time <= cutoff]
+    return max(known, key=lambda r: r.time) if known else None

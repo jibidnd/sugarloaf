@@ -100,7 +100,7 @@ class API:
         self.histories = []
         self.universes = {}
 
-    def setup(self, algorithm, slippage, leverage):
+    def setup(self, algorithm, slippage, leverage, borrow_data=None):
         self.setups.append((slippage, leverage))
 
     def subscribe(self, algorithm, ticker, req, period=MINUTE):
@@ -1402,3 +1402,94 @@ def test_factories_receive_stored_files_only_when_they_ask():
 
     assert load(plain, algorithm) == "2024-01-02"
     assert load(with_files, algorithm) == ("2024-01-02", "[1, 2]", None)
+
+
+def test_qc_fundamental_universe_records_and_borrow_terms():
+    from sugarloaf.market.contracts import (
+        FundamentalsRequirement,
+        FundamentalUniverse,
+        ShortAvailabilityRequirement,
+    )
+
+    api, platform = API(), algorithm()
+    services = QuantConnectServices(platform, api=api)
+    def apple_only(at, rows):
+        return [r.instrument for r in rows if r.cik == "320193"]
+
+    definition = FundamentalUniverse("filers", apple_only)
+    fundamentals = FundamentalsRequirement(Selection(universe="filers"))
+    short = ShortAvailabilityRequirement(Selection(universe="filers"))
+    declared = (UniverseRequirement(definition), fundamentals, short)
+    services.install("n", ResourceUpdate(declared, ()))
+    apple, other = Symbol("aapl", "AAPL"), Symbol("x", "X")
+
+    def native(cik, cap, price):
+        return NS(company_reference=NS(cik=cik), market_cap=cap, price=price, dollar_volume=1e9,
+                  has_fundamental_data=True)
+
+    rows = [NS(symbol=apple, **vars(native("0000320193", 2.7e12, 179.66))),
+            NS(symbol=other, **vars(native(None, 1e8, 5.0)))]
+    assert api.selectors["filers"](rows) == [apple]
+    member = services.memberships["filers"].members[0]
+    platform.securities[apple] = NS(symbol=apple, fundamentals=native("320193", 2.8e12, 181.0),
+                                    shortable_provider=NS(shortable_quantity=lambda *_: 1000,
+                                                          fee_rate=lambda *_: 0.0025))
+    record = services._fundamentals(member, NOW)
+    assert (record.cik, record.market_cap, record.price) == ("320193", 2.8e12, 181.0)
+    terms = services._short_availability(member, NOW)
+    assert (terms.fee_rate, terms.shortable) == (0.0025, 1000.0)
+
+
+def test_factories_receive_fetch_when_they_ask():
+    from sugarloaf.adapters.quantconnect.launcher import load
+
+    calls = []
+    algorithm_ = NS(get_parameter=lambda name: None, object_store=NS(contains_key=lambda k: False),
+                    download=lambda url, headers: calls.append((url, headers)) or "body")
+
+    def factory(parameter, fetch):
+        return fetch("https://example.test/a", {"User-Agent": "x"})
+
+    assert load(factory, algorithm_) == "body"
+    assert calls == [("https://example.test/a", {"User-Agent": "x"})]
+
+
+def test_qc_fundamental_rule_failures_and_missing_borrow_data_are_not_silent():
+    from sugarloaf.adapters.base import select
+    from sugarloaf.market.contracts import FundamentalRecord, FundamentalUniverse
+
+    api, platform = API(), algorithm()
+    services = QuantConnectServices(platform, api=api)
+
+    def unavailable(at, rows):
+        raise NotReady("filing source does not cover this date")
+
+    universe = UniverseRequirement(FundamentalUniverse("f", unavailable))
+    services.install("n", ResourceUpdate((universe,), ()))
+    apple = Symbol("aapl", "AAPL")
+    row = NS(symbol=apple, company_reference=NS(cik="320193"), market_cap=1.0, price=1.0,
+             dollar_volume=1.0)
+    # The universe is unready rather than empty, and LEAN keeps the members it had.
+    assert api.selectors["f"]([row]) == "UNCHANGED"
+    assert services.memberships["f"].ready is False
+    # A rule returning tickers instead of identities is an error, not an empty universe.
+    tickers = FundamentalUniverse("t", lambda at, rows: ["AAPL"])
+    with pytest.raises(ContractError):
+        select(tickers, [FundamentalRecord(A, NOW, "320193")], NOW)
+    # Definitions compare by name and version, not by the rule object; CIKs are unpadded.
+    assert FundamentalUniverse("f", lambda a, r: []) == FundamentalUniverse("f", lambda a, r: [])
+    assert FundamentalRecord(A, NOW, "0000320193").cik == "320193"
+    # LEAN's default shortable provider is no data, not free and unlimited borrow.
+
+    class NullShortableProvider:
+        def fee_rate(self, *_):
+            return 0.0
+
+        def shortable_quantity(self, *_):
+            return None
+
+    services.symbols[A] = apple
+    platform.securities[apple] = NS(symbol=apple, shortable_provider=NullShortableProvider())
+    assert services._short_availability(A, NOW) is None
+    with pytest.raises(CapabilityError):
+        services._fundamentals(InstrumentId("unsubscribed"), NOW)

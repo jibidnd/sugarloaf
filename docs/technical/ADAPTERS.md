@@ -222,6 +222,30 @@ owner/reference disappears, the source is disposed. Its manager entry is collect
 only after a later boundary and empty selected/member sets, preserving LEAN's
 held/open-order retention.
 
+A `FundamentalUniverse` uses the same daily fundamental callback as liquidity
+selection; its rule receives one record per security from the callback's objects
+(CIK from the company reference, market cap, price, dollar volume). Observed in a
+backtest (March 2024): the callback runs at 00:00 each day, Saturdays included, with
+records of the previous close; a security first selected at 00:00 has its
+fundamentals and daily history at the first bar after the open, while its own
+`price` stays 0 until its first bar arrives. QuantConnect documents live
+fundamental selection at 7–8 AM Eastern.
+
+Fundamental reads come from each subscribed security's `fundamentals` record, which
+LEAN keeps point-in-time; a security must be subscribed (a universe member or a bar
+reader) to have one. Borrow terms come from the security's shortable provider: `shortable_quantity`
+and `fee_rate` (Interactive Brokers data, for example). LEAN's default provider
+reports a zero fee and unlimited quantity for everything; the adapter treats that
+as no data and returns no record. The brokerage model does not attach Interactive
+Brokers' provider even under its own name: set `Environment(borrow_data=
+"interactive_brokers")` and the security initializer gives every security,
+including later universe members, that provider. The same setting gives each security
+LEAN's `ShortMarginInterestRateModel`, which charges the provider's fee rate on short
+holdings and credits its rebate; LEAN's default model charges nothing. Records are stamped with the time LEAN read them,
+so a read after the Context's cutoff is refused; their `max_age` therefore bounds
+read lag, not the vendor's own update date. A rule that raises `NotReady` leaves
+the universe unready and its members subscribed.
+
 Symbol changes preserve identity; delistings mark instruments untradable.
 
 ## Corporate actions and data resets
@@ -241,7 +265,11 @@ The QuantConnect rule, for backtests and QuantBook research:
 | Split | Nothing rebuilt | Windows and indicators rebuilt; `DataReset` reported |
 
 LEAN adjusts those series with the whole factor file from the first bar, so they
-are continuous through an ex-date or a split and do not change on it. A raw price
+are continuous through an ex-date or a split and do not change on it. The level of
+an adjusted price is therefore not the price traded on its date: in a March 2024
+backtest, NVDA's adjusted close was about 85 against about 850 raw, because of the
+10-for-1 split of June 2024. Returns from adjusted bars are right; a price level
+(a price filter, a market value) needs raw bars or a fundamental record's price. A raw price
 that opens lower by a dividend is a real price move. Only a split puts raw prices
 on a different per-share scale. The rebuilt raw history is still as traded: a
 window spanning the split mixes both scales, so the rebuild restarts state but
@@ -273,8 +301,8 @@ it joins a universe, and LEAN refuses orders for it.
 Buying power uses LEAN's initial-margin model and available buying power. Borrow
 follows LEAN's `IShortableProvider` contract: a number is the shortable quantity
 and null means "shortable without restrictions". LEAN's default provider always
-returns null, so a default backtest never runs out of borrow; configure a
-shortable provider on the brokerage model to make borrow binding.
+returns null, so a default backtest never runs out of borrow and pays no borrow
+fee; `Environment(borrow_data="interactive_brokers")` makes borrow binding and charged.
 
 The gateway supports regular-session `day` or `gtc` orders of three types
 (`market`, `market_on_open`, `market_on_close`), tags orders with intent
