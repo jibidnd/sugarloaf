@@ -67,6 +67,9 @@ class LeanAPI:
                 # The brokerage model does not attach it; without it LEAN reports no
                 # borrow data at all.
                 security.set_shortable_provider(self.lean.InteractiveBrokersShortableProvider())
+                # Charge the provider's borrow fee on short holdings (and credit its rebate);
+                # LEAN's default margin interest model charges nothing.
+                security.margin_interest_rate_model = self.lean.ShortMarginInterestRateModel()
             # A new security has no price until its first bar arrives, and LEAN
             # refuses an order for it. On a daily feed that is the whole first
             # day (seen natively: members selected in the morning could not be

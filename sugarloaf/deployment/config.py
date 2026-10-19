@@ -35,7 +35,8 @@ class Environment:
     slippage: float = 0.0005
     leverage: float = 1.0
     # Borrow data for short-availability reads: None for the platform's default, or
-    # "interactive_brokers" for Interactive Brokers' fee and shortable-quantity history.
+    # "interactive_brokers" for Interactive Brokers' fee and shortable-quantity history. On
+    # QuantConnect the same source also charges the borrow fee on short holdings.
     borrow_data: str | None = None
 
     def __post_init__(self):

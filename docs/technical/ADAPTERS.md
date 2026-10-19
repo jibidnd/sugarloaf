@@ -239,7 +239,9 @@ reports a zero fee and unlimited quantity for everything; the adapter treats tha
 as no data and returns no record. The brokerage model does not attach Interactive
 Brokers' provider even under its own name: set `Environment(borrow_data=
 "interactive_brokers")` and the security initializer gives every security,
-including later universe members, that provider. Records are stamped with the time LEAN read them,
+including later universe members, that provider. The same setting gives each security
+LEAN's `ShortMarginInterestRateModel`, which charges the provider's fee rate on short
+holdings and credits its rebate; LEAN's default model charges nothing. Records are stamped with the time LEAN read them,
 so a read after the Context's cutoff is refused; their `max_age` therefore bounds
 read lag, not the vendor's own update date. A rule that raises `NotReady` leaves
 the universe unready and its members subscribed.
@@ -299,8 +301,8 @@ it joins a universe, and LEAN refuses orders for it.
 Buying power uses LEAN's initial-margin model and available buying power. Borrow
 follows LEAN's `IShortableProvider` contract: a number is the shortable quantity
 and null means "shortable without restrictions". LEAN's default provider always
-returns null, so a default backtest never runs out of borrow; configure a
-shortable provider on the brokerage model to make borrow binding.
+returns null, so a default backtest never runs out of borrow and pays no borrow
+fee; `Environment(borrow_data="interactive_brokers")` makes borrow binding and charged.
 
 The gateway supports regular-session `day` or `gtc` orders of three types
 (`market`, `market_on_open`, `market_on_close`), tags orders with intent
