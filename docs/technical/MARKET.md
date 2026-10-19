@@ -118,7 +118,7 @@ means (rank the rest, wait, or hold) is the node's explicit decision.
 | Attribute | Use |
 | --- | --- |
 | `market` | Bars, quotes, indicators, ready members, membership and exact anchors |
-| `instruments` | Metadata, tradability, session calendars and `session_close` |
+| `instruments` | Metadata, tradability, session calendars, `session_close` and `session_open` |
 | `portfolio` | Immutable authoritative account snapshot |
 | `valuation` | Unit value in account currency |
 | `costs` | Expected trading cost |
@@ -146,7 +146,10 @@ calendar years. A horizon can be measured in trading sessions instead of elapsed
 time: `ctx.instruments.session_close(instrument, after, count)` returns the close
 of the count-th regular session ending strictly after `after`. One session after
 a Friday close ends at Monday's close, where a price exists and the market is
-open; one calendar day after it ends on Saturday. Quantities are instrument units. Weights are account-NAV fractions.
+open; one calendar day after it ends on Saturday.
+`ctx.instruments.session_open(instrument, after, count)` is its counterpart for
+intervals measured from an open: the open of the count-th regular session
+starting strictly after `after` (at a Friday close, count 1 is Monday's open). Quantities are instrument units. Weights are account-NAV fractions.
 Unit valuation is mark × multiplier × account-currency FX; unsupported conversion
 fails rather than guessing.
 

@@ -201,6 +201,9 @@ class API:
         # Stand-in calendar: one regular session closes each day.
         return after + timedelta(days=count)
 
+    def session_open(self, security, after, count):
+        return after + timedelta(days=count)
+
     def refusal(self, ticket):
         return getattr(ticket, "refused", None)
 
@@ -1082,6 +1085,38 @@ def test_session_close_steps_whole_regular_sessions_through_the_native_calendar(
     assert api.session_close(security, friday_close, 1) == datetime(2025, 1, 13, 16, tzinfo=UTC)
     assert api.session_close(security, friday_close, 2) == datetime(2025, 1, 14, 16, tzinfo=UTC)
     assert requests == [False] * 3  # Regular sessions only, never extended hours.
+
+
+def test_session_open_steps_whole_regular_sessions_through_the_native_calendar():
+    # Monday 20 January 2025 was a market holiday, so Tuesday's open follows Friday's.
+    opens = [
+        datetime(2025, 1, 17, 9, 30),
+        datetime(2025, 1, 21, 9, 30),
+        datetime(2025, 1, 22, 9, 30),
+    ]
+    requests = []
+
+    def get_next_market_open(local, extended):
+        # Like LEAN: the search is non-inclusive of the instant it is given.
+        requests.append(extended)
+        return next(start for start in opens if start > local)
+
+    api = object.__new__(LeanAPI)
+    api.lean = NS(
+        Extensions=NS(
+            convert_from_utc=lambda value, zone: value, convert_to_utc=lambda value, zone: value
+        )
+    )
+    security = NS(
+        exchange=NS(time_zone="UTC", hours=NS(get_next_market_open=get_next_market_open))
+    )
+    friday_close = datetime(2025, 1, 17, 16, tzinfo=UTC)
+    assert api.session_open(security, friday_close, 1) == datetime(2025, 1, 21, 9, 30, tzinfo=UTC)
+    assert api.session_open(security, friday_close, 2) == datetime(2025, 1, 22, 9, 30, tzinfo=UTC)
+    # Asked at an open itself, the next session's open is returned.
+    friday_open = datetime(2025, 1, 17, 9, 30, tzinfo=UTC)
+    assert api.session_open(security, friday_open, 1) == datetime(2025, 1, 21, 9, 30, tzinfo=UTC)
+    assert requests == [False] * 4  # Regular sessions only, never pre-market.
 
 
 @pytest.mark.parametrize(

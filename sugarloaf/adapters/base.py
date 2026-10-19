@@ -482,6 +482,9 @@ class ProviderServices:
     def _session_close(self, instrument, after, count):
         raise CapabilityError("Provider calendar unavailable")
 
+    def _session_open(self, instrument, after, count):
+        raise CapabilityError("Provider calendar unavailable")
+
     def schedule_due(self, schedule: Schedule, after: datetime | None, through: datetime) -> bool:
         """Check a local scheduled occurrence against a data-clock interval.
 
@@ -764,6 +767,12 @@ class _ContextServices:
         if isinstance(count, bool) or not isinstance(count, int) or count < 1:
             raise ContractError("Session count must be a positive integer")
         return self.owner._session_close(instrument, after, count)
+
+    def session_open(self, instrument, after, count=1):
+        self._declares(InstrumentRequirement, instrument)
+        if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+            raise ContractError("Session count must be a positive integer")
+        return self.owner._session_open(instrument, after, count)
 
     def buying_power(self, instrument, quantity):
         self._declares(PortfolioRequirement, instrument)

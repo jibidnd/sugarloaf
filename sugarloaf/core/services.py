@@ -146,6 +146,13 @@ class InstrumentCatalog(Protocol):
         calendar time: one session after a Friday close ends at Monday's close.
         """
         ...
+    def session_open(self, instrument: InstrumentId, after: datetime, count: int = 1) -> datetime:
+        """Return the open of the count-th regular session starting strictly after ``after``.
+
+        The counterpart of ``session_close`` for intervals measured from an open:
+        asked at a Friday close, the first session opens Monday morning.
+        """
+        ...
 
 
 class CostModel(Protocol):

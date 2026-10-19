@@ -78,6 +78,18 @@ class MemoryServices(ProviderServices):
             raise NotReady("Calendar fixture has no such later session")
         return closes[count - 1]
 
+    def _session_open(self, instrument, after, count):
+        if instrument not in self.calendars:
+            raise CapabilityError("An explicit exchange calendar fixture is required")
+        # Opens strictly after the given instant, earliest first, as for closes:
+        # asked at Friday's close, the first one is Monday's open.
+        opens = sorted(
+            start for start, _ in self.calendars[instrument].get("regular", ()) if start > after
+        )
+        if len(opens) < count:
+            raise NotReady("Calendar fixture has no such later session")
+        return opens[count - 1]
+
     def set_account(self, account: AccountSnapshot) -> None:
         """Replace the account snapshot and invalidate previously created contexts."""
         # Invalidate snapshots immediately so reconciliation cannot reuse account

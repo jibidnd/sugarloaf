@@ -5,7 +5,7 @@ import pytest
 
 from sugarloaf.adapters.memory import MemoryServices, SelectionRow
 from sugarloaf.adapters.memory.services import resource_key
-from sugarloaf.core.errors import CapabilityError, NotReady, SnapshotError
+from sugarloaf.core.errors import CapabilityError, ContractError, NotReady, SnapshotError
 from sugarloaf.core.events import Event, EventBatch
 from sugarloaf.core.primitives import InstrumentId
 from sugarloaf.core.services import AccountSnapshot, OpenOrder
@@ -160,6 +160,30 @@ def test_session_close_counts_trading_sessions_across_a_weekend():
     assert catalog.session_close(A, friday_close, 2) == tuesday_close
     with pytest.raises(NotReady, match="no such later session"):
         catalog.session_close(A, friday_close, 3)
+
+
+def test_session_open_counts_trading_sessions_across_a_weekend():
+    closes = (
+        datetime(2025, 1, 10, 21, tzinfo=UTC),
+        datetime(2025, 1, 13, 21, tzinfo=UTC),
+        datetime(2025, 1, 14, 21, tzinfo=UTC),
+    )
+    sessions = tuple((close - timedelta(hours=6, minutes=30), close) for close in closes)
+    (friday_open, friday_close), (monday_open, _), (tuesday_open, _) = sessions
+    services = MemoryServices([Instrument(A, "A")], calendars={A: {"regular": sessions}})
+    services.install("n", ResourceUpdate((InstrumentRequirement(Selection((A,))),), ()))
+    services.apply(EventBatch(0, friday_close))
+    catalog = services.context(node_id="n").instruments
+    # Before Friday's open the next open is Friday's own; at the open itself the
+    # search is exclusive, as it is during the session and at its close.
+    assert catalog.session_open(A, friday_open - timedelta(hours=1)) == friday_open
+    assert catalog.session_open(A, friday_open) == monday_open
+    assert catalog.session_open(A, friday_close) == monday_open
+    assert catalog.session_open(A, friday_close, 2) == tuesday_open
+    with pytest.raises(NotReady, match="no such later session"):
+        catalog.session_open(A, friday_close, 3)
+    with pytest.raises(ContractError):
+        catalog.session_open(A, friday_close, 0)
 
 
 def test_liquidity_universe_can_require_fundamentals_before_taking_the_count():
