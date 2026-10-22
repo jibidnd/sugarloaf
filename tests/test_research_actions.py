@@ -143,3 +143,35 @@ def test_outcome_anchors_use_split_safe_conventions_without_mutating_inputs(
     result = provider.anchor_observation(A, end, convention, end)
     assert result.time == end and api.ranges[-1][2] == normalization
     assert provider.context(node_id="signal").market.bars(MINUTE, A) == before
+
+
+def admitted_replay():
+    """Replay three minutes of A (closes 101, 102, 103); each bar is a clock tick."""
+    api = IndicatorAPI()
+    provider = QuantBookServices(algorithm(), {A: "A"}, api=api)
+    runtime = GraphRuntime(compiled(Signal(MINUTE)), provider)
+    end = NOW + timedelta(minutes=3)
+    provider.prepare(NOW, end)
+    for batch in provider.history_batches(NOW, end):
+        runtime.process(batch)
+    return api, provider, end
+
+
+def test_outcome_anchor_is_read_at_the_first_clock_tick_at_or_after_it():
+    api, provider, end = admitted_replay()
+    minute = lambda n: NOW + timedelta(minutes=n)  # noqa: E731
+    # Between ticks: the price at the next tick, reported for the requested time.
+    observation = provider.anchor_observation(A, minute(0.5), "price_return", end)
+    assert (observation.time, observation.available_at, observation.value) == (
+        minute(0.5), minute(1), 101)
+    # The session opens at the first tick: no trade yet, so the first trade after it.
+    api.session_bounds = lambda security, at, extended: (minute(1), minute(10))
+    observation = provider.anchor_observation(A, minute(0.5), "price_return", end)
+    assert (observation.available_at, observation.value) == (minute(2), 102)
+    # Not known by an earlier availability boundary.
+    assert provider.anchor_observation(A, minute(0.5), "price_return", minute(1.5)) is None
+    # A session that closes before any trade: missing.
+    api.session_bounds = lambda security, at, extended: (minute(1), minute(1.5))
+    assert provider.anchor_observation(A, minute(0.5), "price_return", end) is None
+    # The clock never reached this time.
+    assert provider.anchor_observation(A, minute(3.5), "price_return", end) is None

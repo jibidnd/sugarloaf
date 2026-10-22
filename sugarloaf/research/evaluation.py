@@ -83,10 +83,12 @@ Anchor = Callable[[InstrumentId, datetime, str, datetime], Observation | None]
 class ReturnOutcomeResolver:
     """Resolve exact simple returns using a separate, availability-aware label source.
 
-    ``anchor(instrument, at, convention, as_of)`` returns an Observation at the
-    exact requested time, or None. Its availability must be <= as_of. The source
-    owns adjustment conventions; no nearest observation or price substitution is
-    performed. Positive start values and nonnegative end values are required.
+    ``anchor(instrument, at, convention, as_of)`` returns an Observation for the
+    requested time, or None. Its availability must be <= as_of. The source owns
+    adjustment conventions and which price stands for that time (Sugarloaf's
+    QuantConnect source reads it at the first clock tick at or after it; see
+    ``sugarloaf.adapters.base.price_at_tick``). The resolver itself performs no
+    substitution. Positive start values and nonnegative end values are required.
     """
 
     def __init__(self, anchor: Anchor, *, provenance: Mapping[str, str] | None = None) -> None:
@@ -94,7 +96,7 @@ class ReturnOutcomeResolver:
         self.provenance = frozen_map({"resolver": "exact-simple-return-1", **(provenance or {})})
 
     def resolve(self, target: Target, *, as_of: datetime) -> Outcome:
-        """Resolve scalar, joint, or aligned difference returns from exact anchors.
+        """Resolve scalar, joint, or aligned difference returns from anchor prices.
 
         Args:
             target: Decimal price-return or total-return target.

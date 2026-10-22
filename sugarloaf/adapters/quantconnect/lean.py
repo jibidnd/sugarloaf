@@ -231,6 +231,39 @@ class LeanAPI:
             local = security.exchange.hours.get_next_market_close(local, False)
         return self.to_utc(security, local)
 
+    def session_bounds(self, security, at, extended):
+        """Aware UTC open and close of the session containing ``at``, or the latest before it.
+
+        LEAN's ``GetPreviousMarketOpen`` returns the latest open at or before its
+        argument (the argument itself when it is an open) and skips holidays, whose
+        market hours LEAN reports as closed all day. ``GetNextMarketClose`` from that
+        open is the session's close, early closes included.
+        """
+        local = self.lean.Extensions.convert_from_utc(
+            at.astimezone(UTC).replace(tzinfo=None), security.exchange.time_zone
+        )
+        opened = security.exchange.hours.get_previous_market_open(local, extended)
+        closes = security.exchange.hours.get_next_market_close(opened, extended)
+        return self.to_utc(security, opened), self.to_utc(security, closes)
+
+    def session_open(self, security, after, count):
+        """Return the aware UTC open of the count-th regular session starting after ``after``.
+
+        LEAN's ``GetNextMarketOpen`` also searches non-inclusively (it returns an
+        open only when ``localDateTime < marketOpen``), skips holidays and closed
+        days, and reads each day's adjusted hours, so late opens are honoured.
+        Calling it ``count`` times, each from the previous answer, steps one
+        regular session at a time. (Checked against LEAN master
+        ``SecurityExchangeHours.cs``.)
+        """
+        local = self.lean.Extensions.convert_from_utc(
+            after.astimezone(UTC).replace(tzinfo=None), security.exchange.time_zone
+        )
+        for _ in range(count):
+            # False excludes extended hours: the regular open, not pre-market.
+            local = security.exchange.hours.get_next_market_open(local, False)
+        return self.to_utc(security, local)
+
     def universe(self, algorithm, definition, selector, etf_ticker=None, feed=None, period=DAY):
         """Create a synchronous native fundamental or ETF universe source.
 

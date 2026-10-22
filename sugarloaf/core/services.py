@@ -104,7 +104,13 @@ class MarketData(Protocol):
         """Resolve explicit instruments or ready named membership."""
         ...
     def anchor(self, instrument: InstrumentId, at: datetime, convention: str) -> float:
-        """Read an exact declared price anchor; never substitute a nearby observation."""
+        """The instrument's price at ``at`` from declared bars of the convention.
+
+        Read at the first clock tick at or after ``at``: the instrument's bar at
+        that tick; else its last trade earlier in the same session; else, in a
+        session still open, its first trade after the tick. No trade in the
+        session raises NotReady, as does a tick or trade not yet admitted.
+        """
         ...
     def fundamentals(
         self, requirement: FundamentalsRequirement, instrument: InstrumentId
@@ -144,6 +150,13 @@ class InstrumentCatalog(Protocol):
 
         This is how a horizon is counted in trading sessions rather than elapsed
         calendar time: one session after a Friday close ends at Monday's close.
+        """
+        ...
+    def session_open(self, instrument: InstrumentId, after: datetime, count: int = 1) -> datetime:
+        """Return the open of the count-th regular session starting strictly after ``after``.
+
+        The counterpart of ``session_close`` for intervals measured from an open:
+        asked at a Friday close, the first session opens Monday morning.
         """
         ...
 

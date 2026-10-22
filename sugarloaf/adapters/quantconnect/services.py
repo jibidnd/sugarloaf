@@ -962,6 +962,18 @@ class QuantConnectDataServices(ProviderServices):
         # LEAN's exchange-hours database owns holidays, early closes and DST.
         return self.api.session_close(self.algorithm.securities[symbol], after, count)
 
+    def _session_bounds(self, instrument, at, extended):
+        symbol = self.symbols.get(instrument)
+        if symbol is None:
+            raise CapabilityError("Instrument has no platform Symbol")
+        return self.api.session_bounds(self.algorithm.securities[symbol], at, extended)
+
+    def _session_open(self, instrument, after, count):
+        symbol = self.symbols.get(instrument)
+        if symbol is None:
+            raise CapabilityError("Instrument has no platform Symbol")
+        return self.api.session_open(self.algorithm.securities[symbol], after, count)
+
     def _subscribed(self, instrument):
         symbol = self.symbols.get(instrument)
         if symbol is None or symbol not in self.algorithm.securities:

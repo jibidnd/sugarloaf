@@ -78,16 +78,24 @@ Forecasts not yet issued at `as_of` remain pending.
 
 `ReturnOutcomeResolver(anchor, provenance=None)` supports decimal simple
 price/total returns, joint coordinates, and aligned scalar return differences.
-Its callback `anchor(instrument, at, convention, as_of)` supplies an exact-time
-`Observation` or None. Joint labels preserve subject/interval order. It computes
-end/start minus one, requiring positive start and nonnegative end values, and
-retains the latest endpoint availability. An unmatured horizon stays pending;
-missing or not-yet-available anchors stay unavailable. It never substitutes a
-nearby close, shifts a weekend horizon, or invents corporate-action adjustments.
-A forecast whose horizon ends where no price exists therefore cannot be scored:
-issue horizons in trading sessions (see `sugarloaf.nodes.technical.horizon_end`)
-so a Friday forecast ends at Monday's close rather than on Saturday.
-The source owns correct convention and point-in-time availability.
+Its callback `anchor(instrument, at, convention, as_of)` supplies an `Observation`
+stamped with the requested time `at`, or None. Joint labels preserve
+subject/interval order. It computes end/start minus one, requiring positive start
+and nonnegative end values, and retains the latest endpoint availability. An
+unmatured horizon stays pending; missing or not-yet-available anchors stay
+unavailable. The resolver itself substitutes nothing and invents no
+corporate-action adjustments; the source owns the convention, point-in-time
+availability, and which price stands for `at`.
+
+The QuantConnect research source (`QuantBookServices.anchor_observation`) reads
+minute history and applies the same rule as `ctx.market.anchor` (see
+[MARKET](MARKET.md#units-and-exact-anchors)): the price at the first clock tick
+the replay admitted at or after `at`, treated by the instrument's session; its
+availability is when that price became known. A time the replay's clock never
+reached, a session with no trade, and a price known only after `as_of` are
+unavailable. Issue horizons in trading sessions (`session_close`, or
+`session_open` for intervals measured from an open) so they end where the
+instrument trades.
 
 Custom `metric_fn(view, outcome)` returns named floats or None and can merge
 `default_metrics(view, outcome)`. Unsupported metrics raise CapabilityError and

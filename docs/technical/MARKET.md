@@ -117,8 +117,8 @@ means (rank the rest, wait, or hold) is the node's explicit decision.
 
 | Attribute | Use |
 | --- | --- |
-| `market` | Bars, quotes, indicators, ready members, membership and exact anchors |
-| `instruments` | Metadata, tradability, session calendars and `session_close` |
+| `market` | Bars, quotes, indicators, ready members, membership and anchor prices |
+| `instruments` | Metadata, tradability, session calendars, `session_close` and `session_open` |
 | `portfolio` | Immutable authoritative account snapshot |
 | `valuation` | Unit value in account currency |
 | `costs` | Expected trading cost |
@@ -146,14 +146,39 @@ calendar years. A horizon can be measured in trading sessions instead of elapsed
 time: `ctx.instruments.session_close(instrument, after, count)` returns the close
 of the count-th regular session ending strictly after `after`. One session after
 a Friday close ends at Monday's close, where a price exists and the market is
-open; one calendar day after it ends on Saturday. Quantities are instrument units. Weights are account-NAV fractions.
+open; one calendar day after it ends on Saturday.
+`ctx.instruments.session_open(instrument, after, count)` is its counterpart for
+intervals measured from an open: the open of the count-th regular session
+starting strictly after `after` (at a Friday close, count 1 is Monday's open). Quantities are instrument units. Weights are account-NAV fractions.
 Unit valuation is mark × multiplier × account-currency FX; unsupported conversion
 fails rather than guessing.
 
-`ctx.market.anchor(instrument, at, convention)` requires the exact observation
-from declared convention-compatible bar history. It neither substitutes a nearby
-close nor fetches new data. Outcome resolution is separate and may use its own
-explicit exact-anchor source. See [research outcomes](RESEARCH.md#outcomes-and-extensions).
+`ctx.market.anchor(instrument, at, convention)` returns the instrument's price at
+`at` from declared convention-compatible bar history; it fetches no new data.
+Sugarloaf keeps no clock of its own: the clock moves when data arrives, from any
+instrument. So the price at `at` is read at the first clock tick at or after `at`
+(the first admitted batch time), and treated by the instrument's session, the one
+containing that tick or the latest before it (regular or extended hours, as the
+bars requirement declares):
+
+1. A bar of the instrument ends at the tick: its close.
+2. No trade at the tick, but one earlier in that session: the last trade stands,
+   so the close of the instrument's last bar before the tick. This includes a
+   tick after the close and before the next open. A bar the provider repeated
+   because nothing traded (`fill_forward`) is not a trade.
+3. No trade yet in a session still open at the tick, for example just after the
+   open: the previous session's price is not used, because it would put the move
+   between sessions into the wrong interval. The price is the instrument's first
+   trade in the session, available when that bar arrives.
+4. No trade in the session at all: missing data, `NotReady`.
+
+For example, with minute bars an interval starting at a 09:30 open takes the
+09:31 close of a stock that traded in the first minute, and the 09:34 close of
+one whose first trade came then. A tick not yet reached, a first trade not yet
+arrived, and readable history that does not reach back to the session open (so
+an earlier trade cannot be ruled out) all raise `NotReady`. Outcome resolution is
+separate and may use its own anchor source. See
+[research outcomes](RESEARCH.md#outcomes-and-extensions).
 
 ## Ownership and changing declarations
 

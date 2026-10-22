@@ -10,7 +10,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta
 from heapq import heappop, heappush
 
-from sugarloaf.core.errors import CapabilityError, ContractError
+from sugarloaf.core.errors import CapabilityError, ContractError, NotReady
 from sugarloaf.core.events import Event, EventBatch, LifecycleEvent
 from sugarloaf.core.primitives import InstrumentId, aware
 from sugarloaf.market.contracts import (
@@ -23,6 +23,7 @@ from sugarloaf.market.contracts import (
     UniverseRequirement,
 )
 
+from ..base import price_at_tick
 from .lean import native_period
 from .services import QuantConnectDataServices
 
@@ -299,17 +300,24 @@ class QuantBookServices(QuantConnectDataServices):
     def anchor_observation(
         self, instrument: InstrumentId, at: datetime, convention: str, as_of: datetime
     ) -> Observation | None:
-        """Query an exact minute-close label without altering strategy inputs.
+        """The price at ``at`` from minute history, without altering strategy inputs.
+
+        The price is read at the first clock tick this replay admitted at or after
+        ``at``, by the cases in ``price_at_tick``: the instrument's bar at the tick,
+        else its last trade earlier in the session, else its first trade after the
+        tick in a session still open; no trade in the session is missing data.
 
         Args:
             instrument: Stable instrument identity.
-            at: Exact aware endpoint timestamp.
+            at: Aware requested time (an interval endpoint).
             convention: price_return uses split-adjusted history; total_return uses
                 total-return history.
             as_of: Aware label-availability boundary.
 
         Returns:
-            Exact Observation, or None when missing or later than as_of.
+            Observation for ``at``, available when its price became known, or None
+            when the clock had not reached ``at``, the data is missing, or the price
+            became known after as_of.
 
         Raises:
             CapabilityError: The return convention is unsupported.
@@ -323,21 +331,26 @@ class QuantBookServices(QuantConnectDataServices):
         )
         if normalization is None:
             raise CapabilityError("Unsupported research outcome return convention")
-        # Unavailable/future endpoints stay missing; do not backfill from the
-        # nearest observed minute or infer a label before its availability boundary.
-        if at > as_of or instrument not in self.symbols:
+        tick = self._first_tick(at)
+        if tick is None or tick > as_of or instrument not in self.symbols:
             return None
         source = BarsRequirement(
             Selection((instrument,)), timedelta(minutes=1), normalization=normalization
         )
         symbol = self.symbols[instrument]
         security = self.algorithm.securities[symbol]
-        for bar in self.api.history_range(
-            self.algorithm, symbol, source, at - timedelta(minutes=2), at
-        ):
-            observed = self.api.to_utc(security, bar.end_time)
-            # Require the exact requested anchor. Native adjustment-vintage
-            # correctness remains a separate platform-validation question.
-            if observed == at:
-                return Observation(observed, observed, float(bar.close))
-        return None
+        opened, closes = self.api.session_bounds(security, tick, source.session == "extended")
+        # History from the session open through the later of the tick and the
+        # session close, never past the availability boundary.
+        through = min(as_of, max(tick, closes))
+        # Replay receipt equals event time, so each bar is available at its end.
+        key = (BarsRequirement.__name__, instrument)
+        bars = [
+            self._neutral(key, bar, self.api.to_utc(security, bar.end_time))
+            for bar in self.api.history_range(self.algorithm, symbol, source, opened, through)
+        ]
+        try:
+            value, known = price_at_tick(bars, tick, opened, closes, through)
+        except NotReady:
+            return None
+        return Observation(at, known, value) if known <= as_of else None

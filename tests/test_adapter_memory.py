@@ -3,9 +3,10 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from sugarloaf.adapters.base import price_at_tick
 from sugarloaf.adapters.memory import MemoryServices, SelectionRow
 from sugarloaf.adapters.memory.services import resource_key
-from sugarloaf.core.errors import CapabilityError, NotReady, SnapshotError
+from sugarloaf.core.errors import CapabilityError, ContractError, NotReady, SnapshotError
 from sugarloaf.core.events import Event, EventBatch
 from sugarloaf.core.primitives import InstrumentId
 from sugarloaf.core.services import AccountSnapshot, OpenOrder
@@ -162,6 +163,30 @@ def test_session_close_counts_trading_sessions_across_a_weekend():
         catalog.session_close(A, friday_close, 3)
 
 
+def test_session_open_counts_trading_sessions_across_a_weekend():
+    closes = (
+        datetime(2025, 1, 10, 21, tzinfo=UTC),
+        datetime(2025, 1, 13, 21, tzinfo=UTC),
+        datetime(2025, 1, 14, 21, tzinfo=UTC),
+    )
+    sessions = tuple((close - timedelta(hours=6, minutes=30), close) for close in closes)
+    (friday_open, friday_close), (monday_open, _), (tuesday_open, _) = sessions
+    services = MemoryServices([Instrument(A, "A")], calendars={A: {"regular": sessions}})
+    services.install("n", ResourceUpdate((InstrumentRequirement(Selection((A,))),), ()))
+    services.apply(EventBatch(0, friday_close))
+    catalog = services.context(node_id="n").instruments
+    # Before Friday's open the next open is Friday's own; at the open itself the
+    # search is exclusive, as it is during the session and at its close.
+    assert catalog.session_open(A, friday_open - timedelta(hours=1)) == friday_open
+    assert catalog.session_open(A, friday_open) == monday_open
+    assert catalog.session_open(A, friday_close) == monday_open
+    assert catalog.session_open(A, friday_close, 2) == tuesday_open
+    with pytest.raises(NotReady, match="no such later session"):
+        catalog.session_open(A, friday_close, 3)
+    with pytest.raises(ContractError):
+        catalog.session_open(A, friday_close, 0)
+
+
 def test_liquidity_universe_can_require_fundamentals_before_taking_the_count():
     from sugarloaf.adapters.base import select
     from sugarloaf.core.errors import NotReady
@@ -234,3 +259,65 @@ def test_fundamental_universe_and_reads_are_point_in_time():
     services.apply(EventBatch(1, NOW + timedelta(days=4)))
     with pytest.raises(NotReady, match="Stale"):
         services.context(node_id="n").market.fundamentals(fundamentals, A)
+
+
+def priced(at, close, fill_forward=False):
+    return Bar(A, at - timedelta(minutes=1), at, at, close, close, close, close, 1000,
+               fill_forward=fill_forward)
+
+
+def test_price_at_tick_treats_a_tick_without_a_trade_by_its_session():
+    opened = datetime(2025, 1, 13, 14, 30, tzinfo=UTC)
+    closes = datetime(2025, 1, 13, 21, tzinfo=UTC)
+    minute = lambda n: opened + timedelta(minutes=n)  # noqa: E731
+    previous_close = priced(opened - timedelta(hours=17, minutes=30), 9)
+    # 1. A bar of the instrument ends at the tick: its close, known then.
+    assert price_at_tick([priced(minute(1), 10), priced(minute(2), 11)], minute(2), opened,
+                         closes, minute(2)) == (11, minute(2))
+    # 2. No trade at the tick (another instrument moved the clock), but one earlier in
+    # the session: it stands, known at the tick. A repeated bar is not a trade.
+    traded = [previous_close, priced(minute(1), 10), priced(minute(3), 10, fill_forward=True)]
+    assert price_at_tick(traded, minute(3), opened, closes, minute(3)) == (10, minute(3))
+    # After the close and before the next open, the session's last trade stands.
+    late = [priced(closes, 12)]
+    assert price_at_tick(late, closes + timedelta(hours=12), opened, closes,
+                         closes + timedelta(hours=12)) == (12, closes + timedelta(hours=12))
+    # 3. No trade yet in the session: the previous close is not used; the first trade
+    # in the session is, known when it arrives. Before it arrives, not ready.
+    first = [previous_close, priced(minute(4), 13)]
+    assert price_at_tick(first, minute(1), opened, closes, minute(4)) == (13, minute(4))
+    with pytest.raises(NotReady, match="No trade yet"):
+        price_at_tick([previous_close], minute(1), opened, closes, minute(3))
+    # 4. No trade in the whole session: missing.
+    with pytest.raises(NotReady, match="No trade in the session"):
+        price_at_tick([previous_close], minute(1), opened, closes, closes)
+    with pytest.raises(NotReady, match="No trade in the session"):
+        price_at_tick([previous_close], closes + timedelta(hours=1), opened, closes,
+                      closes + timedelta(hours=1))
+
+
+def test_anchor_reads_the_first_clock_tick_at_or_after_the_requested_time():
+    opened = datetime(2025, 1, 13, 14, 30, tzinfo=UTC)
+    closes = datetime(2025, 1, 13, 21, tzinfo=UTC)
+    minute = lambda n: opened + timedelta(minutes=n)  # noqa: E731
+    req = BarsRequirement(Selection((A,)), timedelta(minutes=1), lookback=2)
+    services = MemoryServices([Instrument(A, "A")], calendars={A: {"regular": ((opened, closes),)}})
+    services.install("n", ResourceUpdate((req,), ()))
+    # A trades at minutes 1 and 3; the clock also ticks at minute 2 (another instrument).
+    services.put_bars(req, (priced(minute(1), 10), priced(minute(3), 12)))
+    for sequence, n in enumerate((1, 2, 3)):
+        batch = EventBatch(sequence, minute(n))
+        services.apply(batch)
+    market = services.context(batch, "n").market
+    assert market.anchor(A, minute(0.5), "total_return") == 10  # read at the minute-1 tick
+    assert market.anchor(A, minute(1.5), "total_return") == 10  # minute-2 tick: last trade
+    assert market.anchor(A, minute(3), "total_return") == 12
+    with pytest.raises(NotReady, match="clock has not reached"):
+        market.anchor(A, minute(3.5), "total_return")
+    # With only the minute-3 bar readable, an earlier trade in the session cannot be
+    # ruled out, so the minute-2 price is not guessed.
+    short = replace(req, lookback=1)
+    services.install("n", ResourceUpdate((short,), ()))
+    services.apply(EventBatch(9, minute(3)))
+    with pytest.raises(NotReady, match="does not reach the session open"):
+        services.context(node_id="n").market.anchor(A, minute(1.5), "total_return")

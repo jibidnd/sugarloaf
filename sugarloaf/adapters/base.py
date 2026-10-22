@@ -1,5 +1,7 @@
 """Provider-neutral declaration checks, snapshots, readiness and ownership."""
 
+from bisect import bisect_left
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from math import isfinite
@@ -10,6 +12,7 @@ from sugarloaf.core.events import DataReset, Event, EventBatch, LifecycleEvent
 from sugarloaf.core.primitives import InstrumentId
 from sugarloaf.core.services import Context
 from sugarloaf.market.contracts import (
+    Bar,
     BarsRequirement,
     ETFConstituentsUniverse,
     FundamentalsRequirement,
@@ -116,6 +119,62 @@ def _first_distinct(rows, count):
     return tuple(members)[:count]
 
 
+def price_at_tick(
+    bars: Sequence[Bar],
+    tick: datetime,
+    session_open: datetime,
+    session_close: datetime,
+    through: datetime,
+) -> tuple[float, datetime]:
+    """The instrument's price at a clock tick, and when that price became known.
+
+    The clock moves only when data arrives, from any instrument, so a price asked
+    for at some time is the price at the first tick at or after it (``tick``). The
+    instrument may have no trade at that tick; how that is treated depends on its
+    session, the one that opened at ``session_open`` (the latest open at or before
+    the tick) and closes at ``session_close``:
+
+    1. A bar of the instrument ends at the tick: its close.
+    2. No trade at the tick, but the instrument traded earlier in that session: its
+       last trade stands, so the close of its last bar before the tick, known at
+       the tick. This also covers a tick after the close and before the next open.
+    3. No trade yet in a session still open at the tick (just after the open, or a
+       quiet overnight session): the previous session's price would carry the move
+       between sessions into the wrong interval, so the price is the instrument's
+       first trade in the session, known when that bar arrives.
+    4. No trade in the session at all: the data is missing.
+
+    Args:
+        bars: The instrument's bars, earliest first. Bars the provider repeated
+            because nothing traded (``fill_forward``) are not trades and are ignored.
+        tick: The first clock tick at or after the requested time.
+        session_open: Open of the session containing the tick, or the latest one
+            before it.
+        session_close: That session's close.
+        through: Time up to which bars have been received.
+
+    Returns:
+        (price, time the price became known).
+
+    Raises:
+        NotReady: No trade in the session (case 4), or none yet (case 3).
+    """
+    last_end = max(tick, session_close)
+    trades = [b for b in bars if not b.fill_forward and session_open < b.end <= last_end]
+    before = [b for b in trades if b.end <= tick]
+    if before:
+        last = before[-1]
+        # Case 1 when it ends exactly at the tick; case 2 otherwise.
+        return last.close, last.available_at if last.end == tick else max(tick, last.available_at)
+    if tick <= session_close:
+        after = [b for b in trades if b.end > tick]
+        if after:
+            return after[0].close, after[0].available_at
+        if through < session_close:
+            raise NotReady("No trade yet in the session")
+    raise NotReady("No trade in the session")
+
+
 def resource_key(req, instrument):
     """Identify backing data by kind/instrument/settings, excluding lookback and freshness."""
     # Compatible readers share storage. Their individual lookbacks/freshness
@@ -156,6 +215,9 @@ class ProviderServices:
         # rather than allowing cached state to cross an admission boundary.
         self.version = 0
         self.batch = None
+        # Admitted clock ticks (batch cutoffs), earliest first. A price asked for
+        # at some time is read at the first tick at or after it.
+        self.ticks = []
         self.read_counts = {}
         self._snapshot_cache = {}
         # Exposure/residence retention is separate from graph read permission.
@@ -276,6 +338,8 @@ class ProviderServices:
         # Establish graph/receipt boundaries, then refresh membership and resource
         # ownership before nodes create Contexts for this admission.
         self.batch = batch
+        if not self.ticks or batch.cutoff > self.ticks[-1]:
+            self.ticks.append(batch.cutoff)
         discovered: list[Event] = []
         for update in self.resources.values():
             for req in update.requirements:
@@ -481,6 +545,18 @@ class ProviderServices:
 
     def _session_close(self, instrument, after, count):
         raise CapabilityError("Provider calendar unavailable")
+
+    def _session_open(self, instrument, after, count):
+        raise CapabilityError("Provider calendar unavailable")
+
+    def _session_bounds(self, instrument, at, extended):
+        """Open and close of the session containing ``at``, or the latest one before it."""
+        raise CapabilityError("Provider calendar unavailable")
+
+    def _first_tick(self, at):
+        """The first admitted clock tick at or after ``at``, or None."""
+        index = bisect_left(self.ticks, at)
+        return self.ticks[index] if index < len(self.ticks) else None
 
     def schedule_due(self, schedule: Schedule, after: datetime | None, through: datetime) -> bool:
         """Check a local scheduled occurrence against a data-clock interval.
@@ -717,14 +793,30 @@ class _ContextServices:
             for r in u.requirements
             if isinstance(r, BarsRequirement) and r.normalization in normalization
         ]
+        # The price at ``at`` is read at the first clock tick at or after it; see
+        # price_at_tick for how a tick without a trade of this instrument is treated.
+        tick = self.owner._first_tick(at)
+        if tick is None or tick > self.ctx.now:
+            raise NotReady("The clock has not reached the anchor time")
+        failure = NotReady("No convention-compatible bars for the anchor")
         for req in reqs:
-            if instrument in self.resolve(req.selection):
-                for bar in self._read(req, instrument):
-                    # A nearby close names a different target: require this exact
-                    # observation end and its receipt within the current Context.
-                    if bar.end == at and bar.available_at <= self.ctx.available_at:
-                        return bar.close
-        raise NotReady("No exact convention-compatible anchor observation")
+            if instrument not in self.resolve(req.selection):
+                continue
+            try:
+                bars = self._read(req, instrument)
+                opened, closes = self.owner._session_bounds(
+                    instrument, tick, req.session == "extended"
+                )
+                # Without history back to the session open, an earlier trade in the
+                # session cannot be ruled out, so cases 2 and 3 cannot be told apart.
+                if bars[0].end > opened and not any(
+                    opened < b.end <= tick and not b.fill_forward for b in bars
+                ):
+                    raise NotReady("Readable history does not reach the session open")
+                return price_at_tick(bars, tick, opened, closes, self.ctx.now)[0]
+            except NotReady as error:
+                failure = error
+        raise failure
 
     def snapshot(self):
         self._declares(PortfolioRequirement)
@@ -764,6 +856,12 @@ class _ContextServices:
         if isinstance(count, bool) or not isinstance(count, int) or count < 1:
             raise ContractError("Session count must be a positive integer")
         return self.owner._session_close(instrument, after, count)
+
+    def session_open(self, instrument, after, count=1):
+        self._declares(InstrumentRequirement, instrument)
+        if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+            raise ContractError("Session count must be a positive integer")
+        return self.owner._session_open(instrument, after, count)
 
     def buying_power(self, instrument, quantity):
         self._declares(PortfolioRequirement, instrument)
