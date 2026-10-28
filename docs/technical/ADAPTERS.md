@@ -224,12 +224,25 @@ held/open-order retention.
 
 A `FundamentalUniverse` uses the same daily fundamental callback as liquidity
 selection; its rule receives one record per security from the callback's objects
-(CIK from the company reference, market cap, price, dollar volume). Observed in a
+(CIK from the company reference, market cap, price, dollar volume, Morningstar sector
+code, REIT flag, and the definition's declared fields). Observed in a
 backtest (March 2024): the callback runs at 00:00 each day, Saturdays included, with
 records of the previous close; a security first selected at 00:00 has its
 fundamentals and daily history at the first bar after the open, while its own
 `price` stays 0 until its first bar arrives. QuantConnect documents live
 fundamental selection at 7–8 AM Eastern.
+
+Generic fields come from a catalogue,
+`sugarloaf/adapters/quantconnect/fundamental_catalogue.py`, generated from the
+Fundamental classes of the LEAN version QuantConnect runs (`tools/fundamental_catalogue_qc.py`
+on a research kernel, then `tools/write_fundamental_catalogue.py`; its input is kept in
+`tools/data`). It lists each supported name, its type and a multi-period field's periods;
+LEAN's default `value` is not offered as a period. The adapter reads only the declared
+names, along their attribute path, and converts by type: a non-finite number, an empty
+string or LEAN's minimum date is None; a LEAN `DateTime` becomes a `date`; an enumeration
+becomes text. LEAN's sector code 0 means none and becomes None. LEAN's booleans have no missing state, so `is_reit` and boolean fields read False where LEAN has no company data. Cached reads are keyed by
+the declared fields and the catalogue version. Regenerate the catalogue when QuantConnect's
+LEAN version changes the fundamental classes.
 
 Fundamental reads come from each subscribed security's `fundamentals` record, which
 LEAN keeps point-in-time; a security must be subscribed (a universe member or a bar
@@ -259,10 +272,18 @@ named nodes. An adapter that rebuilds nothing returns nothing.
 
 The QuantConnect rule, for backtests and QuantBook research:
 
-| Fact | `adjusted`, `split_adjusted`, `total_return` | `raw` bars, quotes |
+| Fact | `adjusted`, `split_adjusted`, `total_return` | `raw` bars and quotes |
 | --- | --- | --- |
 | Dividend | Nothing rebuilt | Nothing rebuilt |
 | Split | Nothing rebuilt | Windows and indicators rebuilt; `DataReset` reported |
+
+Quotes declare a normalization like bars, `raw` by default, and the adapter uses it
+for warm-up history, for direct subscriptions and for the quotes LEAN streams to
+universe members. Before, history was raw while universe members' quotes streamed
+adjusted, so a window spanning the start of a run mixed two scales. One LEAN security
+has one normalization: a node that reads adjusted bars and quotes of the same security
+must declare `QuotesRequirement(..., normalization="adjusted")`, and a mismatch raises
+`CapabilityError` when resources are synchronised.
 
 LEAN adjusts those series with the whole factor file from the first bar, so they
 are continuous through an ex-date or a split and do not change on it. The level of

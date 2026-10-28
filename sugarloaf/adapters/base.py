@@ -97,7 +97,9 @@ def select(definition, rows, at=None):
     if isinstance(definition, FundamentalUniverse):
         if at is None:
             raise ContractError("Fundamental selection needs its selection time")
-        rows = tuple(rows)
+        # The rule sees exactly the fields its definition declares, whatever the provider
+        # happened to read.
+        rows = tuple(r.project(definition.fields) for r in rows)
         available = {r.instrument for r in rows}
         picked = list(definition.rule(at, rows))
         # A ticker or native symbol would match nothing and leave a silently empty universe.
@@ -261,6 +263,18 @@ class ProviderServices:
                 self._validate_indicator(req)
             if isinstance(req, PortfolioRequirement) and not self.account_services:
                 raise CapabilityError("Provider has no portfolio service")
+            declared = (
+                req.fields
+                if isinstance(req, FundamentalsRequirement)
+                else req.definition.fields
+                if isinstance(req, UniverseRequirement)
+                and isinstance(req.definition, FundamentalUniverse)
+                else ()
+            )
+            unknown = [name for name in declared if not self._supports_fundamental_field(name)]
+            if unknown:
+                # Fail when the graph is installed, not at the first read hours later.
+                raise CapabilityError(f"Unsupported fundamental fields: {', '.join(unknown)}")
             if isinstance(req, UniverseRequirement):
                 # A shared universe name must mean the same rule for every owner.
                 # Conflicting definitions must not depend on installation order.
@@ -532,8 +546,16 @@ class ProviderServices:
     def _data(self, requirement, instrument, cutoff):
         raise CapabilityError("Market data source unavailable")
 
-    def _fundamentals(self, instrument, cutoff):
-        """The latest FundamentalRecord known at ``cutoff``, or None."""
+    # Identifies the provider's field catalogue in cached reads; a provider whose
+    # catalogue changes between versions sets it.
+    fundamental_catalogue_version = None
+
+    def _supports_fundamental_field(self, name):
+        """Whether the provider can supply the generic fundamental field ``name``."""
+        return False
+
+    def _fundamentals(self, instrument, cutoff, fields=()):
+        """The latest FundamentalRecord known at ``cutoff`` with exactly ``fields``, or None."""
         raise CapabilityError("Provider has no fundamental data")
 
     def _short_availability(self, instrument, cutoff):
@@ -702,8 +724,12 @@ class _ContextServices:
             raise CapabilityError("Instrument outside declared selection")
         # Graph and execution Contexts can share a sequence number at different times, so
         # the read time is part of the cached computation's identity.
-        record = self.ctx.compute("fundamentals", (instrument,), (self.ctx.now,), "1",
-                                  lambda: self.owner._fundamentals(instrument, self.ctx.now))
+        # The declared fields and the provider's catalogue version are part of the
+        # identity: two readers of one security with different field lists each get theirs.
+        record = self.ctx.compute(
+            "fundamentals", (instrument,),
+            (self.ctx.now, requirement.fields, self.owner.fundamental_catalogue_version), "2",
+            lambda: self.owner._fundamentals(instrument, self.ctx.now, requirement.fields))
         # A record dated after graph time is never shown; a missing or old one is not
         # replaced by a guess.
         if record is None or record.time > self.ctx.now:

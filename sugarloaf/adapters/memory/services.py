@@ -22,6 +22,9 @@ class MemoryServices(ProviderServices):
             instrument, any order; a read gives the latest one dated at or before graph time.
         short (Mapping[InstrumentId, Sequence[ShortAvailability]] | None): Borrow terms likewise.
         cost_rate (float): Proportional fixture cost per absolute trade notional.
+        fundamental_fields (Iterable[str] | None): Generic fundamental field names this
+            fixture supports, in addition to any carried by the fundamental records. A
+            declared name outside both fails at installation, as on a real provider.
 
     Writes invalidate existing Contexts; timestamps govern later visibility.
     Native indicators are unsupported, and this provider is not a market simulator.
@@ -37,6 +40,7 @@ class MemoryServices(ProviderServices):
         cost_rate=0.0,
         fundamentals=None,
         short=None,
+        fundamental_fields=None,
     ):
         # Share declaration guards, readiness and causal read filtering with other
         # providers. Only the backing observations/account/calendar are fixtures.
@@ -46,6 +50,10 @@ class MemoryServices(ProviderServices):
         self.calendars = calendars or {}
         self.borrow_available = borrow or {}
         self.fundamental_records = {k: tuple(v) for k, v in (fundamentals or {}).items()}
+        self.fundamental_fields = frozenset(fundamental_fields or ()) | {
+            name for records in self.fundamental_records.values() for r in records
+            for name in r.fields
+        }
         self.short_records = {k: tuple(v) for k, v in (short or {}).items()}
         self.cost_rate = cost_rate
         # Buffers store supplied neutral observations, not simulated market ticks.
@@ -138,8 +146,15 @@ class MemoryServices(ProviderServices):
         # lookback and freshness separately for each authorized node read.
         return self.buffers.get(resource_key(req, instrument), ())
 
-    def _fundamentals(self, instrument, cutoff):
-        return _latest(self.fundamental_records.get(instrument, ()), cutoff)
+    def _supports_fundamental_field(self, name):
+        # Fixtures define the catalogue: a name given at construction or carried by any
+        # fixture record.
+        return name in self.fundamental_fields
+
+    def _fundamentals(self, instrument, cutoff, fields=()):
+        record = _latest(self.fundamental_records.get(instrument, ()), cutoff)
+        # A reader sees exactly the fields it declared, as on a real provider.
+        return None if record is None else record.project(fields)
 
     def _short_availability(self, instrument, cutoff):
         return _latest(self.short_records.get(instrument, ()), cutoff)

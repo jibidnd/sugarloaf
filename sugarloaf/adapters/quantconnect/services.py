@@ -2,7 +2,7 @@
 
 from collections import deque
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from math import isfinite
 
 from sugarloaf.adapters.base import ProviderServices, SelectionRow, resource_key, select
@@ -31,6 +31,7 @@ from sugarloaf.market.contracts import (
     UniverseRequirement,
 )
 
+from . import fundamental_catalogue as catalogue
 from .lean import DAY, MINUTE, LeanAPI, native_period
 
 
@@ -244,7 +245,9 @@ class QuantConnectDataServices(ProviderServices):
             for item in data:
                 instrument = self.bind(item.symbol)
                 if isinstance(definition, FundamentalUniverse):
-                    rows.append(_fundamental_record(instrument, item, now))
+                    # Only the definition's declared fields are read, so a selection over
+                    # thousands of securities stays cheap.
+                    rows.append(_fundamental_record(instrument, item, now, definition.fields))
                 elif isinstance(definition, LiquidityUniverse):
                     rows.append(
                         SelectionRow(
@@ -360,7 +363,7 @@ class QuantConnectDataServices(ProviderServices):
         """Whether a lifecycle fact makes LEAN data held under a resource key unusable.
 
         ``key`` is a ``resource_key`` tuple: position 1 is the instrument and
-        position 4 the price normalization (None for quotes, which are as traded).
+        position 4 the price normalization (None for a requirement that has none).
 
         This rule describes QuantConnect backtests and research, the only modes
         this adapter supports. It is deliberately here and not in the core:
@@ -375,10 +378,12 @@ class QuantConnectDataServices(ProviderServices):
           before and after its ex-dividend date.)
         * Split, adjusted normalizations: nothing is rebuilt, for the same
           reason. The series is continuous through the split.
-        * Split, raw prices or quotes: rebuilt. Prices before and after the
+        * Split, raw prices or raw quotes: rebuilt. Prices before and after the
           split are on different per-share scales. Note the rebuilt history is
           still as traded, so a window spanning the split mixes both scales;
           the rebuild restarts indicators, it does not rescale old prices.
+          Quotes declare their normalization like bars (raw by default); adjusted
+          quotes are continuous through a split and are not rebuilt.
         """
         return key[1] == life.instrument and life.kind == "split" and key[4] in (None, "raw")
 
@@ -980,14 +985,21 @@ class QuantConnectDataServices(ProviderServices):
             raise CapabilityError(f"{instrument.value} is not subscribed on the platform")
         return self.algorithm.securities[symbol]
 
-    def _fundamentals(self, instrument, cutoff):
+    # Cached fundamental reads are keyed by the catalogue they were read under.
+    fundamental_catalogue_version = catalogue.VERSION
+
+    def _supports_fundamental_field(self, name):
+        return catalogue.resolve(name) is not None
+
+    def _fundamentals(self, instrument, cutoff, fields=()):
         # The security's own record: LEAN keeps it point-in-time and attaches it to every
         # subscribed equity. It is stamped with the time LEAN read it, so a read made after
         # the Context's cutoff is refused by the shared check instead of passing as current.
         record = self._subscribed(instrument).fundamentals
         if record is None or not getattr(record, "has_fundamental_data", True):
             return None
-        return _fundamental_record(instrument, record, utc(self.algorithm.utc_time, "UTC"))
+        return _fundamental_record(instrument, record, utc(self.algorithm.utc_time, "UTC"),
+                                   fields)
 
     def _short_availability(self, instrument, cutoff):
         security = self._subscribed(instrument)
@@ -1060,15 +1072,31 @@ def _number(value):
     """A finite float, or None for a missing or non-finite native value."""
     if value is None:
         return None
-    value = float(value)
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
     return value if isfinite(value) else None
 
 
-def _fundamental_record(instrument, item, at):
-    """Neutral FundamentalRecord from a LEAN Fundamental object."""
+def _fundamental_record(instrument, item, at, fields=()):
+    """Neutral FundamentalRecord from a LEAN Fundamental object, with ``fields`` read.
+
+    The typed fields are always read. Each declared generic field is read along its
+    catalogue path and converted by its catalogue type; a missing value is None.
+    """
     reference = getattr(item, "company_reference", None)
     cik = getattr(reference, "cik", None) if reference is not None else None
     cik = (str(cik).strip().lstrip("0") or None) if cik is not None else None
+    sector = _read_field(item, ("asset_classification", "morningstar_sector_code"), "int")
+    reit = _read_field(item, ("company_reference", "is_reit"), "bool")
+    values = {}
+    for name in fields:
+        found = catalogue.resolve(name)
+        # Installation rejected unknown names; this guards a direct call.
+        if found is None:
+            raise CapabilityError(f"Unsupported fundamental field: {name}")
+        values[name] = _read_field(item, *found)
     return FundamentalRecord(
         instrument,
         at,
@@ -1076,4 +1104,39 @@ def _fundamental_record(instrument, item, at):
         market_cap=_number(getattr(item, "market_cap", None)) or None,
         price=_number(getattr(item, "price", None)) or None,
         dollar_volume=_number(getattr(item, "dollar_volume", None)),
+        # Morningstar sector codes are three digits; LEAN gives 0 when it has none.
+        morningstar_sector_code=sector or None,
+        is_reit=reit,
+        fields=values,
     )
+
+
+def _read_field(item, path, kind):
+    """One fundamental value along an attribute path, converted to its catalogue type.
+
+    Missing is None: an absent object on the path, a non-finite number, an empty string
+    or LEAN's minimum date. A real zero or False is kept. Dates (LEAN DateTime) become a
+    ``date``; enumerations and other text become ``str``.
+    """
+    value = item
+    for attr in path:
+        if value is None:
+            return None
+        value = getattr(value, attr, None)
+    if value is None:
+        return None
+    if kind == "float":
+        return _number(value)
+    if kind == "int":
+        number = _number(value)
+        return None if number is None else int(number)
+    if kind == "bool":
+        return bool(value)
+    if kind == "date":
+        year = getattr(value, "year", getattr(value, "Year", None))
+        if year is None or int(year) <= 1:
+            return None
+        return date(int(year), int(getattr(value, "month", getattr(value, "Month", 1))),
+                    int(getattr(value, "day", getattr(value, "Day", 1))))
+    text = str(value).strip()
+    return text or None

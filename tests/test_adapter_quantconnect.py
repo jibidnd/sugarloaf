@@ -492,7 +492,11 @@ def test_quote_trade_distinction_multiple_intervals_and_semantic_conflicts():
             timedelta(days=1),
         )
     )
-    quote = QuotesRequirement(Selection((A,)), timedelta(minutes=5))
+    # Quotes declare their own price scale; read beside adjusted bars they must ask for
+    # adjusted quotes, because one LEAN security has one normalization.
+    quote = QuotesRequirement(Selection((A,)), timedelta(minutes=5), normalization="adjusted")
+    raw_quote = QuotesRequirement(Selection((A,)), timedelta(minutes=5))
+    assert raw_quote.normalization == "raw"
     services.install("n", ResourceUpdate(requests + (quote,), ()))
     services.apply(EventBatch(0, NOW))
     ctx = services.context(node_id="n")

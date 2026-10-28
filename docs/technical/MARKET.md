@@ -10,10 +10,10 @@ service protocols and Context live in [core/services.py](../../sugarloaf/core/se
 | Requirement | Meaning |
 | --- | --- |
 | `BarsRequirement` | Selection, interval, lookback, session, normalization, fill-forward, maximum age and `require_all` |
-| `QuotesRequirement` | Bid/ask observations, interval, lookback, session and freshness |
+| `QuotesRequirement` | Bid/ask observations, interval, lookback, session, normalization (default `raw`) and freshness |
 | `IndicatorRequirement` | Native indicator over a bar source, immutable parameters and valid output window |
 | `UniverseRequirement` | Named liquidity, historical ETF-constituent or fundamental-rule definition |
-| `FundamentalsRequirement` | The selected securities' latest fundamental records, with a maximum age |
+| `FundamentalsRequirement` | The selected securities' latest fundamental records, with a maximum age and the generic fields the node reads |
 | `ShortAvailabilityRequirement` | The selected securities' latest borrow terms |
 | `InstrumentRequirement` | Metadata/calendar access for a selection |
 | `PortfolioRequirement` | Account access and selection |
@@ -52,8 +52,7 @@ lists it twice.
 
 `FundamentalUniverse(name, rule)` selects with a rule over the provider's daily
 fundamental records: `rule(at, records)` receives the selection time and one
-`FundamentalRecord` per security (CIK, market value, traded price, dollar volume)
-and returns the instruments to hold. The rule may read other point-in-time sources
+`FundamentalRecord` per security and returns the instruments to hold. The rule may read other point-in-time sources
 the strategy owns, such as a list of recent SEC filers; it must use nothing dated
 after `at`, and it returns `InstrumentId` values. A rule that cannot decide raises
 `NotReady`, which leaves the universe unready. Definitions compare by name, `version`
@@ -66,6 +65,39 @@ instrument)` its latest `ShortAvailability` (annual fee rate, shortable quantity
 A missing, future-dated or (for fundamentals) older-than-`max_age` record raises
 `NotReady`. The price in a fundamental record is the traded price of its date; use it,
 or raw bars, for price levels (see [corporate actions](ADAPTERS.md#corporate-actions-and-data-resets)).
+
+### Fundamental fields
+
+A `FundamentalRecord` always has its typed fields: CIK, market value, traded price,
+dollar volume, `morningstar_sector_code` (three digits, for example 311 technology,
+104 real estate) and `is_reit`. Anything else the provider has is read by name, and
+only when declared: `FundamentalsRequirement(..., fields=[...])` and
+`FundamentalUniverse(..., fields=[...])` list the names, and the records they read
+carry exactly those in `record.fields`; `record.value(name)` refuses an undeclared
+name. A name is the provider's qualified path, for example
+`morningstar.valuation_ratios.pe_ratio`. A multi-period value names its period,
+`morningstar.operation_ratios.roe.one_year`; there is no default period.
+
+```python
+pe = "morningstar.valuation_ratios.pe_ratio"
+roe = "morningstar.operation_ratios.roe.one_year"
+
+def cheap_and_profitable(at, rows):
+    # Each row carries exactly the declared fields; a value the provider lacks is None.
+    return [r.instrument for r in rows
+            if r.morningstar_sector_code == 311 and not r.is_reit
+            and r.value(pe) is not None and r.value(pe) < 20
+            and r.value(roe) is not None and r.value(roe) > 0.15]
+
+universe = FundamentalUniverse("cheap-tech", cheap_and_profitable, fields=[pe, roe])
+```
+
+Values are a float, int, str, bool, `date` or None. A real zero or False is kept;
+a supported value the provider does not have is None. Field lists are stored sorted
+and without repeats and are part of a definition: one universe name with two field
+lists is a conflict. An unknown name fails when the graph is installed. `require_all`
+still means a record exists, not that its fields are filled, and `max_age` measures
+the record's read time, not a filing date (a provider's own dates are fields).
 
 Declare `ema` in the node's requirements. Within `evaluate`, read
 `ctx.market.indicator(ema, asset).points[-1].values["value"]`.

@@ -193,6 +193,25 @@ a graph, and a platform refusal reaching the engine from a live ticket. The
 refusal path, the feed planning and the order-type translation have local tests
 only.
 
+## Fundamental fields and quote normalization, 28 October 2026
+
+Run on LEAN 2.5.0.0.18207 against the working tree of `feat/fundamentals-quotes`, after
+`FundamentalRecord` gained the Morningstar sector code, the REIT flag and declared generic
+fields, and `QuotesRequirement` gained `normalization`. The catalogue was generated from
+the same LEAN version on a research kernel. The check graph is untracked scaffolding in
+`artifacts/qc-acceptance/fundamentals_quotes/` (project `37597459`); its bundle snapshots
+and the research comparison are kept there.
+
+| Question | Backtest | Observed |
+| --- | --- | --- |
+| Does a `FundamentalUniverse` receive the typed sector and REIT flag and its declared fields, multi-period ones by period? | `2873c1f58a021b877ec19e456a4fd4ee` (8–14 August 2024; first run `8a9e42a061c562cc890392b97574635f` had its report cut at QC's 8,000-character log limit) | Five selections at 04:00 UTC, about 9,650 records each: about 5,370 without a sector (funds and other securities without company data), 194 REITs. The rule declared ROE (one year), P/E, twelve-month revenue, IPO date and legal name and kept the five largest technology non-REITs by dollar volume (NVDA, AAPL, MSFT, AMD, SMCI or TSM). AAPL on 8 August: ROE 1.511, P/E 31.94, revenue USD383.3bn, IPO 1980-12-12, "Apple Inc". Missing values arrived as None; twelve-month revenue was 0 for about 490 records. |
+| Are adjusted quotes on one scale through warm-up and streaming, across an ex-dividend date? | same run | The members' adjusted minute quotes (about six sessions of lookback) were read each day at 15:59. Every hourly AAPL quote, 30 July to 14 August, equalled QuantBook's adjusted minute history at the same bar end (77 of 77): those before 8 August came from warm-up history, the rest were streamed to the universe member. Against raw history the ratio stepped from 0.99056 to 0.99170 at the 12 August ex-date. Before the change, warm-up history was raw while streamed member quotes were adjusted. |
+
+Not covered: explicit (non-universe) quote subscriptions natively, split-adjusted and
+total-return quotes, and LEAN versions after 2.5.0.0.18207 (regenerate the catalogue when
+the fundamental classes change). LEAN's boolean fields have no missing state: `is_reit` is
+False for a security LEAN has no company data for.
+
 ## Parity with plain QuantConnect algorithms
 
 Five simple rules are each run twice in QC Cloud: once as a native `QCAlgorithm`

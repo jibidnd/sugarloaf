@@ -2,7 +2,8 @@
 
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
+from math import isfinite
 
 from sugarloaf.core.errors import CapabilityError, ContractError
 from sugarloaf.core.primitives import InstrumentId, aware, finite, frozen_map
@@ -308,12 +309,20 @@ class QuotesRequirement(DataRequirement):
     max_age: timedelta = timedelta(minutes=5)
     fill_forward: bool = False
     require_all: bool = True
+    # Price scale of the bid and ask, as for bars: "raw" is as quoted, "adjusted" corrects
+    # for splits and dividends, "split_adjusted" for splits only, "total_return" reinvests
+    # dividends. It applies alike to warm-up history and to streamed quotes, so a window
+    # that spans the start of a run is on one scale. Before this field existed QC history
+    # was raw while quotes streamed to universe members were adjusted.
+    normalization: str = "raw"
 
     def __post_init__(self):
         if self.interval <= timedelta(0) or self.lookback < 1 or self.max_age < timedelta(0):
             raise ContractError("Invalid quote request")
         if self.session not in {"regular", "extended"}:
             raise ContractError("Unknown trading session")
+        if self.normalization not in {"raw", "adjusted", "split_adjusted", "total_return"}:
+            raise ContractError("Unknown normalization")
 
 
 @dataclass(frozen=True)
@@ -406,14 +415,52 @@ class ETFConstituentsUniverse:
             raise ContractError("Unknown missing-weight policy")
 
 
+def field_names(names: Iterable[str]) -> tuple[str, ...]:
+    """Declared fundamental field names as a sorted tuple without repeats.
+
+    A name is the provider's qualified path, for example
+    ``morningstar.valuation_ratios.pe_ratio``; a multi-period value names its period, as in
+    ``morningstar.operation_ratios.roe.one_year``. Whether a name exists is the adapter's
+    question, answered when the graph is installed.
+    """
+    if isinstance(names, str):
+        raise ContractError("Fundamental fields are a sequence of names, not one string")
+    names = tuple(names)
+    if any(not isinstance(n, str) or not n or n != n.strip() for n in names):
+        raise ContractError("A fundamental field name is a non-empty string")
+    return tuple(sorted(set(names)))
+
+
+def _field_value(name, value):
+    # The scalar forms a generic fundamental field may take. A bool is checked before
+    # int because bool is a subclass of int.
+    if value is None or isinstance(value, (bool, str, date)):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if not isfinite(value):
+            raise ContractError(f"Fundamental field {name} is not finite; missing is None")
+        return value
+    raise ContractError(f"Fundamental field {name} is not a scalar")
+
+
 @dataclass(frozen=True)
 class FundamentalRecord:
     """A security's company fundamentals as known at ``time``.
 
     ``time`` is when the provider read the record: it is both the as-of and the knowledge
-    time. Fields the provider does not have are None. ``price`` is the record's traded price,
-    not a price adjusted for later corporate actions. ``cik`` is the issuer's SEC Central
-    Index Key, stored as text without leading zeros.
+    time, not a filing or report date (a provider's own dates are fields). Typed fields the
+    provider does not have are None. ``price`` is the record's traded price, not a price
+    adjusted for later corporate actions. ``cik`` is the issuer's SEC Central Index Key,
+    stored as text without leading zeros. ``morningstar_sector_code`` is the three-digit
+    Morningstar sector (for example 311 technology, 104 real estate) and ``is_reit`` whether
+    the company is a real-estate investment trust.
+
+    ``fields`` holds the further values a reader declared, by qualified name (see
+    ``field_names``): a float, int, str, bool, date or None for a supported value the
+    provider does not have. A valid zero or False is kept as such. Only declared names
+    are present; ``value(name)`` refuses any other.
     """
 
     instrument: InstrumentId
@@ -422,6 +469,12 @@ class FundamentalRecord:
     market_cap: float | None = None
     price: float | None = None
     dollar_volume: float | None = None
+    morningstar_sector_code: int | None = None
+    is_reit: bool | None = None
+    # A read-only copy; excluded from the hash because a mapping is not hashable.
+    fields: Mapping[str, float | int | str | bool | date | None] = field(
+        default_factory=dict, hash=False
+    )
 
     def __post_init__(self):
         aware(self.time)
@@ -433,6 +486,38 @@ class FundamentalRecord:
             if cik and not cik.isdigit():
                 raise ContractError("A CIK is a number")
             object.__setattr__(self, "cik", cik or None)
+        if self.morningstar_sector_code is not None and (
+            isinstance(self.morningstar_sector_code, bool)
+            or not isinstance(self.morningstar_sector_code, int)
+        ):
+            raise ContractError("A Morningstar sector code is an integer")
+        if self.is_reit is not None and not isinstance(self.is_reit, bool):
+            raise ContractError("is_reit is True, False or None")
+        values = {}
+        for name, value in dict(self.fields).items():
+            if not isinstance(name, str) or not name:
+                raise ContractError("A fundamental field name is a non-empty string")
+            values[name] = _field_value(name, value)
+        object.__setattr__(self, "fields", frozen_map(values))
+
+    def value(self, name: str):
+        """A declared field's value (None when the provider does not have it).
+
+        Raises:
+            CapabilityError: The name was not declared by the reader, so it is not here.
+        """
+        if name not in self.fields:
+            raise CapabilityError(f"Undeclared fundamental field: {name}")
+        return self.fields[name]
+
+    def project(self, names: Iterable[str]) -> "FundamentalRecord":
+        """This record with exactly ``names`` as its fields; a name it lacks becomes None."""
+        names = field_names(names)
+        return FundamentalRecord(
+            self.instrument, self.time, self.cik, self.market_cap, self.price,
+            self.dollar_volume, self.morningstar_sector_code, self.is_reit,
+            {n: self.fields.get(n) for n in names},
+        )
 
 
 @dataclass(frozen=True)
@@ -462,10 +547,15 @@ class FundamentalUniverse:
     refresh: Trigger = Trigger("universe")
     minimum_residence: timedelta = timedelta(0)
     source: str = "us_equity_fundamental"
+    # Generic fields the rule reads from each record (see field_names); stored sorted and
+    # without repeats, and part of the definition: one universe name with two different
+    # field lists is a conflict. The provider reads only these.
+    fields: tuple[str, ...] = ()
 
     def __post_init__(self):
         if not self.name or not callable(self.rule) or self.minimum_residence < timedelta(0):
             raise ContractError("Invalid fundamental selection")
+        object.__setattr__(self, "fields", field_names(self.fields))
 
 
 @dataclass(frozen=True)
@@ -484,17 +574,23 @@ class FundamentalsRequirement(DataRequirement):
 
     Attributes:
         selection: Explicit instruments or named universe.
-        max_age: Oldest record accepted, relative to graph time.
-        require_all: Withdraw the node unless every selected security has a record.
+        max_age: Oldest record accepted, relative to graph time (snapshot freshness).
+        require_all: Withdraw the node unless every selected security has a record. A
+            record whose declared fields are all None still counts as available.
+        fields: Generic field names the node reads (see ``field_names``), stored sorted
+            and without repeats. The records it reads carry exactly these; an unknown
+            name fails when the graph is installed.
     """
 
     selection: Selection
     max_age: timedelta = timedelta(days=4)
     require_all: bool = False
+    fields: tuple[str, ...] = ()
 
     def __post_init__(self):
         if self.max_age < timedelta(0):
             raise ContractError("Invalid fundamentals freshness")
+        object.__setattr__(self, "fields", field_names(self.fields))
 
 
 @dataclass(frozen=True)
