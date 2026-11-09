@@ -44,6 +44,14 @@
 
 ::: sugarloaf.adapters.quantconnect.cloud.backtests
 
+## `adapters.quantconnect.cloud.client`
+
+::: sugarloaf.adapters.quantconnect.cloud.client
+
+## `adapters.quantconnect.cloud.kernels`
+
+::: sugarloaf.adapters.quantconnect.cloud.kernels
+
 ## `adapters.quantconnect.cloud.notebooks`
 
 ::: sugarloaf.adapters.quantconnect.cloud.notebooks

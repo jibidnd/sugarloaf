@@ -14,7 +14,7 @@ the example's factory implementation; Sugarloaf's `deployment/config.py` defines
 the shared objects that factory returns.
 
 From the repository root, `sugarloaf package --adapter quantconnect --manifest deployments/quantconnect/ema.toml`
-builds the bundle offline. With an authenticated LEAN environment and a selected
+builds the bundle offline. With QC credentials and a selected
 QC project, `sugarloaf run --adapter quantconnect --manifest deployments/quantconnect/ema.toml` uploads,
 compiles, waits for the backtest and retains results/logs under `artifacts/ema/`.
 If no project is selected in the manifest or saved state, use

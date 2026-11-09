@@ -84,9 +84,12 @@ directory; absolute paths may point directly into a separate Lab checkout.
 
 ## Run a QC backtest
 
-These actions require an installed, authenticated LEAN client and the chosen QC
-account/project. LEAN is separate tooling rather than a library runtime dependency.
-Its stored authentication supplies the API client; credentials never enter bundles.
+These actions use Sugarloaf's QC REST client
+(`sugarloaf.adapters.quantconnect.cloud.client`), which authenticates as QC
+documents (user ID and a SHA-256 hash of the API token with a timestamp). It reads
+`QC_USER_ID` and `QC_API_TOKEN`, or the LEAN CLI's saved login
+(`~/.lean/credentials`); the LEAN CLI itself is not needed. It uses only the
+standard library. Credentials never enter bundles or records.
 
 Select an existing project with `project_id` in the manifest or its saved
 `cloud.json`. If neither selects a project, provision one explicitly once:
@@ -126,9 +129,9 @@ print(result["statistics"], result["artifacts"])
 The defaults are a 120-second compile wait, an 1800-second backtest wait and a
 5-second poll interval. Set `--compile-timeout`, `--backtest-timeout` and
 `--poll-interval` on `run`, or their underscore-named Python arguments. Values
-must be finite and positive. These limits bound polling between requests. LEAN
-owns network requests, authentication and retries; a request can outlast a polling
-limit, and a timeout does not cancel a remote job. Inspect the retained IDs before
+must be finite and positive. These limits bound polling between requests. Each
+request has its own 120-second network timeout and one retry on an HTTP 5xx reply;
+a timeout does not cancel a remote job. Inspect the retained IDs before
 submitting again.
 
 ## Individual cloud actions
@@ -156,10 +159,9 @@ and is mandatory for `snapshot`.
 
 Submission includes the effective parameters explicitly in the backtest request,
 as supported by QC's [Create Backtest API](https://www.quantconnect.com/docs/v2/cloud-platform/api-reference/backtest-management/create-backtest).
-The inspected LEAN 1.0.180 client owns authentication and HTTP handling, retries
-an HTTP 5xx response once, and supplies no default network-request timeout on
-this path (`APIClient._request` and `HTTPClient.request`). Sugarloaf adds no
-network retry policy; its waiting limits apply between those client calls.
+Uploads send files and parameters in one `projects/update` request with the form
+encoding the LEAN CLI uses (`files[i][name]`, `parameters[i][key]`). The client
+retries an HTTP 5xx reply once and adds no other retry policy.
 
 For example, inspect a specific completed run using its saved identity:
 
@@ -218,10 +220,15 @@ Ignored local artifacts need private backup and tested restoration.
 ## Remote notebook tool
 
 `python -m sugarloaf.adapters.quantconnect.cloud.notebooks NOTEBOOK --project-id ID` runs a local
-notebook on a newly created remote Jupyter kernel and retains outputs. It requires
-the authenticated LEAN environment plus its notebook/network dependencies.
-The tool uses QC extension endpoints, not a documented API stability promise.
-Connection tokens stay in memory; only its created kernel is shut down.
+notebook on a newly created remote Jupyter kernel and retains outputs. It needs
+QC credentials (above), `nbformat` and `websocket-client`. The research connection
+uses `research/read` and `research/create`, which QC says are not part of its
+official API. Connection tokens stay in memory; only its created kernel is shut down.
+
+`sugarloaf.adapters.quantconnect.cloud.kernels` exposes the pieces for persistent
+kernels: `connect`, `start_kernel`, `run_cell` (one cell; on timeout the kernel is
+interrupted, not deleted), `kernel_status`, `stop_kernel`, and `ResearchKernel`,
+which tracks idle time against an `idle_timeout` so its owner can stop it.
 
 This runner is distinct from `sugarloaf.research.run_node`: one operates a remote
 notebook; the other performs predictive-node replay inside a supplied provider.

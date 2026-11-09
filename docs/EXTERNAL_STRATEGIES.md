@@ -109,7 +109,7 @@ Use only the fields above; a misspelled field does not become a new setting.
 
 Use distinct TOML filenames within a source root: the filename stem determines
 the artifact directory. There is no separate artifact-output-path field. Credentials
-belong in the authenticated LEAN environment, never in this file.
+belong in `QC_USER_ID`/`QC_API_TOKEN` or a saved LEAN login, never in this file.
 
 ### What config.py means
 
@@ -134,8 +134,7 @@ a new project once and saves its selection in local adapter state. Keep this opt
 provider binding out of portable Lab manifests. Distinct concurrent studies should
 use distinct projects.
 
-From the external checkout, with Sugarloaf available to the authenticated LEAN
-Python environment:
+From the external checkout, with Sugarloaf installed and QC credentials available:
 
 ```powershell
 sugarloaf package --adapter quantconnect --manifest strategies/strategy.toml

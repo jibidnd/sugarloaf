@@ -3,7 +3,7 @@
 import json
 import sys
 from concurrent.futures import ThreadPoolExecutor
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 
 import pytest
 
@@ -103,9 +103,9 @@ def test_log_retrieval_rejects_truncation_and_changing_lengths():
 
 
 def fake_client(monkeypatch, post):
-    module = ModuleType("lean.container")
-    module.container = SimpleNamespace(api_client=SimpleNamespace(post=post))
-    monkeypatch.setitem(sys.modules, "lean.container", module)
+    from sugarloaf.adapters.quantconnect.cloud import client
+
+    monkeypatch.setattr(client, "default_client", lambda: SimpleNamespace(post=post))
 
 
 def test_failed_submission_records_intent_before_network(tmp_path, monkeypatch, capsys):

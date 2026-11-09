@@ -1,8 +1,8 @@
 """Local QC project operations and configuration-driven backtest runs.
 
-Uses the authenticated LEAN client with its standard network behavior. Local
-source/result records identify submitted inputs; they are not a cloud lock or
-runtime restart mechanism.
+Uses Sugarloaf's QC REST client (:mod:`.client`), authenticated from
+QC_USER_ID/QC_API_TOKEN or LEAN's saved login. Local source/result records
+identify submitted inputs; they are not a cloud lock or runtime restart mechanism.
 """
 
 import argparse
@@ -17,16 +17,15 @@ from pathlib import Path
 
 from sugarloaf.deployment.evidence import read_snapshot, save_snapshot, write_json
 
+from . import client as qc_client
 from .packaging import BundleSpec, build_bundle, read_spec
 
 
 def _client(client=None):
-    # Dependency injection lets local tests supply a fake API without loading LEAN.
-    # Real runs use the native client and its stored authentication/network behavior.
+    # Dependency injection lets local tests supply a fake API without network access.
+    # Real runs use the REST client with QC's documented authentication.
     if client is None:
-        from lean.container import container
-
-        return container.api_client
+        return qc_client.default_client()
     return client
 
 
@@ -96,7 +95,7 @@ def create_project(spec: BundleSpec, *, client=None) -> dict:
 def upload(spec: BundleSpec, *, parameters: Mapping[str, str] | None = None, client=None) -> dict:
     """Package and upload selected sources/parameters; clear prior compile/run selection."""
     # Capture the actual sources before network activity. Send source files and
-    # parameters together through the native project client.
+    # parameters together in one projects/update request.
     state = _state(spec)
     project_id = _required(state, "project_id")
     prepared = package(spec, parameters=parameters)
@@ -106,9 +105,8 @@ def upload(spec: BundleSpec, *, parameters: Mapping[str, str] | None = None, cli
     for key in ("source_hash", "compile_id", "backtest_id"):
         state.pop(key, None)
     _save_state(spec, state)
-    # The upload boundary: LEAN owns request authentication and native retries.
-    # Sugarloaf does not implement a second HTTP transport layer.
-    _client(client).projects.update(
+    # The upload boundary: one request carries files and parameters together.
+    _client(client).update_project(
         project_id, files=bundle["files"], parameters=bundle["parameters"]
     )
     state.update({key: value for key, value in bundle.items() if key != "files"})
@@ -126,7 +124,7 @@ def set_parameters(spec: BundleSpec, parameters: Mapping[str, str], *, client=No
     state = _state(spec)
     project_id = _required(state, "project_id")
     effective = {**spec.parameters, **state.get("parameters", {}), **dict(parameters)}
-    _client(client).projects.update(project_id, parameters=effective)
+    _client(client).update_project(project_id, parameters=effective)
     state["parameters"] = effective
     _save_state(spec, state)
     return effective
@@ -326,8 +324,8 @@ def run_backtest(
     """Run a selected config through upload, compilation, backtest and evidence retrieval.
 
     Requires an existing selected project. Waiting limits bound polling between
-    LEAN requests, not the client's network calls. A timeout does not cancel a
-    remote job. Native retries and authentication remain LEAN-owned.
+    requests, not the client's network calls. A timeout does not cancel a
+    remote job.
     """
     # This is local orchestration, not the algorithm execution loop. QC initializes
     # uploaded main.py: a Sugarloaf graph in factory mode, or the selected native study.

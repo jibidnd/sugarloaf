@@ -11,9 +11,9 @@ composition belongs in an external package.
 - [Deploy and inspect](../docs/GUIDE.md#4-deploy-and-inspect)
 
 Run `sugarloaf package --adapter quantconnect --manifest deployments/quantconnect/ema.toml` to inspect the
-EMA bundle offline. In an authenticated LEAN environment, use
+EMA bundle offline. With QC credentials (`QC_USER_ID`/`QC_API_TOKEN` or a saved LEAN login), use
 `sugarloaf run --adapter quantconnect --manifest deployments/quantconnect/ema.toml` to upload, compile,
 backtest and retain results/logs. Select an existing project or run
 `sugarloaf create --adapter quantconnect --manifest deployments/quantconnect/ema.toml` once first.
 Run `python -m sugarloaf.adapters.quantconnect.cloud.notebooks NOTEBOOK --project-id ID` to execute a
-local notebook on QC's remote kernel using an already-authenticated LEAN environment.
+local notebook on QC's remote kernel.

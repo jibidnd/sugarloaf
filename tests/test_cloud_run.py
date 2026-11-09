@@ -1,7 +1,6 @@
 """Config-driven orchestration, effective parameters, and observable failed runs."""
 
 import json
-from types import SimpleNamespace
 
 import pytest
 
@@ -34,7 +33,7 @@ class QCClient:
             {"completed": True, "statistics": {"Return": "2%"}},
         ])
         self.submission_error = None
-        self.projects = SimpleNamespace(update=self.update)
+        self.update_project = self.update
 
     def update(self, project_id, **kwargs):
         self.calls.append(("update", {"projectId": project_id, **kwargs}))
@@ -215,7 +214,7 @@ def test_interrupted_upload_cannot_attribute_new_remote_source_to_old_bundle(man
         assert kwargs["files"] == [{"name": "main.py", "content": "# Different source\n"}]
         raise ConnectionError("Upload response lost")
 
-    client.projects.update = accepted_but_response_lost
+    client.update_project = accepted_but_response_lost
     with pytest.raises(ConnectionError, match="Upload response lost"):
         backtests.upload(spec, client=client)
     with pytest.raises(ValueError, match="source_hash"):
@@ -227,7 +226,7 @@ def test_interrupted_upload_cannot_attribute_new_remote_source_to_old_bundle(man
     state = json.loads((spec.artifacts / "cloud.json").read_text())
     assert state["project_id"] == 7
     assert "backtest_id" not in state
-    client.projects.update = client.update
+    client.update_project = client.update
     backtests.upload(spec, client=client)
     backtests.compile_project(spec, client=client)
     assert json.loads((spec.artifacts / "cloud.json").read_text())["source_hash"] != (

@@ -133,7 +133,7 @@ uv run --cache-dir .uv-cache sugarloaf package --adapter quantconnect --manifest
 
 This writes local evidence under `artifacts/ema/`; it creates no QC project or
 backtest. To run on QC, use `sugarloaf run --adapter quantconnect --manifest deployments/quantconnect/ema.toml`
-in an authenticated LEAN environment. It uploads, compiles, waits for the backtest
+with QC credentials available. It uploads, compiles, waits for the backtest
 and retrieves results and logs. A project must already be selected in the manifest
 or saved state; otherwise run `sugarloaf create --adapter quantconnect --manifest deployments/quantconnect/ema.toml`
 once. Every action requires `--manifest`.

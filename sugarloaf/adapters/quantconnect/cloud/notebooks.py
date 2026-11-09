@@ -1,70 +1,25 @@
 """Execute a local notebook on QC's remote Jupyter kernel, preserving outputs.
 
-Uses the research/create and research/read endpoints used by QC's VS Code
-extension (not a documented public API stability promise). Requires the existing
-authenticated LEAN environment, requests, websocket-client and nbformat.
-Connection tokens stay in memory. Only the newly created kernel is shut down.
+Connects through :mod:`.kernels` (QC's research endpoints, which are not part of
+its official API) with the REST client in :mod:`.client`. Needs nbformat and
+websocket-client. Connection tokens stay in memory. Only the newly created
+kernel is shut down.
 """
 
 import argparse
-import json
-import time
-import uuid
 from datetime import UTC, datetime
 from pathlib import Path
-from urllib.parse import urlsplit, urlunsplit
+
+from .client import default_client
+from .kernels import connect, run_cell, start_kernel, stop_kernel
 
 
-def run_notebook(path: Path, project_id: int, timeout: int = 600):
-    # These optional dependencies are loaded only for this remote notebook tool.
-    # Ordinary graph execution and offline packaging do not require a Jupyter client.
+def run_notebook(path: Path, project_id: int, timeout: int = 600, *, client=None):
+    # nbformat is loaded only for this remote notebook tool; ordinary graph
+    # execution and offline packaging do not need a Jupyter client.
     import nbformat
-    import requests
-    import websocket
-    from lean.container import container
-    from lean.models.errors import RequestFailedError
 
-    api = container.api_client
-    try:
-        connection = api.post("research/read", {"projectId": project_id})
-    except RequestFailedError as error:
-        if "Connection not found" not in str(error):
-            raise
-        # Create a research connection only for the known missing-connection response.
-        # Authentication/server failures above must propagate rather than trigger new work.
-        connection = api.post("research/create", {"projectId": project_id})
-
-    def open_session(connection):
-        """Validate a research endpoint and return its address, token and HTTP session."""
-        base = connection["uri"].rstrip("/")
-        parsed = urlsplit(base)
-        # The returned endpoint will receive a bearer token; validate its origin before
-        # opening either REST or websocket connections.
-        if parsed.scheme != "https" or not parsed.hostname.endswith(".quantconnect.com"):
-            raise RuntimeError("Unexpected research server; refusing to transmit credentials")
-        token = connection["token"]
-        session = requests.Session()
-        session.headers["Authorization"] = "Bearer " + token
-        return base, parsed, token, session
-
-    base, parsed, token, session = open_session(connection)
-    # A saved research session can outlive its server. QC then still returns the
-    # old record, and every route at that address answers 404, so the first kernel
-    # request would fail with an unexplained 404 however often it is retried.
-    # One status request tells the two cases apart; only then ask for a new session.
-    # (Observed 2026-10-09: research/read returned a session whose server was gone.)
-    if session.get(base + "/api/status", timeout=60).status_code == 404:
-        connection = api.post("research/create", {"projectId": project_id})
-        base, parsed, token, session = open_session(connection)
-
-    def request(method, route, **kwargs):
-        # Research connection discovery uses LEAN; kernel REST operations use the
-        # authenticated Jupyter session with a bounded request timeout.
-        result = session.request(method, base + route, timeout=60, **kwargs)
-        if not result.ok:
-            raise RuntimeError(f"Jupyter {route.split('?')[0]}: HTTP {result.status_code}")
-        return result
-
+    server = connect(client or default_client(), project_id)
     notebook = nbformat.read(path, as_version=4)
     # Clear previous code outputs in memory before execution so retained outputs
     # describe this attempt rather than silently mixing new cells with old results.
@@ -73,125 +28,54 @@ def run_notebook(path: Path, project_id: int, timeout: int = 600):
             cell.outputs, cell.execution_count = [], None
     # Own a new kernel for this invocation. Cleanup deletes only this kernel ID,
     # not other notebooks or the entire shared research server.
-    kernel = request("POST", "/api/kernels", json={"name": "python3"}).json()
-    kernel_id = kernel["id"]
-    client_id = uuid.uuid4().hex
-    channel_path = parsed.path.rstrip("/") + f"/api/kernels/{kernel_id}/channels"
-    socket_url = urlunsplit(("wss", parsed.netloc, channel_path, f"session_id={client_id}", ""))
-    socket = None
+    kernel_id = start_kernel(server)
     notebook.metadata["quantconnect_run"] = {
         "project_id": project_id,
         "kernel": "python3",
         "started_utc": datetime.now(UTC).isoformat(),
         "completed": False,
     }
+
+    def echo(output):
+        if output["output_type"] == "stream":
+            print(output["text"], end="", flush=True)
+        elif output["output_type"] == "error":
+            print(output["ename"] + ": " + output["evalue"], flush=True)
+
     try:
-        socket = websocket.create_connection(
-            socket_url,
-            header={"Authorization": "Bearer " + token},
-            timeout=timeout,
-            suppress_origin=True,
-        )
         for index, cell in enumerate(notebook.cells):
             if cell.cell_type != "code":
                 continue
-            # Jupyter channels multiplex messages. Each cell gets its own parent ID so
-            # background or unrelated kernel messages cannot be mistaken for its output.
-            msg_id = uuid.uuid4().hex
-            socket.send(
-                json.dumps(
-                    {
-                        "header": {
-                            "msg_id": msg_id,
-                            "username": "sugarloaf",
-                            "session": client_id,
-                            "msg_type": "execute_request",
-                            "version": "5.3",
-                            "date": datetime.now(UTC).isoformat(),
-                        },
-                        "parent_header": {},
-                        "metadata": {},
-                        "channel": "shell",
-                        "buffers": [],
-                        "content": {
-                            "code": cell.source,
-                            "silent": False,
-                            "store_history": True,
-                            "user_expressions": {},
-                            "allow_stdin": False,
-                            "stop_on_error": True,
-                        },
-                    }
-                )
-            )
             print(f"Executing cell {index + 1}/{len(notebook.cells)}", flush=True)
-            deadline = time.monotonic() + timeout
-            idle, replied, failed = False, False, False
-            # Wait for both shell completion and the output-channel idle marker; either
-            # one alone can arrive before all cell outputs have been received.
-            while not (idle and replied):
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise TimeoutError(f"Cell {index + 1} exceeded {timeout}s")
-                socket.settimeout(remaining)
-                raw = socket.recv()
-                if isinstance(raw, bytes):
-                    raise RuntimeError("Unsupported binary kernel message")
-                message = json.loads(raw)
-                if message.get("parent_header", {}).get("msg_id") != msg_id:
-                    continue
-                kind = message["header"]["msg_type"]
-                content = message["content"]
-                if kind == "status":
-                    idle = content.get("execution_state") == "idle"
-                elif kind == "execute_reply":
-                    replied = True
-                    cell.execution_count = content.get("execution_count")
-                    failed |= content.get("status") == "error"
-                elif kind in {"stream", "display_data", "execute_result", "error"}:
-                    if kind == "stream":
-                        output = nbformat.v4.new_output(
-                            kind, name=content["name"], text=content["text"]
-                        )
-                        print(content["text"], end="", flush=True)
-                    elif kind == "error":
-                        failed = True
-                        output = nbformat.v4.new_output(
-                            kind,
-                            ename=content["ename"],
-                            evalue=content["evalue"],
-                            traceback=content["traceback"],
-                        )
-                        print(content["ename"] + ": " + content["evalue"], flush=True)
-                    else:
-                        fields = {"data": content["data"], "metadata": content.get("metadata", {})}
-                        if kind == "execute_result":
-                            fields["execution_count"] = content["execution_count"]
-                        output = nbformat.v4.new_output(kind, **fields)
-                    cell.outputs.append(output)
-                elif kind == "clear_output":
-                    cell.outputs = []
+            # The kernel is deleted below, so a timeout need not interrupt it first.
+            result = run_cell(
+                server, kernel_id, cell.source, timeout=timeout, on_output=echo,
+                interrupt_on_timeout=False,
+            )
+            cell.outputs = [nbformat.from_dict(output) for output in result.outputs]
+            cell.execution_count = result.execution_count
             # Retain progress cell by cell, including errors, so a failed attempt still
             # has inspectable output rather than losing all evidence at the final cell.
             nbformat.write(notebook, path)
-            if failed:
+            if result.status == "timeout":
+                raise TimeoutError(f"Cell {index + 1} exceeded {timeout}s")
+            if result.status == "error":
                 raise RuntimeError(f"Notebook cell {index + 1} failed; outputs saved")
         notebook.metadata["quantconnect_run"].update(
             completed=True, finished_utc=datetime.now(UTC).isoformat()
         )
         print(f"Completed notebook: {path}", flush=True)
-    # Persist partial results and close the owned resources even when a cell fails.
+    # Persist partial results and close the owned kernel even when a cell fails.
     # The notebook itself is evidence; connection tokens are not written into it.
     finally:
         nbformat.write(notebook, path)
-        if socket is not None:
-            socket.close()
-        request("DELETE", f"/api/kernels/{kernel_id}")
+        stop_kernel(server, kernel_id)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("notebook", type=Path)
     parser.add_argument("--project-id", type=int, required=True)
+    parser.add_argument("--timeout", type=int, default=600, help="Seconds per cell")
     args = parser.parse_args()
-    run_notebook(args.notebook, args.project_id)
+    run_notebook(args.notebook, args.project_id, args.timeout)
