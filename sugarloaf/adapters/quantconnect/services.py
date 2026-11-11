@@ -1075,7 +1075,7 @@ class QuantConnectDataServices(ProviderServices):
 class QuantConnectServices(QuantConnectDataServices):
     """LEAN data provider with fresh account, valuation, cost, and trading capabilities.
 
-    Native subscriptions currently support US equities. Cost estimates use native
+    Native subscriptions support US equities and indices. Cost estimates use native
     fees and proportional slippage; actual account charges remain LEAN's responsibility.
     """
 

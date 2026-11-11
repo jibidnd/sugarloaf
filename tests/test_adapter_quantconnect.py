@@ -722,7 +722,6 @@ def native_bar(end, price):
 def test_native_indicator_shared_window_prefill_admission_and_late_input():
     from sugarloaf.market.contracts import IndicatorRequirement
 
-
     api, platform = IndicatorAPI(), algorithm()
     provider = QuantConnectServices(platform, api=api)
     provider.register(A, "A")
