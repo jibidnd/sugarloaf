@@ -98,8 +98,8 @@ class LeanAPI:
         ``period`` is the finest feed any requirement on this security needs (see
         ``native_period``). A node that reads only daily bars gets a daily feed.
         Every supported asset class goes through LEAN's generic ``add_security``
-        with a Symbol of that class; ``add_equity`` and ``add_index`` are wrappers
-        around the same call. An existing native ``symbol`` (a security already bound,
+        with a Symbol of that class, as LEAN's ``add_equity`` and ``add_index`` do
+        after resolving the ticker. An existing native ``symbol`` (a security already bound,
         for example by a universe or before a ticker change) is subscribed as is, so
         the subscription stays on that security rather than on today's holder of the
         ticker.

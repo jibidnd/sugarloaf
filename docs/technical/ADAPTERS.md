@@ -112,8 +112,10 @@ with a Symbol of that class; supported are US equities (ETFs included) and US
 indices. LEAN reports whether a security is tradable, and execution trades
 equities only. An index's session can differ from the equity session: the VIX's
 daily bar runs 09:30–16:15 New York, so at an equity close the latest VIX bar is
-the previous session's. Metadata rejects other classes and non-USA securities. Concurrent requests for one security must agree on
-session, normalization and fill-forward semantics.
+the previous session's. An index has trade bars only, no quotes, and no splits
+or dividends, so request its bars with `normalization="raw"` everywhere. Metadata
+rejects other classes and non-USA securities. Concurrent requests for one security
+must agree on session, normalization and fill-forward semantics.
 
 ### Feed periods
 
