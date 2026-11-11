@@ -31,7 +31,7 @@ from sugarloaf.market.contracts import (
     UniverseRequirement,
 )
 
-from .lean import DAY, MINUTE, LeanAPI, native_period
+from .lean import DAY, MINUTE, SECURITY_TYPES, LeanAPI, native_period
 
 
 def utc(value: datetime, zone: str = "UTC") -> datetime:
@@ -78,6 +78,8 @@ class QuantConnectDataServices(ProviderServices):
         self._external_symbols = set(self.symbols)
         self.reverse = {str(symbol.id): instrument for instrument, symbol in self.symbols.items()}
         self.tickers = {}
+        # Declared asset class per instrument; unregistered instruments are equities.
+        self.asset_classes = {}
         # Keys identify compatible resource semantics, so several nodes can share
         # one bounded window/consolidator while retaining separate read permissions.
         # Each window is a deque of neutral Bar/Quote values, oldest first, capped
@@ -118,9 +120,27 @@ class QuantConnectDataServices(ProviderServices):
         self.symbols[instrument] = symbol
         return instrument
 
-    def register(self, instrument: InstrumentId, ticker: str) -> None:
-        """Supply a ticker for initial subscription; existing native bindings follow SID."""
-        self.tickers[instrument] = ticker
+    def register(self, instrument: InstrumentId, binding: str | Instrument) -> None:
+        """Supply a ticker for initial subscription; existing native bindings follow SID.
+
+        ``binding`` is a ticker (an equity) or an ``Instrument`` record whose
+        ``asset_class`` says what to subscribe, for example
+        ``Instrument(vix, "VIX", asset_class="index")``.
+        """
+        if isinstance(binding, Instrument):
+            self.asset_classes[instrument] = binding.asset_class
+            binding = binding.ticker
+        self.tickers[instrument] = binding
+
+    def _asset_class(self, instrument):
+        # A declared class wins; a security already bound natively (a universe
+        # member, a caller-supplied Symbol) keeps its own; otherwise an equity.
+        if instrument in self.asset_classes:
+            return self.asset_classes[instrument]
+        symbol = self.symbols.get(instrument)
+        if symbol is not None:
+            return str(getattr(symbol, "security_type", "Equity")).split(".")[-1].lower()
+        return "equity"
 
     def install(self, node_id: str, update: ResourceUpdate) -> None:
         """Validate declarations and replace universe sources at the runtime boundary."""
@@ -461,7 +481,7 @@ class QuantConnectDataServices(ProviderServices):
             semantics = (req.session, normalization, req.fill_forward)
             prior = by_instrument.setdefault(key[1], semantics)
             if prior != semantics:
-                raise CapabilityError("Incompatible subscriptions for one LEAN equity security")
+                raise CapabilityError("Incompatible subscriptions for one LEAN security")
         for instrument, semantics in by_instrument.items():
             semantics = (*semantics, periods[instrument])
             if self._subscriptions.get(instrument) == semantics:
@@ -482,7 +502,14 @@ class QuantConnectDataServices(ProviderServices):
             if ticker is None:
                 raise CapabilityError(f"No ticker binding for {instrument.value}")
             period = periods[instrument]
-            symbol = self.api.subscribe(self.algorithm, ticker, primary[instrument], period)
+            symbol = self.api.subscribe(
+                self.algorithm,
+                ticker,
+                primary[instrument],
+                period,
+                self._asset_class(instrument),
+                existing,
+            )
             self.symbols[instrument] = symbol
             self.reverse[str(symbol.id)] = instrument
             # The security may already carry a coarser subscription, added by a
@@ -713,7 +740,11 @@ class QuantConnectDataServices(ProviderServices):
                 if ticker is None:
                     raise CapabilityError("Indicator instrument has no ticker binding")
                 symbol = self.api.subscribe(
-                    self.algorithm, ticker, req.source, periods[instrument]
+                    self.algorithm,
+                    ticker,
+                    req.source,
+                    periods[instrument],
+                    self._asset_class(instrument),
                 )
                 self.symbols[instrument] = symbol
                 self.reverse[str(symbol.id)] = instrument
@@ -897,8 +928,9 @@ class QuantConnectDataServices(ProviderServices):
         if symbol is None:
             raise CapabilityError("Instrument has no platform Symbol")
         security = self.algorithm.securities[symbol]
-        if str(getattr(symbol, "security_type", "Equity")).split(".")[-1].lower() != "equity":
-            raise CapabilityError("QC adapter supports US equities only")
+        asset_class = str(getattr(symbol, "security_type", "Equity")).split(".")[-1].lower()
+        if asset_class not in SECURITY_TYPES:
+            raise CapabilityError(f"QC adapter supports US {', '.join(SECURITY_TYPES)} only")
         if str(getattr(symbol.id, "market", "usa")).lower() != "usa":
             raise CapabilityError("QC adapter supports US markets only")
         # Expose neutral trade units/metadata while keeping Symbol and native
@@ -907,6 +939,7 @@ class QuantConnectDataServices(ProviderServices):
         return Instrument(
             instrument,
             symbol.value,
+            asset_class=asset_class,
             currency=security.quote_currency.symbol,
             lot_size=float(props.lot_size),
             multiplier=float(props.contract_multiplier),

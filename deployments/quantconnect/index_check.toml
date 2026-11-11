@@ -1,0 +1,9 @@
+# Native check of index data (the VIX beside SPY); see index_check.py.
+name = "Sugarloaf index data check"
+root = "../.."
+factory = "deployments.quantconnect.index_check:deployment"
+include = ["deployments/quantconnect/index_check.py"]
+
+[parameters]
+start_date = "2025-03-24"
+end_date = "2025-04-17"

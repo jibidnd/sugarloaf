@@ -249,8 +249,37 @@ algorithm. Each is intended behaviour that a strategy author needs to know:
 The pairs do not cover partial fills, cancellations, shorting, universes or
 market-on-close orders.
 
+## Index data, 11 November 2026
+
+Question: does a deployment that declares the VIX as an index, with
+`Instrument(vix, "VIX", asset_class="index")`, deliver its daily
+bars to a node through the generic `add_security` subscription?
+
+Run: [`deployments/quantconnect/index_check.toml`](../deployments/quantconnect/index_check.toml),
+project `39250288`, backtest `95a69ac46f6a82704cf7d2139bf80bec`, source hash
+`bc92b777…db6b9ed718`, LEAN v2.5.0.0.18250, 24 March to 17 April 2025. One node reads
+SPY daily bars (adjusted) and VIX daily bars (raw) at each SPY close and holds
+nothing.
+
+Observed:
+
+- 19 evaluations, one per session; no runtime or execution diagnostics, no errors.
+- Instrument metadata: SPY equity and tradable; VIX index, and LEAN reports it not
+  tradable.
+- VIX daily bars are read on every evaluation; highest close 52.24 on 8 April 2025.
+- **An index bar closes after the equity session.** LEAN's VIX daily bar runs
+  09:30–16:15 New York (13:30–20:15 UTC in the report). At SPY's 16:00 close the
+  latest VIX bar a node read was never the same session's (0 of 19); in the rows the
+  report lists (the first and last three) it was the previous session's. This is
+  causal admission: a bar is readable only after it ends. Reading the same session's
+  index value would need an evaluation after the index closes (not tested here).
+- Evidence: the run's report is in the backtest's logs on QuantConnect and in the
+  local, git-ignored `artifacts/index_check/` folder.
+
 ## Capability limits
 
+- QC data: US equities (ETFs included) and US indices. Other asset classes are
+  refused.
 - QC trading: US equities, regular-session day or good-till-cancelled market,
   market-on-open and market-on-close orders; minute, hourly or daily feeds chosen
   from the declared intervals, with native consolidation to coarser ones, and

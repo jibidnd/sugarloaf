@@ -33,7 +33,8 @@ class QuantBookServices(QuantConnectDataServices):
 
     Args:
         qb (QuantBook): Native QuantBook instance.
-        tickers (Mapping[InstrumentId, str] | None): Optional stable instrument-to-ticker mapping.
+        tickers (Mapping[InstrumentId, str | Instrument] | None): Optional stable
+            instrument-to-ticker mapping; an ``Instrument`` value declares its asset class.
         api (LeanAPI | None): Optional injectable LeanAPI boundary.
 
     Each experiment requires fresh provider state. Universe, quote, account, and

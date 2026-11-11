@@ -7,6 +7,7 @@ This folder contains public teaching deployment definitions. Private strategy
 composition belongs in an external package.
 
 - [Public EMA manifest](quantconnect/ema.toml) and [factory](quantconnect/config.py)
+- [Index data check](quantconnect/index_check.toml): the VIX index beside SPY ([factory](quantconnect/index_check.py))
 - [External strategy workflow](../docs/EXTERNAL_STRATEGIES.md)
 - [Deploy and inspect](../docs/GUIDE.md#4-deploy-and-inspect)
 

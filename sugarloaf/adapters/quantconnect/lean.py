@@ -22,6 +22,10 @@ MINUTE, HOUR, DAY = timedelta(minutes=1), timedelta(hours=1), timedelta(days=1)
 ORDER_TYPES = ("market", "market_on_open", "market_on_close")
 # Neutral time in force -> member of LEAN's TimeInForce.
 TIMES_IN_FORCE = {"day": "DAY", "gtc": "GOOD_TIL_CANCELED"}
+# Neutral asset class -> member of LEAN's SecurityType, for the classes this adapter
+# subscribes. Each needs its own handling beyond the subscription (adjustment,
+# corporate actions, tradability), so a class is added here only with that handling.
+SECURITY_TYPES = {"equity": "EQUITY", "index": "INDEX"}
 
 
 def native_period(req) -> timedelta:
@@ -88,16 +92,29 @@ class LeanAPI:
             raise CapabilityError("Native feeds are minute, hourly or daily") from error
         return getattr(self.lean.Resolution, name)
 
-    def subscribe(self, algorithm, ticker, req, period=MINUTE):
-        """Create an equity feed at ``period`` with declared session, normalization, fill-forward.
+    def subscribe(self, algorithm, ticker, req, period=MINUTE, asset_class="equity", symbol=None):
+        """Create a US feed at ``period`` with declared session, normalization, fill-forward.
 
         ``period`` is the finest feed any requirement on this security needs (see
         ``native_period``). A node that reads only daily bars gets a daily feed.
+        Every supported asset class goes through LEAN's generic ``add_security``
+        with a Symbol of that class; ``add_equity`` and ``add_index`` are wrappers
+        around the same call. An existing native ``symbol`` (a security already bound,
+        for example by a universe or before a ticker change) is subscribed as is, so
+        the subscription stays on that security rather than on today's holder of the
+        ticker.
         """
+        try:
+            kind = getattr(self.lean.SecurityType, SECURITY_TYPES[asset_class])
+        except KeyError as error:
+            raise CapabilityError(f"QC adapter does not subscribe {asset_class}") from error
         normalization = getattr(req, "normalization", "raw")
         mode = getattr(self.lean.DataNormalizationMode, normalization.upper())
-        return algorithm.add_equity(
-            ticker,
+        if symbol is None:
+            # US indices verified natively: the VIX (see docs/VALIDATION.md).
+            symbol = self.lean.Symbol.create(ticker, kind, self.lean.Market.USA)
+        return algorithm.add_security(
+            symbol,
             self.resolution(period),
             fill_forward=req.fill_forward,
             extended_market_hours=req.session == "extended",
