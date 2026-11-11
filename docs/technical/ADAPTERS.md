@@ -104,8 +104,15 @@ window stores those. Freshness is per reader. Enlarging a window rebuilds and
 warms it.
 
 Neutral IDs map to LEAN security IDs; ticker changes preserve identity.
-`register(instrument, ticker)` supplies an initial mapping. Metadata rejects
-non-equity/non-USA securities. Concurrent requests for one security must agree on
+`register(instrument, binding)` supplies an initial mapping: a ticker for an
+equity, or an `Instrument` record for another asset class, for example
+`Instrument(vix, "VIX", asset_class="index")`. A deployment's `tickers` takes
+the same values. Every class subscribes through LEAN's generic `add_security`
+with a Symbol of that class; supported are US equities (ETFs included) and US
+indices. LEAN reports whether a security is tradable, and execution trades
+equities only. An index's session can differ from the equity session: the VIX's
+daily bar runs 09:30–16:15 New York, so at an equity close the latest VIX bar is
+the previous session's. Metadata rejects other classes and non-USA securities. Concurrent requests for one security must agree on
 session, normalization and fill-forward semantics.
 
 ### Feed periods

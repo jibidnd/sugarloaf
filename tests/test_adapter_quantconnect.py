@@ -22,6 +22,7 @@ from sugarloaf.market.contracts import (
     Bar,
     BarsRequirement,
     Instrument,
+    InstrumentRequirement,
     LiquidityUniverse,
     QuotesRequirement,
     ResourceUpdate,
@@ -99,14 +100,18 @@ class API:
         self.consolidators = []
         self.histories = []
         self.universes = {}
+        self.asset_classes = {}
+        self.passed_symbols = []
 
     def setup(self, algorithm, slippage, leverage, borrow_data=None):
         self.setups.append((slippage, leverage))
 
-    def subscribe(self, algorithm, ticker, req, period=MINUTE):
-        symbol = Symbol("stable:" + ticker, ticker)
+    def subscribe(self, algorithm, ticker, req, period=MINUTE, asset_class="equity", symbol=None):
+        self.passed_symbols.append(symbol)
+        symbol = symbol or Symbol("stable:" + ticker, ticker, asset_class.capitalize())
         self.feeds.setdefault(symbol, period)
         self.subscriptions.append((ticker, period))
+        self.asset_classes[ticker] = asset_class
         if symbol not in algorithm.securities:
             algorithm.securities[symbol] = NS(
                 symbol=symbol,
@@ -536,8 +541,80 @@ def test_delisting_blocks_opening_and_non_equity_metadata_is_rejected():
     option = Symbol("option", "A CALL", "Option")
     instrument = host.services.bind(option)
     platform.securities[option] = platform.securities[symbol]
-    with pytest.raises(CapabilityError, match="US equities"):
+    with pytest.raises(CapabilityError, match="US equity, index only"):
         host.services.context().instruments.get(instrument)
+
+
+VIX = InstrumentId("USA:VIX")
+VIX_INDEX = Instrument(VIX, "VIX", asset_class="index")
+
+
+def test_index_binding_subscribes_an_index():
+    # A deployment declares the index once, as an Instrument record; nodes just ask
+    # for bars of USA:VIX.
+    api, platform = API(), algorithm()
+    services = QuantConnectServices(platform, api=api)
+    services.register(VIX, VIX_INDEX)
+    services.register(A, "A")
+    daily = timedelta(days=1)
+    req = BarsRequirement(Selection((VIX, A)), daily, 3, normalization="raw")
+    services.install("n", ResourceUpdate((req, InstrumentRequirement(Selection((VIX, A)))), ()))
+    services.apply(EventBatch(0, NOW))
+    assert api.asset_classes == {"VIX": "index", "A": "equity"}
+    ctx = services.context(node_id="n")
+    assert len(ctx.market.bars(req, VIX)) == 3
+    assert ctx.instruments.get(VIX).asset_class == "index"
+    assert ctx.instruments.get(A).asset_class == "equity"
+
+
+def test_resubscribing_a_bound_security_keeps_its_native_symbol():
+    # A changed subscription (here fill-forward turned on) must stay on the security already
+    # bound, not on whatever the ticker names today, and keep the index's class.
+    api, platform = API(), algorithm()
+    services = QuantConnectServices(platform, api=api)
+    services.register(VIX, VIX_INDEX)
+    daily = BarsRequirement(Selection((VIX,)), timedelta(days=1), normalization="raw")
+    services.install("n", ResourceUpdate((daily,), ()))
+    services.apply(EventBatch(0, NOW))
+    first = services.symbols[VIX]
+    filled = BarsRequirement(Selection((VIX,)), timedelta(days=1), normalization="raw",
+                             fill_forward=True)
+    services.install("n", ResourceUpdate((filled,), ()))
+    services.apply(EventBatch(1, NOW))
+    assert api.passed_symbols == [None, first]
+    assert services.symbols[VIX] is first
+    assert list(api.asset_classes.values()) == ["index"]
+
+
+def test_lean_subscription_is_one_generic_call_for_every_supported_class():
+    # LEAN's add_equity and add_index both wrap add_security(Symbol); the adapter
+    # calls it directly with a Symbol of the declared class.
+    calls = []
+    api = object.__new__(LeanAPI)
+    api.lean = NS(
+        SecurityType=NS(EQUITY="equity", INDEX="index"),
+        Market=NS(USA="usa"),
+        Symbol=NS(create=lambda ticker, kind, market: (ticker, kind, market)),
+        DataNormalizationMode=NS(RAW="raw", ADJUSTED="adjusted"),
+        Resolution=NS(DAILY="daily", MINUTE="minute"),
+    )
+
+    def add_security(symbol, resolution, **options):
+        calls.append((symbol, resolution, options))
+        return NS(symbol=symbol)
+
+    platform = NS(add_security=add_security)
+    daily = BarsRequirement(Selection((VIX,)), timedelta(days=1), normalization="raw")
+    assert api.subscribe(platform, "VIX", daily, DAY, "index") == ("VIX", "index", "usa")
+    api.subscribe(platform, "SPY", BarsRequirement(Selection((A,))), MINUTE)
+    assert calls[0][1:] == (
+        "daily",
+        {"fill_forward": False, "extended_market_hours": False, "data_normalization_mode": "raw"},
+    )
+    assert calls[1][0] == ("SPY", "equity", "usa")
+    assert calls[1][2]["data_normalization_mode"] == "adjusted"
+    with pytest.raises(CapabilityError, match="does not subscribe forex"):
+        api.subscribe(platform, "EURUSD", daily, DAY, "forex")
 
 
 def test_multi_instrument_synchronous_fills_are_drained_before_reconciliation():
@@ -644,6 +721,7 @@ def native_bar(end, price):
 
 def test_native_indicator_shared_window_prefill_admission_and_late_input():
     from sugarloaf.market.contracts import IndicatorRequirement
+
 
     api, platform = IndicatorAPI(), algorithm()
     provider = QuantConnectServices(platform, api=api)

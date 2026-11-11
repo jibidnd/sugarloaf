@@ -101,8 +101,9 @@ class QuantConnectHost:
         graph (CompiledGraph): Fresh position-producing compiled graph.
         symbols (Mapping[InstrumentId, Symbol] | None): Optional caller-owned
             instrument-to-native-symbol mapping.
-        tickers (Mapping[InstrumentId, str] | None): Optional initial stable instrument-to-ticker
-            mapping.
+        tickers (Mapping[InstrumentId, str | Instrument] | None): Optional initial stable
+            instrument-to-ticker mapping; an ``Instrument`` value declares another asset
+            class, such as an index.
         constraints (PortfolioConstraints | None): Account execution-safety limits.
         policy (ExecutionPolicy | None): Supported order and staleness settings.
         api (LeanAPI | None): Optional injectable LeanAPI boundary.
