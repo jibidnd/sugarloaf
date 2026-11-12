@@ -201,6 +201,7 @@ class QuantConnectDataServices(ProviderServices):
         self._universe_feeds.pop(name, None)
         self.memberships.pop(name, None)
         self._selected_at.pop(name, None)
+        self.selected_periods.pop(name, None)
         # Reject callbacks captured by the old source after its logical retirement.
         self._universe_generations[name] = self._universe_generations.get(name, 0) + 1
         self.pending_events.append(Event("universe", key=name))
@@ -260,6 +261,10 @@ class QuantConnectDataServices(ProviderServices):
             # LEAN may call twice at one selection time. Keep no-update distinct from empty.
             if self._selected_at.get(definition.name) == now:
                 return self.api.unchanged()
+            # Once selected in a cadence period, membership stands until the next.
+            period = (generation, definition.period(now))
+            if period[1] and self.selected_periods.get(definition.name) == period:
+                return self.api.unchanged()
             rows = []
             for item in data:
                 instrument = self.bind(item.symbol)
@@ -300,6 +305,7 @@ class QuantConnectDataServices(ProviderServices):
                 return self.api.unchanged()
             self.memberships[definition.name] = UniverseMembership(definition.name, members, now)
             self._selected_at[definition.name] = now
+            self.selected_periods[definition.name] = period
             # Publish membership now and queue a trigger for the next data boundary;
             # a selection callback does not evaluate the graph on its own.
             self.pending_events.append(Event("universe", key=definition.name))

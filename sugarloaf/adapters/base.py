@@ -209,6 +209,8 @@ class ProviderServices:
         self.resources = {}
         self.readiness = {}
         self.memberships = {}
+        # Universe name -> (definition, cadence period) of its last selection.
+        self.selected_periods = {}
         self.selection_inputs = {}
         self.owners = {}
         # Contexts bind to this version. Mutations invalidate their lazy reads
@@ -353,12 +355,17 @@ class ProviderServices:
                 # is available at this graph boundary.
                 source = self.selection_inputs.get(definition.name)
                 if source is not None and source[1] <= batch.cutoff:
+                    # Once selected in a cadence period, membership stands until the next.
+                    period = (definition, definition.period(source[1]))
+                    if period[1] and self.selected_periods.get(definition.name) == period:
+                        continue
                     old = self.memberships.get(definition.name)
                     try:
                         members = select(definition, list(source[0]), source[1])
                         self.memberships[definition.name] = UniverseMembership(
                             definition.name, members, source[1]
                         )
+                        self.selected_periods[definition.name] = period
                     except NotReady:
                         # Missing inputs are explicitly unready, not a valid empty
                         # universe that a strategy can interpret as its selection.
@@ -685,7 +692,7 @@ class _ContextServices:
         # Apply lookback after filtering. Missing/stale history raises NotReady;
         # no padding or nearby sample is invented to satisfy the requirement.
         values = values[-req.lookback :]
-        if len(values) < req.lookback:
+        if len(values) < (getattr(req, "min_lookback", None) or req.lookback):
             raise NotReady(f"Insufficient history: {instrument.value}")
         last = values[-1].end if isinstance(req, BarsRequirement) else values[-1].time
         if self.ctx.now - last > req.max_age:
