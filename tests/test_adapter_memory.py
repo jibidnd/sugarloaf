@@ -96,6 +96,65 @@ def test_universe_refresh_empty_missing_weight_and_retention():
         services.context(node_id="etf").market.membership("etf")
 
 
+def test_a_universe_is_selected_once_per_cadence_period():
+    definition = LiquidityUniverse("yearly", 1, cadence="yearly")
+    services = MemoryServices()
+    services.install("node", ResourceUpdate((UniverseRequirement(definition),), ()))
+    seq = 0
+
+    def refresh(rows, at):
+        nonlocal seq
+        seq += 1
+        services.set_selection("yearly", rows, at)
+        return services.apply(EventBatch(seq, at, (Event("universe"),)))
+
+    jan, dec, next_jan = (datetime(y, m, 2, 21, tzinfo=UTC)
+                          for y, m in ((2025, 1), (2025, 12), (2026, 1)))
+    assert refresh([SelectionRow(A, 20, 5, 100)], jan)
+    assert not refresh([SelectionRow(B, 20, 5, 100)], dec)
+    assert services.memberships["yearly"].members == (A,)
+    assert refresh([SelectionRow(B, 20, 5, 100)], next_jan)
+    assert services.memberships["yearly"].members == (B,)
+    with pytest.raises(ContractError, match="cadence"):
+        LiquidityUniverse("u", 1, cadence="hourly")
+
+
+def test_cadence_periods_and_a_failed_selection_retried_in_its_period():
+    def period(cadence, *ymd):
+        return LiquidityUniverse("u", 1, cadence=cadence).period(datetime(*ymd, 5, tzinfo=UTC))
+
+    assert period("weekly", 2024, 12, 29) != period("weekly", 2024, 12, 30)
+    assert period("quarterly", 2025, 3, 31) != period("quarterly", 2025, 4, 1)
+    assert period("yearly", 2025, 12, 31) != period("yearly", 2026, 1, 1)
+    assert period("monthly", 2025, 1, 1) == period("monthly", 2025, 1, 31)
+    definition = LiquidityUniverse("u", 1, require_fundamentals=True, cadence="monthly")
+    services = MemoryServices()
+    services.install("node", ResourceUpdate((UniverseRequirement(definition),), ()))
+    day = datetime(2025, 1, 2, 21, tzinfo=UTC)
+    services.set_selection("u", [SelectionRow(A, 20, 5, 100)], day)  # fundamentals unknown
+    services.apply(EventBatch(0, day, (Event("universe"),)))
+    assert not services.memberships["u"].ready
+    later = day + timedelta(days=1)
+    services.set_selection("u", [SelectionRow(A, 20, 5, 100, has_fundamentals=True)], later)
+    services.apply(EventBatch(1, later, (Event("universe"),)))
+    assert services.memberships["u"].members == (A,)
+
+
+def test_a_minimum_lookback_makes_a_short_history_ready():
+    full = BarsRequirement(Selection((A,)), lookback=3)
+    short = replace(full, min_lookback=2)
+    services = MemoryServices([Instrument(A, "A")])
+    services.install("n", ResourceUpdate((full, short), ()))
+    services.put_bars(full, (bar(NOW - timedelta(minutes=1)), bar()))
+    batch = EventBatch(1, NOW)
+    services.apply(batch)
+    market = services.context(batch, "n").market
+    assert market.ready(short) == (A,) and market.ready(full) == ()
+    assert len(market.bars(short, A)) == 2
+    with pytest.raises(ContractError, match="minimum lookback"):
+        replace(full, min_lookback=4)
+
+
 def test_readiness_calendar_and_lazy_portfolio():
     req = BarsRequirement(Selection((A,)), lookback=2)
     services = MemoryServices(

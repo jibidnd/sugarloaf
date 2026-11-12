@@ -1432,6 +1432,25 @@ def test_qc_gateway_accepts_three_order_types_and_reports_a_platform_refusal():
     assert gateway.orders == {}
 
 
+def test_qc_selection_runs_once_per_cadence_period():
+    api, platform = API(), algorithm()
+    services = QuantConnectServices(platform, api=api)
+    definition = LiquidityUniverse("monthly", 1, cadence="monthly")
+    services.install("n", ResourceUpdate((UniverseRequirement(definition),), ()))
+    a, b = Symbol("a", "A"), Symbol("b", "B")
+    rows = [
+        NS(symbol=a, price=100, volume=10, dollar_volume=2000),
+        NS(symbol=b, price=100, volume=10, dollar_volume=1000),
+    ]
+    platform.utc_time = datetime(2025, 1, 2, 5, tzinfo=UTC)
+    assert api.selectors["monthly"](rows) == [a]
+    platform.utc_time = datetime(2025, 1, 31, 5, tzinfo=UTC)
+    assert api.selectors["monthly"](rows[::-1][:1]) == "UNCHANGED"
+    assert services.memberships["monthly"].members == (services.bind(a),)
+    platform.utc_time = datetime(2025, 2, 3, 5, tzinfo=UTC)
+    assert api.selectors["monthly"](rows[1:]) == [b]
+
+
 def test_qc_selection_passes_the_fundamentals_flag_to_a_universe_that_requires_it():
     api, platform = API(), algorithm()
     services = QuantConnectServices(platform, api=api)

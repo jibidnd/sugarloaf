@@ -223,7 +223,11 @@ selection inputs leave membership unavailable. Unchanged and empty differ.
 QC uses synchronous daily fundamental/ETF callbacks. Only default
 `Trigger("universe")` refresh is supported; custom keyed, timed or interval refresh
 fails explicitly. Duplicate native callbacks at one selection time return
-`Universe.UNCHANGED`.
+`Universe.UNCHANGED`, as do callbacks inside a cadence period already selected
+(`cadence="monthly"`, for example): the universe then keeps its members and LEAN
+adds nothing. A new LEAN universe starts empty, so one replaced mid-period (a
+changed definition, or a reader asking for a different bar feed) selects again at
+its first callback; the memory adapter keeps its members in that case.
 
 A changed definition under one neutral name creates a new native source.
 Generation checks prevent obsolete callbacks publishing membership. Once the last

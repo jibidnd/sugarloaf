@@ -9,7 +9,7 @@ service protocols and Context live in [core/services.py](../../sugarloaf/core/se
 
 | Requirement | Meaning |
 | --- | --- |
-| `BarsRequirement` | Selection, interval, lookback, session, normalization, fill-forward, maximum age and `require_all` |
+| `BarsRequirement` | Selection, interval, lookback (and `min_lookback`, the fewest bars a recently listed security needs to be ready), session, normalization, fill-forward, maximum age and `require_all` |
 | `QuotesRequirement` | Bid/ask observations, interval, lookback, session and freshness |
 | `IndicatorRequirement` | Native indicator over a bar source, immutable parameters and valid output window |
 | `UniverseRequirement` | Named liquidity, historical ETF-constituent or fundamental-rule definition |
@@ -49,6 +49,16 @@ practice it drops funds and notes, which otherwise rank among the most liquid
 securities. A provider that cannot say reports the universe as not ready.
 Membership holds each security once, even when the provider's selection data
 lists it twice.
+
+Every universe takes `cadence`: "daily", "weekly" (ISO weeks), "monthly",
+"quarterly" or "yearly". Membership is then recomputed at the first refresh in each
+new period and stands until the next, so a reference panel can be ranked once a year
+or a traded universe monthly without members hopping in and out daily. Periods
+follow the UTC date of the selection time: QuantConnect selects around midnight New
+York time, on the new date; a selection at or after 19:00 New York time falls in the
+next UTC day. Without a cadence every refresh recomputes. A member delisted mid-period
+stays a member until the next period, so read a cadenced universe's bars with
+`require_all=False`.
 
 `FundamentalUniverse(name, rule)` selects with a rule over the provider's daily
 fundamental records: `rule(at, records)` receives the selection time and one

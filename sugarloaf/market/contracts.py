@@ -2,7 +2,7 @@
 
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
-from datetime import datetime, time, timedelta
+from datetime import UTC, datetime, time, timedelta
 
 from sugarloaf.core.errors import CapabilityError, ContractError
 from sugarloaf.core.primitives import InstrumentId, aware, finite, frozen_map
@@ -178,7 +178,11 @@ class BarsRequirement(DataRequirement):
     Attributes:
         selection: Explicit instruments or named universe.
         interval: Positive bar duration supported by the provider.
-        lookback: Minimum number of usable observations.
+        lookback: Number of usable observations read, and the minimum unless
+            ``min_lookback`` is set.
+        min_lookback: Fewest observations with which a security is ready; a read
+            then returns what exists, up to ``lookback``. For a security with a
+            short history, such as a recent listing.
         session: Regular or extended trading session.
         normalization: Raw, adjusted, split_adjusted, or total_return pricing.
         fill_forward: Permit provider-generated fill-forward bars.
@@ -205,11 +209,14 @@ class BarsRequirement(DataRequirement):
     # long weekend; an intraday strategy should set something much shorter.
     max_age: timedelta = timedelta(days=4)
     require_all: bool = True
+    min_lookback: int | None = None
 
     def __post_init__(self):
         # Reject impossible settings here, before any provider subscribes to data.
         if self.interval <= timedelta(0) or self.lookback < 1 or self.max_age < timedelta(0):
             raise ContractError("Invalid bar interval, lookback, or freshness")
+        if self.min_lookback is not None and not 1 <= self.min_lookback <= self.lookback:
+            raise ContractError("The minimum lookback must be between 1 and the lookback")
         if self.session not in {"regular", "extended"}:
             raise ContractError("Unknown trading session")
         if self.normalization not in {"raw", "adjusted", "split_adjusted", "total_return"}:
@@ -336,7 +343,53 @@ class InstrumentRequirement(Requirement):
 
 
 @dataclass(frozen=True)
-class LiquidityUniverse:
+class Universe:
+    """A named membership rule, and when its membership is recomputed.
+
+    The refresh trigger says when the provider may recompute membership. A cadence
+    limits that to the first refresh in each new day, week, month, quarter or year
+    (by the UTC date of the selection time); without one every refresh recomputes.
+    Between refreshes membership stands as last selected.
+    """
+
+    # Example: the 200 most liquid stocks, ranked once a year:
+    #   LiquidityUniverse("panel", 200, cadence="yearly")
+    name: str
+    # Membership may be recomputed only when this trigger fires.
+    refresh: Trigger = field(default=Trigger("universe"), kw_only=True)
+    cadence: str | None = field(default=None, kw_only=True)
+    # How long a member's data resources are kept after it drops out, so a brief
+    # exit and re-entry does not discard and re-warm its history.
+    minimum_residence: timedelta = field(default=timedelta(0), kw_only=True)
+
+    def __post_init__(self):
+        if type(self) is Universe:
+            raise ContractError("Declare a specific universe, such as LiquidityUniverse")
+        if not self.name or self.minimum_residence < timedelta(0):
+            raise ContractError("Invalid universe")
+        if self.cadence is not None and self.cadence not in CADENCES:
+            raise ContractError(f"Universe cadence must be one of {', '.join(CADENCES)}")
+
+    def period(self, at: datetime) -> tuple | None:
+        """The cadence period containing selection time ``at`` (None without a cadence)."""
+        aware(at)
+        if self.cadence is None:
+            return None
+        day = at.astimezone(UTC).date()
+        return {
+            "daily": (day,),
+            "weekly": tuple(day.isocalendar())[:2],
+            "monthly": (day.year, day.month),
+            "quarterly": (day.year, (day.month - 1) // 3),
+            "yearly": (day.year,),
+        }[self.cadence]
+
+
+CADENCES = ("daily", "weekly", "monthly", "quarterly", "yearly")
+
+
+@dataclass(frozen=True)
+class LiquidityUniverse(Universe):
     """Point-in-time price/volume filtering followed by descending dollar-volume selection.
 
     The rule is neutral; the provider supplies candidate rows and owns native
@@ -345,7 +398,6 @@ class LiquidityUniverse:
 
     # Example: the 500 most liquid stocks priced at USD5 or more:
     #   LiquidityUniverse("liquid-500", 500, min_price=5)
-    name: str
     count: int
     min_price: float = 0
     min_volume: float = 0
@@ -353,33 +405,23 @@ class LiquidityUniverse:
     # practice this drops funds and notes, which otherwise rank among the most
     # liquid "stocks". The filter is applied before the count is taken.
     require_fundamentals: bool = False
-    # Membership is recomputed only when this trigger fires.
-    refresh: Trigger = Trigger("universe")
-    # How long a member's data resources are kept after it drops out, so a brief
-    # exit and re-entry does not discard and re-warm its history.
-    minimum_residence: timedelta = timedelta(0)
-    source: str = "us_equity_liquidity"
+    source: str = field(default="us_equity_liquidity", kw_only=True)
 
     def __post_init__(self):
+        super().__post_init__()
         finite(self.min_price, self.min_volume)
-        if (
-            not self.name
-            or self.count < 0
-            or min(self.min_price, self.min_volume) < 0
-            or self.minimum_residence < timedelta(0)
-        ):
+        if self.count < 0 or min(self.min_price, self.min_volume) < 0:
             raise ContractError("Invalid liquidity selection")
 
 
 @dataclass(frozen=True)
-class ETFConstituentsUniverse:
+class ETFConstituentsUniverse(Universe):
     """Historical ETF constituents selected by weights and explicit missing-weight policy.
 
     The ETF is a stable anchor identity needing a provider binding; discovered
     constituents are bound separately.
     """
 
-    name: str
     etf: InstrumentId
     # Keep the `count` largest weights, and/or those of at least `min_weight`.
     count: int | None = None
@@ -387,16 +429,11 @@ class ETFConstituentsUniverse:
     # What to do with a constituent whose weight the data source omits:
     # "exclude" it, "include" it (ranked last), or "error" (membership not ready).
     missing_weight: str = "exclude"
-    refresh: Trigger = Trigger("universe")
-    minimum_residence: timedelta = timedelta(0)
-    source: str = "historical_etf_constituents"
+    source: str = field(default="historical_etf_constituents", kw_only=True)
 
     def __post_init__(self):
-        if (
-            not self.name
-            or (self.count is not None and self.count < 0)
-            or self.minimum_residence < timedelta(0)
-        ):
+        super().__post_init__()
+        if self.count is not None and self.count < 0:
             raise ContractError("Invalid ETF selection")
         if self.min_weight is not None:
             finite(self.min_weight)
@@ -436,7 +473,7 @@ class FundamentalRecord:
 
 
 @dataclass(frozen=True)
-class FundamentalUniverse:
+class FundamentalUniverse(Universe):
     """Members chosen by a rule over the provider's daily fundamental records.
 
     ``rule(at, records)`` receives the selection time and one FundamentalRecord per
@@ -454,17 +491,15 @@ class FundamentalUniverse:
     # filers(at) is the strategy's own point-in-time source of CIKs:
     #   FundamentalUniverse("recent-filers",
     #                       lambda at, rows: [r.instrument for r in rows if r.cik in filers(at)])
-    name: str
     rule: Callable[[datetime, tuple[FundamentalRecord, ...]], Iterable[InstrumentId]] = field(
         compare=False
     )
     version: str = "1"
-    refresh: Trigger = Trigger("universe")
-    minimum_residence: timedelta = timedelta(0)
-    source: str = "us_equity_fundamental"
+    source: str = field(default="us_equity_fundamental", kw_only=True)
 
     def __post_init__(self):
-        if not self.name or not callable(self.rule) or self.minimum_residence < timedelta(0):
+        super().__post_init__()
+        if not callable(self.rule):
             raise ContractError("Invalid fundamental selection")
 
 
@@ -475,7 +510,7 @@ class UniverseRequirement(Requirement):
     Other nodes may read the same name. Every owner must give the same definition.
     """
 
-    definition: LiquidityUniverse | ETFConstituentsUniverse | FundamentalUniverse
+    definition: Universe
 
 
 @dataclass(frozen=True)
