@@ -15,6 +15,7 @@ service protocols and Context live in [core/services.py](../../sugarloaf/core/se
 | `UniverseRequirement` | Named liquidity, historical ETF-constituent or fundamental-rule definition |
 | `FundamentalsRequirement` | The selected securities' latest fundamental records, with a maximum age |
 | `ShortAvailabilityRequirement` | The selected securities' latest borrow terms |
+| `EarningsRequirement` | The selected securities' earnings-calendar listings published within a lookback |
 | `InstrumentRequirement` | Metadata/calendar access for a selection |
 | `PortfolioRequirement` | Account access and selection |
 
@@ -74,7 +75,19 @@ changes. CIKs are stored without leading zeros.
 `FundamentalRecord` known at graph time, and `ctx.market.short_availability(req,
 instrument)` its latest `ShortAvailability` (annual fee rate, shortable quantity).
 A missing, future-dated or (for fundamentals) older-than-`max_age` record raises
-`NotReady`. The price in a fundamental record is the traded price of its date; use it,
+`NotReady`. A fundamental record also carries the security's Morningstar sector code
+(`sector`: 101 basic materials, 102 consumer cyclical, 103 financial services, 104 real
+estate, 205 consumer defensive, 206 healthcare, 207 utilities, 308 communication
+services, 309 energy, 310 industrials, 311 technology), or None.
+
+`ctx.market.earnings(req, instrument)` returns the security's `EarningsRecord`s
+published from `req.lookback` before graph time up to graph time, oldest first. Each
+gives the report's session date and its timing (`"before_open"`, `"after_close"` or
+`"unknown"`) as the calendar listed it at the record's `time`; a moved date appears as
+a newer record. Whether a report falls in the next session is read from the latest
+record published before the session. No listing is an empty tuple (no report listed, or
+no coverage), not `NotReady`. A node that refits on years of history declares a long
+lookback, for example `EarningsRequirement(selection, lookback=timedelta(days=6600))`. The price in a fundamental record is the traded price of its date; use it,
 or raw bars, for price levels (see [corporate actions](ADAPTERS.md#corporate-actions-and-data-resets)).
 
 Declare `ema` in the node's requirements. Within `evaluate`, read

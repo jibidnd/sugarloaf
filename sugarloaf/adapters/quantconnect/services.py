@@ -14,6 +14,7 @@ from sugarloaf.market.contracts import (
     Bar,
     BarsRequirement,
     Capability,
+    EarningsRecord,
     FundamentalRecord,
     FundamentalUniverse,
     IndicatorPoint,
@@ -107,6 +108,11 @@ class QuantConnectDataServices(ProviderServices):
         # lifecycle resets; receipt timestamps remain separate from observation ends.
         self._pending_data = []
         self._prefilling = False
+        # Earnings calendar: per security SID, its listings as (publication time, report
+        # date, timing), kept only when the listing changes; and the span loaded.
+        self._earnings_calendar = {}
+        self._earnings_last = {}
+        self._earnings_span = None
         if account_services:
             self.api.setup(algorithm, cost_rate, leverage, borrow_data)
 
@@ -1028,6 +1034,39 @@ class QuantConnectDataServices(ProviderServices):
             return None
         return _fundamental_record(instrument, record, utc(self.algorithm.utc_time, "UTC"))
 
+    def _earnings(self, instrument, start, cutoff):
+        """Earnings listings for the instrument published in [start, cutoff].
+
+        The calendar is one native dataset for all securities. It is read through
+        history in date ranges as reads need them (never past the read's cutoff, so
+        nothing later than graph time is fetched) and kept per security; a security is
+        matched by its permanent identifier, the same SID string its InstrumentId binds.
+        """
+        symbol = self.symbols.get(instrument)
+        key = str(symbol.id) if symbol is not None else instrument.value
+        first, last = start.astimezone(UTC), cutoff.astimezone(UTC)
+        span = self._earnings_span
+        if span is None or first < span[0]:
+            # A longer look back than any before: reload from the new start.
+            self._earnings_calendar, self._earnings_last = {}, {}
+            self._load_earnings(first, max(span[1], last) if span else last)
+            span = (first, max(span[1], last) if span else last)
+        elif last > span[1]:
+            self._load_earnings(span[1], last)
+            span = (span[0], last)
+        self._earnings_span = span
+        return [EarningsRecord(instrument, at, report, timing)
+                for at, report, timing in self._earnings_calendar.get(key, ())
+                if first <= at <= last]
+
+    def _load_earnings(self, start, end):
+        # The calendar repeats a listing every day until the report; only a change of
+        # listing (a new report date or timing) is kept, with the day it first appeared.
+        for sid, at, report, timing in self.api.earnings(self.algorithm, start, end):
+            if self._earnings_last.get(sid) != (report, timing):
+                self._earnings_last[sid] = (report, timing)
+                self._earnings_calendar.setdefault(sid, []).append((at, report, timing))
+
     def _short_availability(self, instrument, cutoff):
         security = self._subscribed(instrument)
         provider = security.shortable_provider
@@ -1108,6 +1147,12 @@ def _fundamental_record(instrument, item, at):
     reference = getattr(item, "company_reference", None)
     cik = getattr(reference, "cik", None) if reference is not None else None
     cik = (str(cik).strip().lstrip("0") or None) if cik is not None else None
+    classification = getattr(item, "asset_classification", None)
+    sector = getattr(classification, "morningstar_sector_code", None) if classification else None
+    try:
+        sector = int(sector) or None if sector is not None else None
+    except (TypeError, ValueError):
+        sector = None
     return FundamentalRecord(
         instrument,
         at,
@@ -1115,4 +1160,5 @@ def _fundamental_record(instrument, item, at):
         market_cap=_number(getattr(item, "market_cap", None)) or None,
         price=_number(getattr(item, "price", None)) or None,
         dollar_volume=_number(getattr(item, "dollar_volume", None)),
+        sector=sector,
     )

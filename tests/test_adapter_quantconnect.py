@@ -1628,3 +1628,43 @@ def test_qc_fundamental_rule_failures_and_missing_borrow_data_are_not_silent():
     assert services._short_availability(A, NOW) is None
     with pytest.raises(CapabilityError):
         services._fundamentals(InstrumentId("unsubscribed"), NOW)
+
+
+def test_qc_earnings_calendar_is_read_by_security_and_kept_as_changes():
+    from datetime import date
+
+    from sugarloaf.adapters.quantconnect.services import _fundamental_record
+    from sugarloaf.market.contracts import EarningsRequirement
+
+    day = timedelta(days=1)
+    calls = []
+
+    class EarningsAPI(API):
+        def earnings(self, algorithm, start, end):
+            calls.append((start, end))
+            rows = [("A SID", NOW - 9 * day, date(2025, 1, 9), "after_close"),
+                    ("A SID", NOW - 8 * day, date(2025, 1, 9), "after_close"),  # repeat
+                    ("A SID", NOW - 3 * day, date(2025, 1, 10), "before_open"),  # moved
+                    ("B SID", NOW - 2 * day, date(2025, 1, 6), "unknown"),
+                    ("A SID", NOW + 2 * day, date(2025, 4, 9), "after_close")]
+            return [r for r in rows if start < r[1] <= end]
+
+    api, platform = EarningsAPI(), algorithm()
+    services = QuantConnectServices(platform, api=api)
+    services.symbols[A] = Symbol("A SID", "A")
+    services._external_symbols.add(A)
+    first = services._earnings(A, NOW - 30 * day, NOW)
+    assert [(r.report_date, r.timing) for r in first] == [
+        (date(2025, 1, 9), "after_close"), (date(2025, 1, 10), "before_open")]
+    assert all(r.instrument == A for r in first)
+    # Later reads load only the new range; earlier reads never fetch past their cutoff.
+    later = services._earnings(A, NOW - 30 * day, NOW + 3 * day)
+    assert len(later) == 3 and calls[-1] == (NOW, NOW + 3 * day)
+    assert all(end <= NOW + 3 * day for _, end in calls)
+    # Declarable: the provider accepts the requirement.
+    services.install("n", ResourceUpdate((EarningsRequirement(Selection((A,))),), ()))
+    # The Morningstar sector comes with the fundamental record.
+    item = NS(company_reference=NS(cik="1"), market_cap=1.0, price=1.0, dollar_volume=1.0,
+              asset_classification=NS(morningstar_sector_code=311))
+    assert _fundamental_record(A, item, NOW).sector == 311
+    assert _fundamental_record(A, NS(market_cap=1.0), NOW).sector is None

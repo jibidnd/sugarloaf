@@ -2,7 +2,7 @@
 
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 
 from sugarloaf.core.errors import CapabilityError, ContractError
 from sugarloaf.core.primitives import InstrumentId, aware, finite, frozen_map
@@ -450,7 +450,10 @@ class FundamentalRecord:
     ``time`` is when the provider read the record: it is both the as-of and the knowledge
     time. Fields the provider does not have are None. ``price`` is the record's traded price,
     not a price adjusted for later corporate actions. ``cik`` is the issuer's SEC Central
-    Index Key, stored as text without leading zeros.
+    Index Key, stored as text without leading zeros. ``sector`` is the Morningstar sector
+    code (101 basic materials, 102 consumer cyclical, 103 financial services, 104 real
+    estate, 205 consumer defensive, 206 healthcare, 207 utilities, 308 communication
+    services, 309 energy, 310 industrials, 311 technology).
     """
 
     instrument: InstrumentId
@@ -459,6 +462,7 @@ class FundamentalRecord:
     market_cap: float | None = None
     price: float | None = None
     dollar_volume: float | None = None
+    sector: int | None = None
 
     def __post_init__(self):
         aware(self.time)
@@ -550,6 +554,49 @@ class ShortAvailability:
     def __post_init__(self):
         aware(self.time)
         finite(*(x for x in (self.fee_rate, self.shortable) if x is not None))
+
+
+@dataclass(frozen=True)
+class EarningsRecord:
+    """A listed earnings report, as an earnings calendar showed it at ``time``.
+
+    ``report_date`` is the session date of the report and ``timing`` when it falls:
+    ``"before_open"`` (before that session's open), ``"after_close"`` (after its close) or
+    ``"unknown"``. ``time`` is when the provider published the listing, so a reader at a
+    given instant sees only listings published by then; a report date that is later moved
+    appears as a newer listing with the new date.
+    """
+
+    instrument: InstrumentId
+    time: datetime
+    report_date: date
+    timing: str = "unknown"
+
+    def __post_init__(self):
+        aware(self.time)
+        if self.timing not in EARNINGS_TIMINGS:
+            raise ContractError(f"Unknown earnings timing: {self.timing}")
+
+
+EARNINGS_TIMINGS = ("before_open", "after_close", "unknown")
+
+
+@dataclass(frozen=True)
+class EarningsRequirement(DataRequirement):
+    """Read authorization for the selected securities' earnings-calendar listings.
+
+    ``ctx.market.earnings(req, instrument)`` returns every listing published from
+    ``lookback`` before graph time up to graph time, oldest first; a security with no
+    listings gives an empty tuple (no report listed, or no coverage).
+    """
+
+    selection: Selection
+    lookback: timedelta = timedelta(days=30)
+    require_all: bool = False
+
+    def __post_init__(self):
+        if self.lookback < timedelta(0):
+            raise ContractError("Earnings lookback must be nonnegative")
 
 
 @dataclass(frozen=True)

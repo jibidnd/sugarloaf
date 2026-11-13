@@ -246,7 +246,19 @@ fundamental selection at 7–8 AM Eastern.
 
 Fundamental reads come from each subscribed security's `fundamentals` record, which
 LEAN keeps point-in-time; a security must be subscribed (a universe member or a bar
-reader) to have one. Borrow terms come from the security's shortable provider: `shortable_quantity`
+reader) to have one. The sector is its `asset_classification.morningstar_sector_code`.
+
+Earnings reads come from QuantConnect's EODHD Upcoming Earnings dataset
+(`QuantConnect.DataSource.EODHDUpcomingEarnings`, added once as the custom symbol
+`earnings`). Each native record is stamped with the day it was published and lists one
+security's next report date and `report_time` (before or after market). The adapter
+reads it through history, month by month, from the earliest lookback any read asks
+for up to the read's cutoff (never later), and extends it as later reads come; it keeps
+a listing per security only when it changes (the calendar repeats a listing every day
+until the report), dated the day it first appeared, which is known from the start of
+that day in New York. Records match a security by its permanent identifier (SID), so a
+renamed security keeps its listings. The memory adapter takes listings directly
+(`MemoryServices(earnings={instrument: [EarningsRecord, ...]})`). Borrow terms come from the security's shortable provider: `shortable_quantity`
 and `fee_rate` (Interactive Brokers data, for example). LEAN's default provider
 reports a zero fee and unlimited quantity for everything; the adapter treats that
 as no data and returns no record. The brokerage model does not attach Interactive

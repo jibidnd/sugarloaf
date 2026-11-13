@@ -594,6 +594,46 @@ class LeanAPI:
             ),
         )
 
+    def earnings(self, algorithm, start, end):
+        """Earnings-calendar listings published in (start, end], as rows of (SID string,
+        aware publication time, report date, timing), from QuantConnect's EODHD Upcoming
+        Earnings dataset. Each native record is stamped with the day its listing was
+        published and gives the security's next report date and whether it falls before
+        the open or after the close."""
+        from QuantConnect.DataSource import EODHDUpcomingEarnings
+
+        if getattr(self, "_earnings_symbol", None) is None:
+            self._earnings_symbol = algorithm.add_data(EODHDUpcomingEarnings, "earnings").symbol
+        timings = {"BEFORE_MARKET": "before_open", "BEFOREMARKET": "before_open",
+                   "AFTER_MARKET": "after_close", "AFTERMARKET": "after_close"}
+        zone = self._new_york()
+        month = start
+        while month < end:
+            stop = min(end, (month.replace(day=1) + timedelta(days=32)).replace(day=1))
+            frame = algorithm.history(EODHDUpcomingEarnings, self._earnings_symbol,
+                                      month.astimezone(UTC).replace(tzinfo=None),
+                                      stop.astimezone(UTC).replace(tzinfo=None))
+            month = stop
+            if frame is None or len(frame) == 0:
+                continue
+            frame = frame.reset_index()
+            for symbol, stamp, report, timing in zip(
+                    frame["symbol"], frame["time"], frame["reportdate"], frame["reporttime"]):
+                # The stamp is the publication day; it is known from the start of that
+                # day in New York.
+                stamp = datetime(stamp.year, stamp.month, stamp.day, tzinfo=zone).astimezone(UTC)
+                if not (start < stamp <= end):
+                    continue
+                key = str(timing).upper().replace(" ", "")
+                yield (str(symbol.id) if hasattr(symbol, "id") else str(symbol), stamp,
+                       report.date() if hasattr(report, "date") else report,
+                       timings.get(key, "unknown"))
+
+    def _new_york(self):
+        from zoneinfo import ZoneInfo
+
+        return ZoneInfo("America/New_York")
+
     def corporate_actions(self, algorithm, symbol, start, end):
         """Sparse native split/dividend facts staged by causal research replay."""
         local_start = self.lean.Extensions.convert_from_utc(

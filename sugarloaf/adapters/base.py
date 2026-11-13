@@ -14,6 +14,7 @@ from sugarloaf.core.services import Context
 from sugarloaf.market.contracts import (
     Bar,
     BarsRequirement,
+    EarningsRequirement,
     ETFConstituentsUniverse,
     FundamentalsRequirement,
     FundamentalUniverse,
@@ -251,6 +252,7 @@ class ProviderServices:
             IndicatorRequirement,
             QuotesRequirement,
             FundamentalsRequirement,
+            EarningsRequirement,
             ShortAvailabilityRequirement,
             PortfolioRequirement,
             InstrumentRequirement,
@@ -492,6 +494,7 @@ class ProviderServices:
                         QuotesRequirement,
                         IndicatorRequirement,
                         FundamentalsRequirement,
+                        EarningsRequirement,
                         ShortAvailabilityRequirement,
                     ),
                 )
@@ -519,6 +522,9 @@ class ProviderServices:
             elif isinstance(req, ShortAvailabilityRequirement):
                 for instrument in ctx.market.resolve(req.selection):
                     ctx.market.short_availability(req, instrument)
+            elif isinstance(req, EarningsRequirement):
+                for instrument in ctx.market.resolve(req.selection):
+                    ctx.market.earnings(req, instrument)
             elif isinstance(req, UniverseRequirement):
                 ctx.market.membership(req.definition.name)
             elif isinstance(req, InstrumentRequirement):
@@ -546,6 +552,10 @@ class ProviderServices:
     def _short_availability(self, instrument, cutoff):
         """The latest ShortAvailability known at ``cutoff``, or None."""
         raise CapabilityError("Provider has no borrow data")
+
+    def _earnings(self, instrument, start, cutoff):
+        """Earnings listings published in [start, cutoff], oldest first."""
+        raise CapabilityError("Provider has no earnings calendar")
 
     def _session_times(self, instrument, day):
         raise CapabilityError("Provider calendar unavailable")
@@ -719,6 +729,18 @@ class _ContextServices:
             raise NotReady(f"Stale fundamental record: {instrument.value}")
         return record
 
+    def earnings(self, requirement, instrument):
+        """The selected security's earnings listings published within the lookback."""
+        self._check(requirement)
+        if instrument not in self.resolve(requirement.selection):
+            raise CapabilityError("Instrument outside declared selection")
+        start = self.ctx.now - requirement.lookback
+        records = self.ctx.compute(
+            "earnings", (instrument, requirement.lookback), (self.ctx.now,), "1",
+            lambda: tuple(self.owner._earnings(instrument, start, self.ctx.now)))
+        # A listing published after graph time is never shown.
+        return tuple(r for r in records if start <= r.time <= self.ctx.now)
+
     def short_availability(self, requirement, instrument):
         """The selected security's latest borrow terms known at graph time."""
         self._check(requirement)
@@ -752,6 +774,8 @@ class _ContextServices:
                     self.fundamentals(requirement, instrument)
                 elif isinstance(requirement, ShortAvailabilityRequirement):
                     self.short_availability(requirement, instrument)
+                elif isinstance(requirement, EarningsRequirement):
+                    self.earnings(requirement, instrument)
                 else:
                     self._read(requirement, instrument)
             except NotReady:
