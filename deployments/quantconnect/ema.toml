@@ -25,3 +25,5 @@ include = ["examples/ema.py", "examples/ema_research.ipynb", "deployments/quantc
 [parameters]
 # USA equity ticker read by ema_definition; missing/empty defaults to "SPY".
 ticker = "SPY"
+# Consolidation interval of the minute feed, in minutes.
+interval_minutes = "5"

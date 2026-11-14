@@ -1,0 +1,10 @@
+# The EMA score alone, as a forecast run: views are archived to the Object Store,
+# nothing is traded. Field reference: ../../docs/EXTERNAL_STRATEGIES.md#manifest-fields
+name = "Sugarloaf public EMA forecasts"
+root = "../.."
+factory = "deployments.quantconnect.config:ema_forecasts"
+include = ["examples/ema.py", "examples/ema_research.ipynb", "deployments/quantconnect/config.py"]
+
+[parameters]
+ticker = "SPY"
+interval_minutes = "5"
