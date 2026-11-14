@@ -1,7 +1,5 @@
-"""LEAN imports are delayed until a real QuantConnect host is constructed."""
+"""LEAN imports are delayed until a real QuantConnect adapter is constructed."""
 
-from .host import QuantConnectHost
-from .research import QuantBookServices
-from .services import QuantConnectServices
+from .adapter import QuantConnectAdapter, Ticker
 
-__all__ = ["QuantConnectHost", "QuantConnectServices", "QuantBookServices"]
+__all__ = ["QuantConnectAdapter", "Ticker"]

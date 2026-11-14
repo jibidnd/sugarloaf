@@ -14,6 +14,7 @@ from typing import Callable, Iterable, Mapping, Protocol
 import numpy as np
 from scipy.stats import kendalltau, rankdata
 
+from sugarloaf.core.data import Observation
 from sugarloaf.core.errors import CapabilityError, ContractError, NotReady
 from sugarloaf.core.primitives import InstrumentId, Interval, aware, finite, frozen_map
 from sugarloaf.core.views import (
@@ -26,7 +27,6 @@ from sugarloaf.core.views import (
     Target,
     View,
 )
-from sugarloaf.market.contracts import Observation
 from sugarloaf.research.archive import ForecastRecord
 
 
@@ -87,7 +87,7 @@ class ReturnOutcomeResolver:
     requested time, or None. Its availability must be <= as_of. The source owns
     adjustment conventions and which price stands for that time (Sugarloaf's
     QuantConnect source reads it at the first clock tick at or after it; see
-    ``sugarloaf.adapters.base.price_at_tick``). The resolver itself performs no
+    ``sugarloaf.research.prices.price_at_tick``). The resolver itself performs no
     substitution. Positive start values and nonnegative end values are required.
     """
 

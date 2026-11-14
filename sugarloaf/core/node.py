@@ -1,21 +1,37 @@
-"""Graph ports declare concrete types and semantic capabilities."""
+"""The node interface: declared inputs, view ports, and callbacks in the shape of an
+alpha model.
 
+A node is any object with the attributes and methods below; it need not inherit
+from ``Node``. Its data declarations (``inputs``, ``indicators``, ``schedules``,
+``warm_up``) are read once by the runner, which asks the adapter to set them up.
+Its view ports (``ports``, ``outputs``) wire it into the graph. Its callbacks are
+called by the runner as the platform's callbacks arrive, in topological order.
+
+A node owns its state. It keeps what it needs between callbacks itself, as an
+alpha model keeps per-symbol data; the platform keeps rolling windows and
+indicators for it (``ctx.window``, ``ctx.indicator``).
+"""
+
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Mapping, Protocol, Sequence
+from datetime import datetime
+from typing import Protocol, runtime_checkable
 
+from sugarloaf.core.data import Slice
 from sugarloaf.core.errors import ContractError, NotReady
-from sugarloaf.core.primitives import frozen_map
-from sugarloaf.core.services import Context
+from sugarloaf.core.inputs import Indicator, Input, Schedule, WarmUp
+from sugarloaf.core.primitives import InstrumentId, frozen_map
 from sugarloaf.core.views import Message
-from sugarloaf.market.contracts import Requirement, ResourceUpdate, Trigger
+
+# What a callback returns: the node's complete current output, by output port.
+# A port left out withdraws its previous views. None withdraws everything.
+Views = Mapping[str, Sequence[Message]] | None
 
 
 @dataclass(frozen=True)
 class InputSpec:
-    """Accepted View semantics and cardinality for one input port."""
+    """Accepted View semantics and cardinality for one upstream port."""
 
-    # Cardinality is per destination port after connected producer outputs have
-    # been concatenated. Semantic filters add requirements beyond Python View type.
     accepts: tuple[type[Message], ...]
     min_count: int = 1
     max_count: int | None = None
@@ -33,8 +49,6 @@ class InputSpec:
             NotReady: Fewer Views than min_count are available.
             ContractError: Count exceeds max_count or a View has unsupported semantics.
         """
-        # Missing required evidence is NotReady, allowing output withdrawal. Receiving
-        # more Views or unsupported semantics is a contract violation, not missing data.
         if len(views) < self.min_count:
             raise NotReady("Required input views are missing")
         if self.max_count is not None and len(views) > self.max_count:
@@ -59,8 +73,6 @@ class InputSpec:
 class OutputSpec:
     """View classes and optional semantic guarantees offered by one output port."""
 
-    # Declare capabilities for graph compilation; the runtime still checks each
-    # actual emitted View against these guarantees.
     emits: tuple[type[Message], ...]
     statements: tuple[type, ...] = ()
     quantities: tuple[str, ...] = ()
@@ -71,8 +83,6 @@ class OutputSpec:
 class NodeInputs:
     """Current upstream Views, concatenated by destination port in edge order."""
 
-    # These are the current upstream snapshots for one evaluation. Retaining old
-    # inputs in node state does not keep their authority alive after expiry.
     by_port: Mapping[str, tuple[Message, ...]]
 
     def __post_init__(self):
@@ -80,54 +90,125 @@ class NodeInputs:
             self, "by_port", frozen_map({k: tuple(v) for k, v in self.by_port.items()})
         )
 
+    def __getitem__(self, port: str) -> tuple[Message, ...]:
+        return self.by_port.get(port, ())
 
-@dataclass(frozen=True)
-class NodeOutputs:
-    """Complete output replacement, plus optional declarations for the next batch.
+    def get(self, port: str, default=()) -> tuple[Message, ...]:
+        return self.by_port.get(port, default)
 
-    Omitted ports withdraw their previous Views. Returning an existing View keeps
-    its identity and timestamps; it does not renew the forecast or its expiry.
-    ``resources=None`` retains declarations; ResourceUpdate replaces them next batch.
+
+class Context(Protocol):
+    """What a node may ask the platform for during a callback.
+
+    The runner builds one per node per callback, over the adapter's mapping.
     """
 
-    # Return every port you intend to keep active. An omitted port withdraws old
-    # messages; a ResourceUpdate changes permissions only at the next batch boundary.
-    by_port: Mapping[str, tuple[Message, ...]]
-    resources: ResourceUpdate | None = None
+    node_id: str
+    time: datetime
+    warming_up: bool
 
-    def __post_init__(self):
-        object.__setattr__(
-            self, "by_port", frozen_map({k: tuple(v) for k, v in self.by_port.items()})
-        )
-
-
-class Node(Protocol):
-    """Strategy component evaluated at most once per admitted graph batch.
-
-    Requirements authorize service reads; triggers request evaluation. Changes to
-    upstream Views can also activate the node. Keep mutable state per run and use
-    Context only during evaluation: adapters invalidate it after the snapshot ends.
-    """
-
-    # This is a structural protocol: user classes need not inherit from Node.
-    # They supply declarations and evaluate(inputs, ctx); no provider SDK is required.
-    inputs: Mapping[str, InputSpec]
-    outputs: Mapping[str, OutputSpec]
-    requirements: Sequence[Requirement]
-    triggers: Sequence[Trigger]
-
-    def evaluate(self, inputs: NodeInputs, ctx: Context) -> NodeOutputs:
-        """Evaluate one admitted snapshot and return the complete output replacement.
-
-        Args:
-            inputs: Current upstream Views grouped by input port.
-            ctx: Declared services and graph/receipt times; valid only during evaluation.
-
-        Returns:
-            New outputs for all ports and optional resource declarations for next batch.
-
-        Raises:
-            NotReady: Required evidence is unavailable; runtime withdraws the output.
-            NumericalError: Calculation failed; runtime withdraws and records a diagnostic.
-        """
+    def window(self, declaration, instrument: InstrumentId):
+        """The rolling window of a ``Bars`` or ``Quotes`` declaration, newest first."""
         ...
+
+    def indicator(self, name: str, instrument: InstrumentId):
+        """The named indicator for an instrument: ``is_ready``, ``value``, ``values``."""
+        ...
+
+    def members(self, universe: str) -> tuple[InstrumentId, ...]:
+        """Current members of a declared universe."""
+        ...
+
+    def history(self, request):
+        """Past bars for a ``HistoryRequest``: {instrument: bars oldest first}."""
+        ...
+
+    def calendar(self, instrument: InstrumentId):
+        """Session times: ``next_close``, ``next_open``, ``is_open``."""
+        ...
+
+    @property
+    def portfolio(self):
+        """Holdings, cash, NAV, marks and open orders, read-only."""
+        ...
+
+
+@runtime_checkable
+class Node(Protocol):
+    """A graph component with declared inputs and alpha-model callbacks.
+
+    Attributes:
+        inputs: ``Bars``, ``Quotes``, ``Custom`` and ``Universe`` declarations.
+        indicators: ``Indicator`` declarations.
+        schedules: ``Schedule`` declarations.
+        warm_up: Optional ``WarmUp``.
+        ports: Upstream view ports accepted, by name.
+        outputs: View ports emitted, by name.
+        config: Parameters recorded in run evidence.
+    """
+
+    inputs: Sequence[Input]
+    indicators: Sequence[Indicator]
+    schedules: Sequence[Schedule]
+    warm_up: WarmUp | None
+    ports: Mapping[str, InputSpec]
+    outputs: Mapping[str, OutputSpec]
+    config: Mapping[str, object]
+
+    def on_securities_changed(self, ctx: Context, added, removed) -> None:
+        """Universe membership changed: ``added`` and ``removed`` are instrument tuples."""
+        ...
+
+    def update(self, ctx: Context, data: Slice, views: NodeInputs) -> Views:
+        """One slice of declared data plus the current upstream views; returns outputs."""
+        ...
+
+    def on_scheduled(self, ctx: Context, name: str, views: NodeInputs) -> Views:
+        """A declared schedule fired; returns outputs or None to leave them unchanged."""
+        ...
+
+
+# Defaults for the optional attributes and callbacks, applied by the runner when a
+# node omits them so that a minimal node declares only what it uses.
+NODE_DEFAULTS = {
+    "inputs": (),
+    "indicators": (),
+    "schedules": (),
+    "warm_up": None,
+    "ports": {},
+    "outputs": {},
+    "config": {},
+}
+
+
+def declared(node, name: str):
+    """A node's declaration attribute, or its default when the node omits it."""
+    return getattr(node, name, NODE_DEFAULTS[name])
+
+
+def outputs_of(node, result: Views) -> dict[str, tuple[Message, ...]]:
+    """Normalize a callback's return value to a port map and check the declared ports.
+
+    Raises:
+        ContractError: A port is undeclared or its views violate the port's spec.
+    """
+    if result is None:
+        return {}
+    if not isinstance(result, Mapping):
+        raise ContractError("A node callback returns a mapping of port name to views")
+    outputs = declared(node, "outputs")
+    normalized = {}
+    for port, views in result.items():
+        if port not in outputs:
+            raise ContractError(f"Undeclared output port: {port}")
+        views = tuple(views)
+        spec = outputs[port]
+        InputSpec(
+            spec.emits,
+            min_count=0,
+            statements=spec.statements,
+            quantities=spec.quantities,
+            properties=spec.properties,
+        ).validate(views)
+        normalized[port] = views
+    return normalized

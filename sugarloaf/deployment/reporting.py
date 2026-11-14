@@ -4,7 +4,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, fields, is_dataclass
 from datetime import date, datetime, time, timedelta
 
-from sugarloaf.runtime import GraphRuntime
+from sugarloaf.runtime import GraphRunner
 
 
 @dataclass(frozen=True)
@@ -16,9 +16,9 @@ class ReportContext:
     separate records so individual entries remain inspectable.
     """
 
-    # A strategy can inspect its nodes through runtime.graph without knowing the
-    # provider. record(label, value) delegates output formatting/transport to the adapter.
-    runtime: GraphRuntime
+    # A strategy can inspect its nodes through runner.graph without knowing the
+    # platform. record(label, value) delegates output formatting/transport to the adapter.
+    runner: GraphRunner
     record: Callable[[str, object], None]
 
 

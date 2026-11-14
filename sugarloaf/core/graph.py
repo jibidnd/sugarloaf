@@ -5,7 +5,7 @@ from types import MappingProxyType
 from typing import Mapping
 
 from sugarloaf.core.errors import ContractError
-from sugarloaf.core.node import Node
+from sugarloaf.core.node import Node, declared
 from sugarloaf.core.views import Message, PositionView
 
 
@@ -40,18 +40,21 @@ class CompiledGraph:
         # Predictive graphs may end in forecasts. TradingSession explicitly invokes
         # this additional check because only position targets authorize execution.
         node, port = self.output
-        if self.nodes[node].outputs[port].emits != (PositionView,):
+        if declared(self.nodes[node], "outputs")[port].emits != (PositionView,):
             raise ContractError("Trading output must emit only PositionView")
 
     def consumers(self, node_id: str) -> tuple[str, ...]:
         """Return unique direct consumer IDs in sorted order."""
-        # Runtime activation propagates one step through these consumers whenever a
-        # producer's effective output changes or expires.
         return tuple(sorted({e.destination_node for e in self.edges if e.source_node == node_id}))
 
     def incoming(self, node_id: str) -> tuple[Edge, ...]:
         """Return incoming edges in registration order."""
         return tuple(e for e in self.edges if e.destination_node == node_id)
+
+    def emits_positions(self) -> bool:
+        """Whether the designated output declares PositionView exclusively."""
+        node, port = self.output
+        return declared(self.nodes[node], "outputs")[port].emits == (PositionView,)
 
 
 class Graph:
@@ -123,8 +126,10 @@ class Graph:
         for edge in self._edges:
             if edge.source_node not in self._nodes or edge.destination_node not in self._nodes:
                 raise ContractError("Edge refers to an unknown node")
-            source = self._nodes[edge.source_node].outputs.get(edge.source_port)
-            target = self._nodes[edge.destination_node].inputs.get(edge.destination_port)
+            source = declared(self._nodes[edge.source_node], "outputs").get(edge.source_port)
+            target = declared(self._nodes[edge.destination_node], "ports").get(
+                edge.destination_port
+            )
             if source is None or target is None:
                 raise ContractError("Edge refers to an unknown port")
             if (
@@ -143,15 +148,17 @@ class Graph:
                 if offered and accepted and not set(offered) <= set(accepted):
                     raise ContractError(f"Incompatible declared {name} on edge")
         output_node, output_port = self._output
-        if output_node not in self._nodes or output_port not in self._nodes[output_node].outputs:
+        if output_node not in self._nodes or output_port not in declared(
+            self._nodes[output_node], "outputs"
+        ):
             raise ContractError("Unknown graph output")
-        emits = self._nodes[output_node].outputs[output_port].emits
+        emits = declared(self._nodes[output_node], "outputs")[output_port].emits
         if not emits or any(not issubclass(kind, Message) for kind in emits):
             raise ContractError("Graph output must emit message types")
         if any(e.source_node == output_node for e in self._edges):
             raise ContractError("Graph output node must be terminal")
         for node_id, node in self._nodes.items():
-            for port, spec in node.inputs.items():
+            for port, spec in declared(node, "ports").items():
                 if spec.min_count < 0 or (
                     spec.max_count is not None and spec.max_count < spec.min_count
                 ):

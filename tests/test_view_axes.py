@@ -33,7 +33,7 @@ NOW = datetime(2025, 1, 2, tzinfo=UTC)
 END = NOW + timedelta(days=30)
 INTERVAL = Interval(NOW, END)
 META = Metadata("view", "node", NOW, END + timedelta(days=1))
-CTX = SimpleNamespace(node_id="agg", snapshot_id=1, now=NOW)
+CTX = SimpleNamespace(node_id="agg", sequence=1, time=NOW)
 
 LEVELS = (0.1, 0.25, 0.5, 0.75, 0.9)
 VALUES = (-0.55, -0.3, -0.12, 0.0, 0.2)
@@ -189,16 +189,16 @@ def test_aggregator_averages_mean_estimates_and_refuses_distributions():
     target = return_target(STOCK, INTERVAL)
     named = ReturnView(target, Estimate(0.02, 0.05), Metadata("a", "a", NOW, END))
     plain = View(target, Estimate(0.04, 0.03), Metadata("b", "b", NOW, END))
-    (output,) = MeanViewAggregator().evaluate(
-        NodeInputs({"views": (named, plain)}), CTX
-    ).by_port["views"]
+    (output,) = MeanViewAggregator().update(
+        CTX, None, NodeInputs({"views": (named, plain)})
+    )["views"]
     assert output.statement.mean() == pytest.approx(0.03)
     assert output.statement.forecast_error_scale == 0.05
     assert output.metadata.parents == ("a", "b")
     # A distribution's spread is outcome risk, not the uncertainty of its mean.
     distribution = View(target, quantile_law(lower_bound=-1.0), Metadata("c", "c", NOW, END))
     with pytest.raises(ContractError, match="not distributions"):
-        MeanViewAggregator().evaluate(NodeInputs({"views": (distribution,)}), CTX)
+        MeanViewAggregator().update(CTX, None, NodeInputs({"views": (distribution,)}))
 
 
 def test_positions_read_the_mean_of_a_distribution():
@@ -206,9 +206,9 @@ def test_positions_read_the_mean_of_a_distribution():
     law = quantile_law(lower_bound=-1.0)
     assert law.mean() < 0
     view = View(target, law, Metadata("d", "d", NOW, END))
-    (positions,) = PositiveSignalPositions((STOCK,), budget=1.0).evaluate(
-        NodeInputs({"views": (view,)}), CTX
-    ).by_port["positions"]
+    (positions,) = PositiveSignalPositions((STOCK,), budget=1.0).update(
+        CTX, None, NodeInputs({"views": (view,)})
+    )["positions"]
     assert positions.positions[STOCK] == 0
 
 

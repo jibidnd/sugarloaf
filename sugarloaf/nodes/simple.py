@@ -13,7 +13,7 @@ from math import isfinite
 from statistics import fmean
 
 from sugarloaf.core.errors import ContractError, NotReady
-from sugarloaf.core.node import InputSpec, NodeOutputs, OutputSpec
+from sugarloaf.core.node import InputSpec, OutputSpec
 from sugarloaf.core.primitives import InstrumentId, Interval, Metadata
 from sugarloaf.core.views import (
     Distribution,
@@ -43,7 +43,7 @@ def _kind(view) -> str:
 
 
 def _current_views(inputs, ctx):
-    views = inputs.by_port.get("views", ())
+    views = inputs.get("views", ())
     InputSpec(SUPPORTED).validate(views)
     for view in views:
         _kind(view)
@@ -52,9 +52,9 @@ def _current_views(inputs, ctx):
         raise ContractError("Duplicate forecast identity would double-count evidence")
     for view in views:
         # A claim must be currently available and still concern an unresolved future interval.
-        if not view.metadata.cutoff <= ctx.now < view.metadata.expires_at:
+        if not view.metadata.cutoff <= ctx.time < view.metadata.expires_at:
             raise NotReady("Forecast is unavailable or expired")
-        if not isinstance(view.target.time, Interval) or view.target.time.end <= ctx.now:
+        if not isinstance(view.target.time, Interval) or view.target.time.end <= ctx.time:
             raise NotReady("Forecast needs an unresolved interval target")
     return views
 
@@ -65,9 +65,9 @@ def _metadata(views, ctx, identity, lifetime):
     return Metadata(
         identity,
         ctx.node_id,
-        ctx.now,
+        ctx.time,
         min(
-            ctx.now + lifetime,
+            ctx.time + lifetime,
             *(v.metadata.expires_at for v in views),
             *(v.target.time.end for v in views),
         ),
@@ -86,11 +86,10 @@ class MeanViewAggregator:
     improvement is assumed. Incompatible groups stay separate.
     """
 
-    inputs = {"views": InputSpec(SUPPORTED)}
+    ports = {"views": InputSpec(SUPPORTED)}
     outputs = {"views": OutputSpec(SUPPORTED)}
-    requirements = ()
-    # Upstream message changes activate this node; it needs no direct market subscription.
-    triggers = ()
+    # Upstream views drive this node; it declares no data of its own.
+    inputs = ()
 
     # The default of four days is only a backstop. The output always expires no
     # later than its parent forecasts and their target ends, which is the precise
@@ -101,7 +100,7 @@ class MeanViewAggregator:
             raise ContractError("Positive aggregate lifetime required")
         self.lifetime = lifetime
 
-    def evaluate(self, inputs, ctx):
+    def update(self, ctx, data, inputs):
         """Average compatible claims independently and emit fresh parent-linked Views."""
         groups = defaultdict(list)
         for view in _current_views(inputs, ctx):
@@ -118,7 +117,7 @@ class MeanViewAggregator:
         for index, ((kind, _, _), views) in enumerate(groups.items()):
             first = views[0]
             metadata = _metadata(
-                views, ctx, f"{ctx.node_id}:{ctx.snapshot_id}:{index}", self.lifetime
+                views, ctx, f"{ctx.node_id}:{ctx.sequence}:{index}", self.lifetime
             )
             if kind == "distribution":
                 # A distribution's spread describes the outcome, not the uncertainty of its
@@ -149,7 +148,7 @@ class MeanViewAggregator:
                 statement = replace(first.statement, value=fmean(v.statement.value for v in views))
             # Reuse only the compatible target/statement structure, with fresh issuance identity.
             outputs.append(replace(first, statement=statement, metadata=metadata))
-        return NodeOutputs({"views": tuple(outputs)})
+        return {"views": tuple(outputs)}
 
 
 class PositiveSignalPositions:
@@ -166,10 +165,9 @@ class PositiveSignalPositions:
     meaning; active weight targets may cause maintenance trades.
     """
 
-    inputs = {"views": InputSpec(SUPPORTED)}
+    ports = {"views": InputSpec(SUPPORTED)}
     outputs = {"positions": OutputSpec((PositionView,))}
-    requirements = ()
-    triggers = ()
+    inputs = ()
 
     # lifetime defaults to four days for the reason given on MeanViewAggregator:
     # the forecasts' own expiry is the real limit, and one calendar day would
@@ -187,7 +185,7 @@ class PositiveSignalPositions:
             raise ContractError("Invalid position budget, scope or lifetime")
         self.budget, self.scope, self.lifetime = budget, scope, lifetime
 
-    def evaluate(self, inputs, ctx):
+    def update(self, ctx, data, inputs):
         """Allocate the budget equally across passing signals and emit zeros elsewhere.
 
         Raises:
@@ -237,8 +235,6 @@ class PositiveSignalPositions:
         weight = self.budget / len(passing) if passing else 0
         # Explicit zero entries request exits for every configured asset that fails selection.
         positions = {i: weight if i in passing else 0 for i in self.instruments}
-        metadata = _metadata(views, ctx, f"{ctx.node_id}:{ctx.snapshot_id}", self.lifetime)
+        metadata = _metadata(views, ctx, f"{ctx.node_id}:{ctx.sequence}", self.lifetime)
         # Active weights may need maintenance trades as marks/NAV change; execution decides when.
-        return NodeOutputs(
-            {"positions": (PositionView(positions, "weight", self.scope, metadata),)}
-        )
+        return {"positions": (PositionView(positions, "weight", self.scope, metadata),)}

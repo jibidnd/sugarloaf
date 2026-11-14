@@ -6,17 +6,10 @@ Gross exposure is the sum of absolute weights (0.35); net is the signed sum (0.1
 """
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Mapping
+from typing import Mapping
 
-# Shared neutral contracts permit the same checks with memory and native platform services.
 from sugarloaf.core.errors import ContractError
 from sugarloaf.core.primitives import InstrumentId, finite
-from sugarloaf.core.views import PositionView
-
-if TYPE_CHECKING:
-    # Annotation only. core.services names PortfolioConstraints in a type hint, so
-    # importing it here at runtime would create an import cycle.
-    from sugarloaf.core.services import Context
 
 # One comparison tolerance, in NAV fractions, shared by every limit below.
 # Weights are floats computed from prices; an exact comparison would reject a
@@ -65,31 +58,6 @@ class PortfolioConstraints:
             or self.net_min > self.net_max
         ):
             raise ContractError("Invalid portfolio constraints")
-
-
-def position_weights(view: PositionView, ctx: "Context") -> dict[InstrumentId, float]:
-    """Convert a target to account-NAV fractions using current marks and FX.
-
-    Args:
-        view: Weight or quantity target; quantities include instrument multipliers.
-        ctx: Fresh portfolio and valuation services.
-
-    Returns:
-        Instrument weights, preserving explicit zeros.
-
-    Raises:
-        ContractError: Account NAV is nonpositive.
-    """
-    account = ctx.portfolio.snapshot()
-    # A positive denominator is essential; a zero/negative NAV cannot define account weights.
-    if account.nav <= 0:
-        raise ContractError("Positive account NAV is required")
-    if view.units == "weight":
-        # Copy the mapping while retaining explicit zero exits and signed short weights.
-        return dict(view.positions)
-    # unit_value includes the mark, share/contract multiplier and account-currency FX.
-    # Quantity times unit value is exposure, separate from a broker's margin requirement.
-    return {i: q * ctx.valuation.unit_value(i) / account.nav for i, q in view.positions.items()}
 
 
 def breaches(

@@ -6,9 +6,8 @@ import numpy as np
 import pytest
 from scipy.stats import multivariate_normal
 
+from sugarloaf.core.data import Observation
 from sugarloaf.core.errors import ContractError
-from sugarloaf.core.events import EventBatch
-from sugarloaf.core.node import NodeOutputs
 from sugarloaf.core.primitives import InstrumentId, Interval, Metadata
 from sugarloaf.core.views import (
     Distribution,
@@ -25,7 +24,6 @@ from sugarloaf.core.views import (
     Target,
     return_target,
 )
-from sugarloaf.market.contracts import Observation
 from sugarloaf.research import (
     ForecastArchive,
     Outcome,
@@ -70,20 +68,16 @@ def metadata(identity, at=START, expires=None):
     return Metadata(identity, "signal", at, expires or END + timedelta(days=1))
 
 
-def archive_views(*views, graph_time=START, received_at=None):
+def archive_views(*views, received_at=START):
     archive = ForecastArchive()
-    archive.record(
-        "signal",
-        NodeOutputs({"forecasts": views}),
-        EventBatch(1, graph_time, received_at=received_at),
-    )
+    archive.record("signal", "forecasts", views, received_at)
     return archive
 
 
 def anchors(instrument, at, convention, as_of):
     assert convention in {"price_return", "total_return"}
     value = 100 if at == START else {A: 110, B: 105, C: 90}[instrument]
-    return Observation(at, at, value)
+    return Observation(at, value)
 
 
 def test_archive_preserves_replaced_expired_forecasts_and_first_emission_provenance():
@@ -92,21 +86,15 @@ def test_archive_preserves_replaced_expired_forecasts_and_first_emission_provena
     )
     receipt = START + timedelta(seconds=2)
     archive = archive_views(first, received_at=receipt)
-    archive.record(
-        "signal", NodeOutputs({"forecasts": (first,)}), EventBatch(2, START + timedelta(hours=1))
-    )
+    archive.record("signal", "forecasts", (first,), START + timedelta(hours=1))
     revised = ReturnView.create(
         A, INTERVAL, 0.05, 0.03, metadata("revised", START + timedelta(days=1))
     )
-    archive.record(
-        "signal", NodeOutputs({"forecasts": (revised,)}), EventBatch(3, START + timedelta(days=1))
-    )
-    archive.record("signal", NodeOutputs({}), EventBatch(4, END + timedelta(days=2)))
+    archive.record("signal", "forecasts", (revised,), START + timedelta(days=1))
+    archive.record("signal", "forecasts", (), END + timedelta(days=2))
     assert len(archive) == 2
     retained = archive.get("first")
     assert retained.view is first
-    assert retained.batch_sequence == 1
-    assert retained.graph_time == START
     assert retained.received_at == receipt
     assert retained.view.metadata.cutoff == START
     report = evaluate(archive, ReturnOutcomeResolver(anchors), as_of=END)
@@ -127,10 +115,10 @@ def test_archive_reused_identity_validation_is_atomic_and_actions_are_not_predic
     new = ReturnView.create(B, INTERVAL, 0.1, 0.03, metadata("new"))
     bad = replace(first, statement=replace(first.statement, value=0.9))
     with pytest.raises(ContractError, match="changed contents"):
-        archive.record("signal", NodeOutputs({"forecasts": (new, bad)}), EventBatch(2, START))
+        archive.record("signal", "forecasts", (new, bad), START)
     assert len(archive) == 1
     action = PositionView({A: 0.5}, "weight", "branch", metadata("position"))
-    archive.record("signal", NodeOutputs({"positions": (action,)}), EventBatch(3, START))
+    archive.record("signal", "positions", (action,), START)
     assert len(archive) == 1
 
 
@@ -170,13 +158,11 @@ def test_pending_missing_delayed_and_wrong_time_anchors_never_become_zero_labels
     assert not calls
     assert resolver.resolve(target, as_of=END).status == "unavailable"
     delayed = ReturnOutcomeResolver(
-        lambda i, at, c, cutoff: Observation(at, END + timedelta(days=1), 100)
+        lambda i, at, c, cutoff: Observation(at, 100, END + timedelta(days=1))
     )
     assert delayed.resolve(target, as_of=END).status == "unavailable"
     substituted = ReturnOutcomeResolver(
-        lambda i, at, c, cutoff: Observation(
-            at + timedelta(minutes=1), at + timedelta(minutes=1), 100
-        )
+        lambda i, at, c, cutoff: Observation(at + timedelta(minutes=1), 100)
     )
     with pytest.raises(ContractError, match="substituted"):
         substituted.resolve(target, as_of=END)
@@ -256,7 +242,7 @@ def test_raw_scores_get_chronological_cohort_association_not_an_invented_return_
         issued = START + timedelta(days=k)
         target = return_target(A, Interval(issued, issued + timedelta(days=10)))
         view = ScoreView(target, Score(float(k), "signal-v1"), metadata(str(k), issued))
-        archive.record("signal", NodeOutputs({"scores": (view,)}), EventBatch(k, issued))
+        archive.record("signal", "scores", (view,), issued)
 
     class Outcomes:
         def resolve(self, target, *, as_of):

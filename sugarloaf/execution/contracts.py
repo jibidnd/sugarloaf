@@ -1,187 +1,200 @@
-"""Execution interfaces use fresh adapter state, not a retained decision Context."""
+"""Execution settings, account records and the order-sizing rule shared by adapters.
 
+A position target is turned into orders by the adapter with the platform's own
+tools; what is shared here is the policy (order type, thresholds), the neutral
+account picture an adapter reports, and the one sizing rule that decides whether
+a difference between target and holdings is worth an order.
+"""
+
+from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime, timedelta
-from typing import Protocol
+from datetime import datetime
+from math import isfinite, trunc
 
 from sugarloaf.core.errors import ContractError
-from sugarloaf.core.primitives import InstrumentId, aware, finite
-from sugarloaf.core.services import Context
-from sugarloaf.market.contracts import Capability
+from sugarloaf.core.primitives import InstrumentId, aware, finite, frozen_map
 
-# Only terminal statuses release an order's remaining reservation. An open,
-# partial or pending-cancel order can still change holdings.
-TERMINAL_STATUSES = frozenset({"filled", "canceled", "rejected", "expired"})
-# Order types a policy may name. A gateway states which of them it can translate.
 ORDER_TYPES = frozenset({"market", "market_on_open", "market_on_close"})
-# How long the platform keeps an unfilled order: to the end of its trading day,
-# or until it is cancelled.
 TIMES_IN_FORCE = frozenset({"day", "gtc"})
-# Every status a gateway may report. Anything else is a contract error, so a new
-# brokerage state is noticed instead of being treated as "still open".
-ORDER_UPDATE_STATUSES = TERMINAL_STATUSES | {"open", "submitted", "partial", "pending_cancel"}
+TERMINAL_STATUSES = frozenset({"filled", "canceled", "rejected", "expired", "invalid"})
+ORDER_STATUSES = TERMINAL_STATUSES | {"submitted", "partial", "pending_cancel", "new"}
 
 
 @dataclass(frozen=True)
 class ExecutionPolicy:
-    """Order/session settings and staleness limits, separate from portfolio risk.
+    """How a position target becomes orders.
 
     Attributes:
-        order_type: ``market``, ``market_on_open`` or ``market_on_close``. The
-            policy names what to ask for; the platform decides when such an order
-            may be sent and how it fills (for example whether a market order sent
-            after the close waits for the next open).
-        time_in_force: ``gtc`` (good till cancelled, the default) or ``day``. The
-            platform applies it. A ``gtc`` order does not outlive its target: the
-            engine cancels whatever is unfilled when the target is replaced or
-            expires. ``day`` adds the platform's own end-of-day expiry; an order
-            sent at the close on daily bars then expires before it can fill.
-        session: Native order setting. An adapter rejects unsupported
-            combinations before trading.
-        lifetime: How long one order intent may stay open before the engine
-            cancels it. Left unset there is no engine timer: an order stands
-            until it fills, the platform ends it (a day order at the end of its
-            day), or its target is replaced or expires. Set it only to cancel
-            sooner than that. The clock is wall time, so a lifetime shorter than
-            the wait for an auction or for the next open cancels an order the
-            platform is holding.
-        max_target_age: Maximum elapsed calendar time since the target's cutoff.
-            It is a backstop: the target's own expiry is the precise control. The
-            default spans a long weekend so a Friday-close decision can trade Monday.
-        min_trade_value: Smallest order, in account currency, worth submitting.
-        rebalance_band: Smallest order, as a fraction of NAV, worth submitting for
-            a weight target. A weight target's desired quantity moves with every
-            mark; without a band the engine would re-trade that drift on every
-            batch. For the same reason a weight target never sends a whole-lot
-            order that would leave the account no closer to its exact target.
-            Quantity targets are exact instructions and are not banded.
+        order_type: ``market``, ``market_on_open`` or ``market_on_close``; the
+            platform decides when such an order may be sent and how it fills.
+        time_in_force: ``gtc`` or ``day``, applied by the platform.
+        min_trade_value: Smallest order, in account currency, worth sending.
+        rebalance_band: Smallest difference, as a fraction of NAV, worth an order
+            for a weight target. A weight target's desired quantity moves with
+            every mark; without a band every batch would re-trade that drift.
+        cancel_on_new_target: Cancel this runner's open orders in an instrument
+            before sizing it against a new target.
 
-    Neither threshold ever suppresses an explicit exit to zero. Order lifetime and
-    target age limit different things and neither implies a timed exit.
+    An explicit exit to zero is never suppressed by a threshold.
     """
 
     order_type: str = "market"
-    session: str = "regular"
     time_in_force: str = "gtc"
-    lifetime: timedelta | None = None
-    max_target_age: timedelta = timedelta(days=4)
     min_trade_value: float = 0.0
-    # 0.0025 is 0.25% of NAV: USD250 on a USD100,000 account. Set 0 to trade
-    # every whole-lot difference, or raise it to trade less often.
     rebalance_band: float = 0.0025
+    cancel_on_new_target: bool = True
 
     def __post_init__(self):
         if self.order_type not in ORDER_TYPES:
             raise ContractError("Unknown order type")
         if self.time_in_force not in TIMES_IN_FORCE:
             raise ContractError("Unknown time in force")
-        # NaN would make the comparisons below False and silently disable a threshold.
         finite(self.min_trade_value, self.rebalance_band)
-        if self.min_trade_value < 0:
-            raise ContractError("Minimum trade value must be nonnegative in account currency")
-        if not 0 <= self.rebalance_band < 1:
-            raise ContractError("Rebalance band must be a NAV fraction in [0, 1)")
-        if (
-            self.lifetime is not None and self.lifetime <= timedelta(0)
-        ) or self.max_target_age <= timedelta(0):
-            raise ContractError("Order lifetime and maximum target age must be positive")
-        if self.session not in {"regular", "extended"}:
-            raise ContractError("Unknown execution session")
+        if self.min_trade_value < 0 or not 0 <= self.rebalance_band < 1:
+            raise ContractError("Invalid execution thresholds")
 
 
 @dataclass(frozen=True)
-class OrderIntent:
-    """Signed quantity request with a stable local identity reserved before submit.
+class OpenOrder:
+    """An order the platform still holds; ``filled`` is the signed cumulative fill."""
 
-    Positive quantity buys; negative sells. ``intent_id`` is the local identity;
-    the gateway later returns the native order ID.
+    order_id: str
+    instrument: InstrumentId
+    quantity: float
+    filled: float = 0.0
+    tag: str = ""
+
+    @property
+    def remaining(self) -> float:
+        return self.quantity - self.filled
+
+
+@dataclass(frozen=True)
+class Portfolio:
+    """The account as the platform reports it when a node or the runner asks.
+
+    Holdings are signed instrument quantities, prices the platform's current marks,
+    NAV and cash in account currency.
     """
 
-    intent_id: str
-    # The PositionView that authorized this order. When a newer target arrives,
-    # the engine cancels intents that still carry an older target_id.
+    time: datetime
+    nav: float
+    cash: float
+    holdings: Mapping[InstrumentId, float]
+    prices: Mapping[InstrumentId, float]
+    open_orders: tuple[OpenOrder, ...] = ()
+    currency: str = "USD"
+
+    def __post_init__(self):
+        aware(self.time)
+        finite(self.nav, self.cash, *self.holdings.values(), *self.prices.values())
+        object.__setattr__(self, "holdings", frozen_map(self.holdings))
+        object.__setattr__(self, "prices", frozen_map(self.prices))
+        object.__setattr__(self, "open_orders", tuple(self.open_orders))
+
+    def weight(self, instrument: InstrumentId) -> float:
+        """The holding's fraction of NAV at the current mark, zero without a mark."""
+        quantity = self.holdings.get(instrument, 0.0)
+        price = self.prices.get(instrument)
+        if not quantity or price is None or self.nav <= 0:
+            return 0.0
+        return quantity * price / self.nav
+
+    def weights(self) -> dict[InstrumentId, float]:
+        return {i: self.weight(i) for i, q in self.holdings.items() if q}
+
+    def pending(self, instrument: InstrumentId) -> float:
+        """Signed unfilled quantity of the platform's open orders in the instrument."""
+        return sum(o.remaining for o in self.open_orders if o.instrument == instrument)
+
+
+@dataclass(frozen=True)
+class OrderRecord:
+    """What the adapter did for one instrument of one target."""
+
     target_id: str
     instrument: InstrumentId
     quantity: float
-    created_at: datetime
-    # After this time the engine requests cancellation of whatever is unfilled.
-    expires_at: datetime
-    order_type: str = "market"
-    time_in_force: str = "gtc"
+    order_id: str | None = None
+    status: str = "submitted"
+    reason: str = ""
 
 
 @dataclass(frozen=True)
 class OrderUpdate:
-    """Platform feedback; ``filled`` is signed cumulative quantity, not a delta.
+    """Platform order feedback: status and signed cumulative fill, never a delta."""
 
-    Status must belong to ``ORDER_UPDATE_STATUSES``. Repeat the cumulative total
-    unchanged when a status callback repeats. Empty intent identity permits
-    feedback for external orders. The engine additionally checks cumulative fills
-    against the original intent.
-    """
-
-    # Example: a 100-share buy that fills 40 then 60 reports filled=40 with status
-    # "partial", then filled=100 with status "filled". It never reports 60.
     order_id: str
-    intent_id: str
+    instrument: InstrumentId
     status: str
     filled: float
     time: datetime
+    tag: str = ""
     message: str = ""
 
     def __post_init__(self):
         finite(self.filled)
         aware(self.time)
-        if not self.order_id:
-            raise ContractError("Order feedback requires a platform order identity")
-        if self.status not in ORDER_UPDATE_STATUSES:
-            raise ContractError(f"Unknown order feedback status: {self.status}")
-        if self.status in {"filled", "partial"} and self.filled == 0:
-            raise ContractError("A fill status requires nonzero cumulative fills")
+        if self.status not in ORDER_STATUSES:
+            raise ContractError(f"Unknown order status: {self.status}")
 
 
-class ExecutionGateway(Protocol):
-    """Platform order boundary. Each context exposes fresh authoritative state.
+def desired_quantity(
+    amount: float, units: str, price: float, nav: float, lot_size: float = 1.0
+) -> tuple[float, float]:
+    """The target's quantity in whole lots and exactly, from a weight or a quantity.
 
-    Submit returns a platform order ID. Cancel requests cancellation; the order
-    remains possible exposure until terminal feedback confirms its disposition.
-    A rejected cancel request raises; it does not reject the original order.
+    A 0.2 weight with NAV 10,010 and a 100.50 price wants exactly 19.92 units,
+    which is 19 whole units. Both numbers are returned because the rebalance band
+    compares the exact one and an order sends the whole-lot one.
 
-    ``cancel_status`` reports only the latest cancellation request outcome: None
-    means unprocessed/unknown, supported means accepted, unsupported means rejected.
-    The engine polls outstanding requests and can retry a confirmed rejection.
+    Raises:
+        ContractError: The price or NAV is not positive, or the lot size is invalid.
     """
+    finite(amount, price, nav, lot_size)
+    if price <= 0 or nav <= 0 or lot_size <= 0:
+        raise ContractError("Sizing needs a positive price, NAV and lot size")
+    exact = amount if units == "quantity" else amount * nav / price
+    return trunc(exact / lot_size) * lot_size, exact
 
-    def capability(self, policy: ExecutionPolicy) -> Capability:
-        """Return whether the platform supports the complete execution policy."""
-        ...
 
-    def context(self) -> Context:
-        """Return fresh authoritative account, instrument, and valuation services.
+def order_quantity(
+    whole: float,
+    exact: float,
+    held: float,
+    pending: float,
+    price: float,
+    nav: float,
+    units: str,
+    policy: ExecutionPolicy,
+) -> float:
+    """The signed quantity to order now, or zero when no order is worth sending.
 
-        Each call returns a new snapshot; the engine never reuses the Context
-        from the earlier strategy decision.
-        """
-        ...
+    Args:
+        whole: Desired quantity in whole lots.
+        exact: Desired quantity before rounding.
+        held: Current holding.
+        pending: Signed unfilled quantity already on the platform.
+        price: Current mark.
+        nav: Account NAV.
+        units: ``weight`` or ``quantity``; only weight targets are banded.
+        policy: Thresholds.
 
-    def submit(self, intent: OrderIntent) -> str:
-        """Submit one signed intent and return its platform order ID.
-
-        The ID confirms submission, not a fill; fills arrive as OrderUpdates.
-        """
-        ...
-
-    def cancel(self, order_id: str) -> None:
-        """Request cancellation; raise on failure and await terminal order feedback.
-
-        A request can race with a fill, so remaining exposure stays reserved.
-        """
-        ...
-
-    def cancel_status(self, order_id: str) -> Capability | None:
-        """Return the latest cancellation-request outcome, not the order's state.
-
-        None means unknown or unprocessed; supported means accepted; unsupported
-        means rejected. An accepted request still reserves pending exposure.
-        """
-        ...
+    The residual gap is desired minus held minus pending. An exit to zero is always
+    sent. Otherwise the order is skipped when it is worth less than
+    ``min_trade_value``, or, for a weight target, when the exact gap is inside the
+    rebalance band or a whole-lot order would leave the account no closer.
+    """
+    quantity = whole - held - pending
+    if abs(quantity) < 1e-10 or not isfinite(quantity):
+        return 0.0
+    if whole == 0 and exact == 0:
+        return quantity
+    if abs(quantity * price) < policy.min_trade_value:
+        return 0.0
+    if units == "weight":
+        gap_now = abs(exact - held - pending)
+        gap_after = abs(exact - whole)
+        if gap_now * price < policy.rebalance_band * nav or gap_after >= gap_now:
+            return 0.0
+    return quantity

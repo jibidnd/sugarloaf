@@ -8,7 +8,6 @@ from sugarloaf.core.errors import ContractError
 from sugarloaf.core.graph import CompiledGraph
 from sugarloaf.core.primitives import InstrumentId, finite
 from sugarloaf.execution import ExecutionPolicy
-from sugarloaf.market.contracts import Instrument
 from sugarloaf.portfolio.constraints import PortfolioConstraints
 
 from .reporting import ReportContext
@@ -57,15 +56,18 @@ class Deployment:
     Attributes:
         name: Deployment identity used in diagnostic reports.
         strategy: Reportable strategy configuration supplied by the caller.
-        graph_factory: Zero-argument factory returning fresh compiled node state.
-        tickers: Initial stable instrument-to-ticker mappings. A value is a ticker
-            (an equity) or an ``Instrument`` record declaring another asset class,
-            such as an index.
+        graph_factory: Zero-argument factory returning a fresh compiled graph. A
+            graph whose output port emits position views is a trading run; one
+            whose output port emits predictive views is a forecast run, archived
+            instead of executed.
+        tickers: Instrument-to-ticker mappings for the instruments nodes name
+            explicitly. A value is a ticker (an equity) or a ``Ticker`` record
+            declaring another asset class, such as an index.
         environment: Platform dates, account, brokerage, and execution-model settings.
         execution: Supported order settings and staleness limits.
         constraints: Execution safety limits, configured separately from graph limits.
         report: Optional end-of-run callback receiving a portable ReportContext.
-            Inspect its runtime or emit labeled records; return summary diagnostics.
+            Inspect its runner or emit labeled records; return summary diagnostics.
     """
 
     # A factory returns this definition; it does not start a process by constructing it.
@@ -77,7 +79,7 @@ class Deployment:
     graph_factory: Callable[[], CompiledGraph]
     # Seed known instrument identities (including universe anchors) with ticker names.
     # This is not a trading whitelist: native universes bind discovered members separately.
-    tickers: Mapping[InstrumentId, str | Instrument]
+    tickers: Mapping[InstrumentId, object]
     environment: Environment = field(default_factory=Environment)
     execution: ExecutionPolicy = field(default_factory=ExecutionPolicy)
     constraints: PortfolioConstraints = field(default_factory=PortfolioConstraints)

@@ -5,12 +5,10 @@ from datetime import UTC, datetime, timedelta
 import numpy as np
 import pytest
 
+from sugarloaf.core.data import Observation
 from sugarloaf.core.errors import ContractError
-from sugarloaf.core.events import EventBatch
-from sugarloaf.core.node import NodeOutputs
 from sugarloaf.core.primitives import InstrumentId, Interval, Metadata
 from sugarloaf.core.views import Score, ScoreView, return_target
-from sugarloaf.market.contracts import Observation
 from sugarloaf.research import (
     ForecastArchive,
     ReturnOutcomeResolver,
@@ -94,7 +92,7 @@ def scored_rows(scores_by_day, returns_by_day, session_days):
                 Score(score, "fixture"),
                 Metadata(f"{node}:{day}", node, at, interval.end),
             )
-            archive.record(node, NodeOutputs({"views": (view,)}), EventBatch(day, at))
+            archive.record(node, "views", (view,), at)
             # Move the price so the simple return over the interval is `realized`.
             level[instrument] *= 1 + realized
             prices[instrument, interval.end] = level[instrument]
@@ -102,7 +100,7 @@ def scored_rows(scores_by_day, returns_by_day, session_days):
 
     def anchor(instrument, when, convention, as_of):
         price = prices.get((instrument, when))
-        return None if price is None else Observation(when, when, price)
+        return None if price is None else Observation(when, price)
 
     return evaluate(archive, ReturnOutcomeResolver(anchor), as_of=at).rows
 
