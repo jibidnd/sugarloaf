@@ -618,8 +618,11 @@ class LeanAPI:
                 continue
             # The stamp is the publication day; it is known from the start of that day in
             # New York. Each day lists every covered company: the frame is reduced first,
-            # to the days in (start, end] and the rows where a security's listing changes
-            # (the services keep only changes), before any per-row work.
+            # to the days in (start, end], to one listing per security and day (the
+            # earliest report date; of several timings, the first listed: a day can list
+            # the same report as both before and after the market) and to the rows where
+            # a security's listing changes (the services keep only changes), before any
+            # per-row work.
             frame = frame.reset_index()
             days = frame["time"].dt.normalize()
             wanted = [d for d in days.drop_duplicates()
@@ -632,8 +635,10 @@ class LeanAPI:
                    for s in frame["symbol"].drop_duplicates()}
             frame = frame.assign(
                 sid=frame["symbol"].map(ids),
+                day=frame["time"].dt.normalize(),
                 listing=frame["reportdate"].astype(str) + "|" + frame["reporttime"].astype(str),
-            ).sort_values(["sid", "time"])
+            ).sort_values(["sid", "day", "reportdate"], kind="stable")
+            frame = frame.drop_duplicates(["sid", "day"], keep="first")
             change = ((frame["sid"] != frame["sid"].shift())
                       | (frame["listing"] != frame["listing"].shift()))
             frame = frame[change]

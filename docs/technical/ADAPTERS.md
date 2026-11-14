@@ -253,8 +253,10 @@ Earnings reads come from QuantConnect's EODHD Upcoming Earnings dataset
 `earnings`). Each native record is stamped with the day it was published and lists one
 security's next report date and `report_time` (before or after market). The adapter
 reads it through history, month by month, from the earliest lookback any read asks
-for up to the read's cutoff (never later), and extends it as later reads come; it keeps
-a listing per security only when it changes (the calendar repeats a listing every day
+for up to the read's cutoff (never later), and extends it as later reads come. A day can
+list a security more than once (the same report both before and after the market, or two
+dates): the adapter takes the earliest report date and, of several timings, the first
+listed. It keeps a listing per security only when it changes (the calendar repeats a listing every day
 until the report), dated the day it first appeared, which is known from the start of
 that day in New York. Records match a security by its permanent identifier (SID), so a
 renamed security keeps its listings. The memory adapter takes listings directly
