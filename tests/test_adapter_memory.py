@@ -380,3 +380,35 @@ def test_anchor_reads_the_first_clock_tick_at_or_after_the_requested_time():
     services.apply(EventBatch(9, minute(3)))
     with pytest.raises(NotReady, match="does not reach the session open"):
         services.context(node_id="n").market.anchor(A, minute(1.5), "total_return")
+
+
+def test_earnings_listings_are_point_in_time_within_the_lookback():
+    from datetime import date
+
+    from sugarloaf.market.contracts import (
+        EarningsRecord,
+        EarningsRequirement,
+        FundamentalRecord,
+    )
+
+    listed = EarningsRecord(A, NOW - timedelta(days=10), date(2025, 12, 4), "after_close")
+    moved = EarningsRecord(A, NOW - timedelta(days=2), date(2025, 12, 5), "before_open")
+    future = EarningsRecord(A, NOW + timedelta(days=1), date(2026, 3, 5), "after_close")
+    wide = EarningsRequirement(Selection((A, B)), lookback=timedelta(days=30))
+    narrow = EarningsRequirement(Selection((A, B)), lookback=timedelta(days=5))
+    services = MemoryServices(earnings={A: [future, moved, listed]})
+    services.install("n", ResourceUpdate((wide, narrow), ()))
+    services.apply(EventBatch(0, NOW))
+    market = services.context(node_id="n").market
+    # Oldest first, nothing published after graph time, only within the lookback.
+    assert market.earnings(wide, A) == (listed, moved)
+    assert market.earnings(narrow, A) == (moved,)
+    # No listing is an empty answer (no report listed, or no coverage), not NotReady.
+    assert market.earnings(wide, B) == ()
+    assert market.ready(wide) == (A, B)
+    with pytest.raises(CapabilityError):
+        market.earnings(wide, InstrumentId("C"))
+    with pytest.raises(ContractError):
+        EarningsRecord(A, NOW, date(2025, 12, 4), "during")
+    # A fundamental record carries the Morningstar sector code.
+    assert FundamentalRecord(A, NOW, sector=311).sector == 311

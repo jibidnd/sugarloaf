@@ -12,6 +12,8 @@ from sugarloaf.market.contracts import (
     BarsRequirement,
     Capability,
     DataRequirement,
+    EarningsRecord,
+    EarningsRequirement,
     FundamentalRecord,
     FundamentalsRequirement,
     IndicatorRequirement,
@@ -116,6 +118,11 @@ class MarketData(Protocol):
         self, requirement: FundamentalsRequirement, instrument: InstrumentId
     ) -> FundamentalRecord:
         """Return the latest declared fundamental record known at graph time."""
+        ...
+    def earnings(
+        self, requirement: EarningsRequirement, instrument: InstrumentId
+    ) -> tuple[EarningsRecord, ...]:
+        """Return the earnings listings published within the declared lookback, oldest first."""
         ...
     def short_availability(
         self, requirement: ShortAvailabilityRequirement, instrument: InstrumentId

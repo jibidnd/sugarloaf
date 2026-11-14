@@ -14,6 +14,7 @@ from sugarloaf.market.contracts import (
     Bar,
     BarsRequirement,
     Capability,
+    EarningsRecord,
     FundamentalRecord,
     FundamentalUniverse,
     IndicatorPoint,
@@ -107,6 +108,11 @@ class QuantConnectDataServices(ProviderServices):
         # lifecycle resets; receipt timestamps remain separate from observation ends.
         self._pending_data = []
         self._prefilling = False
+        # Earnings calendar: per security SID, its listings as (publication time, report
+        # date, timing), kept only when the listing changes; and the span loaded.
+        self._earnings_calendar = {}
+        self._earnings_last = {}
+        self._earnings_span = None
         if account_services:
             self.api.setup(algorithm, cost_rate, leverage, borrow_data)
 
@@ -533,6 +539,7 @@ class QuantConnectDataServices(ProviderServices):
             self._subscriptions[instrument] = semantics
         # Create or enlarge only the required windows. Replacing a consolidator
         # prevents the old handler from continuing to own the same resource key.
+        created = []
         for key, req in desired.items():
             if key in self.windows and self.windows[key].maxlen >= req.lookback:
                 continue
@@ -568,26 +575,33 @@ class QuantConnectDataServices(ProviderServices):
                     self._changed()
 
             consolidator.data_consolidated += completed
-            # Historical retrieval is capped at the explicit observation cutoff.
-            # The native history span may still be too short to satisfy readiness.
-            self._prefilling = True
-            try:
+            created.append((key, req))
+        # Silent prefill, capped at the explicit observation cutoff. The native
+        # history span may still be too short to satisfy readiness.
+        self._prefilling = True
+        try:
+            self._prefill_daily(
+                [(k, r) for k, r in created if self._native_daily(r)], cutoff, periods
+            )
+            for key, req in created:
+                if self._native_daily(req):
+                    continue
+                symbol = self.symbols[key[1]]
+                consolidator = self.consolidators[key]
                 history = self.api.history(
-                    self.algorithm, symbol, req, cutoff, req.lookback, period
+                    self.algorithm, symbol, req, cutoff, req.lookback, periods[key[1]]
                 )
                 for bar in history:
                     if self.api.to_utc(self.algorithm.securities[symbol], bar.end_time) <= cutoff:
-                        # Native regular-session daily history is already
-                        # consolidated; other histories feed the interval builder.
-                        if req.interval == DAY and req.session == "regular":
-                            completed(consolidator, bar)
-                        else:
-                            consolidator.update(bar)
+                        consolidator.update(bar)
                 self.api.scan(consolidator, self.algorithm.securities[symbol], cutoff)
-            finally:
-                self._prefilling = False
-            # Attach streaming ownership only after silent initialization finishes.
-            self.algorithm.subscription_manager.add_consolidator(symbol, consolidator)
+        finally:
+            self._prefilling = False
+        # Attach streaming ownership only after silent initialization finishes.
+        for key, _ in created:
+            self.algorithm.subscription_manager.add_consolidator(
+                self.symbols[key[1]], self.consolidators[key]
+            )
         for key in set(self.windows) - set(desired):
             symbol = self.symbols[key[1]]
             self.algorithm.subscription_manager.remove_consolidator(
@@ -602,6 +616,70 @@ class QuantConnectDataServices(ProviderServices):
                 if not self.api.release_subscription(self.algorithm, self.symbols[instrument]):
                     continue
             del self._subscriptions[instrument]
+
+    @staticmethod
+    def _native_daily(req):
+        """Regular-session daily bars: LEAN's daily history is already the requested
+        bar, so it fills the window directly, without the interval builder."""
+        return (
+            isinstance(req, BarsRequirement) and req.interval == DAY and req.session == "regular"
+        )
+
+    def _prefill_daily(self, items, cutoff, periods):
+        """Fill new regular-session daily windows from history, in bulk.
+
+        Windows sharing price normalization and fill-forward policy are read together:
+        one native history call for all their securities when the platform API offers
+        it (``daily_histories``), else one call per security. Each window then takes,
+        in order, its newest bars ending at or before the cutoff, at most its lookback,
+        one per bar end (a repeated end keeps the later bar). That is what admitting
+        the bars one at a time gives, without its per-bar search of the window.
+        Indicators are not fed, as in any silent prefill.
+        """
+        groups = {}
+        for key, req in items:
+            groups.setdefault((req.normalization, req.fill_forward), []).append((key, req))
+        batched = getattr(self.api, "daily_histories", None)
+        received = self._receipt_time()
+        for group in groups.values():
+            longest = max((r for _, r in group), key=lambda r: r.lookback)
+            symbols = [self.symbols[key[1]] for key, _ in group]
+            if batched is not None:
+                bars = batched(self.algorithm, symbols, longest, cutoff, longest.lookback)
+            else:
+                bars = {
+                    str(symbol.id): self.api.history(
+                        self.algorithm, symbol, req, cutoff, req.lookback, periods[key[1]]
+                    )
+                    for symbol, (key, req) in zip(symbols, group)
+                }
+            for (key, _), symbol in zip(group, symbols):
+                self._fill_window(key, bars.get(str(symbol.id), ()), cutoff, received)
+                self.api.scan(self.consolidators[key], self.algorithm.securities[symbol], cutoff)
+
+    def _fill_window(self, key, bars, cutoff, received):
+        instrument = key[1]
+        security = self.algorithm.securities[self.symbols[instrument]]
+        to_utc = self.api.to_utc
+        values = {}
+        for bar in bars:
+            end = to_utc(security, bar.end_time)
+            if end > cutoff:
+                continue
+            values[end] = Bar(
+                instrument,
+                to_utc(security, bar.time),
+                end,
+                received,
+                float(bar.open),
+                float(bar.high),
+                float(bar.low),
+                float(bar.close),
+                float(bar.volume),
+                bool(bar.is_fill_forward),
+            )
+        window = self.windows[key]
+        window.extend(values[end] for end in sorted(values)[-window.maxlen :])
 
     def _data(self, req, instrument, cutoff):
         key = resource_key(req, instrument)
@@ -1028,6 +1106,39 @@ class QuantConnectDataServices(ProviderServices):
             return None
         return _fundamental_record(instrument, record, utc(self.algorithm.utc_time, "UTC"))
 
+    def _earnings(self, instrument, start, cutoff):
+        """Earnings listings for the instrument published in [start, cutoff].
+
+        The calendar is one native dataset for all securities. It is read through
+        history in date ranges as reads need them (never past the read's cutoff, so
+        nothing later than graph time is fetched) and kept per security; a security is
+        matched by its permanent identifier, the same SID string its InstrumentId binds.
+        """
+        symbol = self.symbols.get(instrument)
+        key = str(symbol.id) if symbol is not None else instrument.value
+        first, last = start.astimezone(UTC), cutoff.astimezone(UTC)
+        span = self._earnings_span
+        if span is None or first < span[0]:
+            # A longer look back than any before: reload from the new start.
+            self._earnings_calendar, self._earnings_last = {}, {}
+            self._load_earnings(first, max(span[1], last) if span else last)
+            span = (first, max(span[1], last) if span else last)
+        elif last > span[1]:
+            self._load_earnings(span[1], last)
+            span = (span[0], last)
+        self._earnings_span = span
+        return [EarningsRecord(instrument, at, report, timing)
+                for at, report, timing in self._earnings_calendar.get(key, ())
+                if first <= at <= last]
+
+    def _load_earnings(self, start, end):
+        # The calendar repeats a listing every day until the report; only a change of
+        # listing (a new report date or timing) is kept, with the day it first appeared.
+        for sid, at, report, timing in self.api.earnings(self.algorithm, start, end):
+            if self._earnings_last.get(sid) != (report, timing):
+                self._earnings_last[sid] = (report, timing)
+                self._earnings_calendar.setdefault(sid, []).append((at, report, timing))
+
     def _short_availability(self, instrument, cutoff):
         security = self._subscribed(instrument)
         provider = security.shortable_provider
@@ -1108,6 +1219,12 @@ def _fundamental_record(instrument, item, at):
     reference = getattr(item, "company_reference", None)
     cik = getattr(reference, "cik", None) if reference is not None else None
     cik = (str(cik).strip().lstrip("0") or None) if cik is not None else None
+    classification = getattr(item, "asset_classification", None)
+    sector = getattr(classification, "morningstar_sector_code", None) if classification else None
+    try:
+        sector = int(sector) or None if sector is not None else None
+    except (TypeError, ValueError):
+        sector = None
     return FundamentalRecord(
         instrument,
         at,
@@ -1115,4 +1232,5 @@ def _fundamental_record(instrument, item, at):
         market_cap=_number(getattr(item, "market_cap", None)) or None,
         price=_number(getattr(item, "price", None)) or None,
         dollar_volume=_number(getattr(item, "dollar_volume", None)),
+        sector=sector,
     )

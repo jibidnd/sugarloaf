@@ -21,6 +21,9 @@ class MemoryServices(ProviderServices):
         fundamentals (Mapping[InstrumentId, Sequence[FundamentalRecord]] | None): Records by
             instrument, any order; a read gives the latest one dated at or before graph time.
         short (Mapping[InstrumentId, Sequence[ShortAvailability]] | None): Borrow terms likewise.
+        earnings (Mapping[InstrumentId, Sequence[EarningsRecord]] | None): Earnings-calendar
+            listings by instrument, any order; a read gives those published within the
+            requirement's lookback up to graph time.
         cost_rate (float): Proportional fixture cost per absolute trade notional.
 
     Writes invalidate existing Contexts; timestamps govern later visibility.
@@ -37,6 +40,7 @@ class MemoryServices(ProviderServices):
         cost_rate=0.0,
         fundamentals=None,
         short=None,
+        earnings=None,
     ):
         # Share declaration guards, readiness and causal read filtering with other
         # providers. Only the backing observations/account/calendar are fixtures.
@@ -47,6 +51,8 @@ class MemoryServices(ProviderServices):
         self.borrow_available = borrow or {}
         self.fundamental_records = {k: tuple(v) for k, v in (fundamentals or {}).items()}
         self.short_records = {k: tuple(v) for k, v in (short or {}).items()}
+        self.earnings_records = {k: tuple(sorted(v, key=lambda r: r.time))
+                                 for k, v in (earnings or {}).items()}
         self.cost_rate = cost_rate
         # Buffers store supplied neutral observations, not simulated market ticks.
         # Their observation and availability timestamps determine later visibility.
@@ -143,6 +149,9 @@ class MemoryServices(ProviderServices):
 
     def _short_availability(self, instrument, cutoff):
         return _latest(self.short_records.get(instrument, ()), cutoff)
+
+    def _earnings(self, instrument, start, cutoff):
+        return [r for r in self.earnings_records.get(instrument, ()) if start <= r.time <= cutoff]
 
     def _instrument(self, instrument):
         if instrument not in self.instruments:

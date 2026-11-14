@@ -1628,3 +1628,103 @@ def test_qc_fundamental_rule_failures_and_missing_borrow_data_are_not_silent():
     assert services._short_availability(A, NOW) is None
     with pytest.raises(CapabilityError):
         services._fundamentals(InstrumentId("unsubscribed"), NOW)
+
+
+def test_qc_earnings_calendar_is_read_by_security_and_kept_as_changes():
+    from datetime import date
+
+    from sugarloaf.adapters.quantconnect.services import _fundamental_record
+    from sugarloaf.market.contracts import EarningsRequirement
+
+    day = timedelta(days=1)
+    calls = []
+
+    class EarningsAPI(API):
+        def earnings(self, algorithm, start, end):
+            calls.append((start, end))
+            rows = [("A SID", NOW - 9 * day, date(2025, 1, 9), "after_close"),
+                    ("A SID", NOW - 8 * day, date(2025, 1, 9), "after_close"),  # repeat
+                    ("A SID", NOW - 3 * day, date(2025, 1, 10), "before_open"),  # moved
+                    ("B SID", NOW - 2 * day, date(2025, 1, 6), "unknown"),
+                    ("A SID", NOW + 2 * day, date(2025, 4, 9), "after_close")]
+            return [r for r in rows if start < r[1] <= end]
+
+    api, platform = EarningsAPI(), algorithm()
+    services = QuantConnectServices(platform, api=api)
+    services.symbols[A] = Symbol("A SID", "A")
+    services._external_symbols.add(A)
+    first = services._earnings(A, NOW - 30 * day, NOW)
+    assert [(r.report_date, r.timing) for r in first] == [
+        (date(2025, 1, 9), "after_close"), (date(2025, 1, 10), "before_open")]
+    assert all(r.instrument == A for r in first)
+    # Later reads load only the new range; earlier reads never fetch past their cutoff.
+    later = services._earnings(A, NOW - 30 * day, NOW + 3 * day)
+    assert len(later) == 3 and calls[-1] == (NOW, NOW + 3 * day)
+    assert all(end <= NOW + 3 * day for _, end in calls)
+    # Declarable: the provider accepts the requirement.
+    services.install("n", ResourceUpdate((EarningsRequirement(Selection((A,))),), ()))
+    # The Morningstar sector comes with the fundamental record.
+    item = NS(company_reference=NS(cik="1"), market_cap=1.0, price=1.0, dollar_volume=1.0,
+              asset_classification=NS(morningstar_sector_code=311))
+    assert _fundamental_record(A, item, NOW).sector == 311
+    assert _fundamental_record(A, NS(market_cap=1.0), NOW).sector is None
+
+
+def test_qc_daily_prefill_in_bulk_gives_the_bars_one_at_a_time_admission_gives():
+    day = timedelta(days=1)
+
+    def bar(end, price):
+        return NS(time=end - day, end_time=end, open=price, high=price + 1, low=price - 1,
+                  close=price, volume=1000, is_fill_forward=False)
+
+    # Per ticker, history as the platform might return it: a bar after the cutoff, a
+    # revised repeat of one bar end, one bar out of order, more bars than the lookback.
+    fixture = {
+        "A": [bar(NOW - k * day, 100 + k) for k in range(8, -1, -1)] + [bar(NOW + day, 1)],
+        "B": [bar(NOW - 3 * day, 50), bar(NOW - 2 * day, 51), bar(NOW - 2 * day, 52),
+              bar(NOW - 5 * day, 49), bar(NOW - day, 53)],
+        "C": [bar(NOW - 2 * day, 10)],
+    }
+
+    class FixtureAPI(API):
+        def history(self, algorithm, symbol, req, cutoff, count, period=MINUTE):
+            self.history_reads += 1
+            return list(fixture[symbol.value])
+
+    class BatchedAPI(FixtureAPI):
+        calls = 0
+
+        def daily_histories(self, algorithm, symbols, req, cutoff, count):
+            self.calls += 1
+            return {str(s.id): list(fixture[s.value]) for s in symbols}
+
+    ids = {t: InstrumentId(f"USA:{t}") for t in fixture}
+    req = BarsRequirement(Selection(tuple(ids.values())), DAY, 4, normalization="adjusted")
+
+    def windows(api):
+        services = QuantConnectServices(algorithm(), api=api)
+        for ticker, instrument in ids.items():
+            services.register(instrument, ticker)
+        services.install("n", ResourceUpdate((req,), ()))
+        services.apply(EventBatch(0, NOW))
+        return services, {key: list(w) for key, w in services.windows.items()}
+
+    batched_api = BatchedAPI()
+    services, batched = windows(batched_api)
+    # One history call serves every security of the group.
+    assert batched_api.calls == 1 and batched_api.history_reads == 0
+    per_security_api = FixtureAPI()
+    _, per_security = windows(per_security_api)
+    assert per_security_api.history_reads == 3 and per_security == batched
+    # The old path: each bar ending at or before the cutoff admitted one at a time.
+    received = services._receipt_time()
+    for key in services.windows:
+        services.windows[key].clear()
+        for native in fixture[key[1].value.split(":")[1]]:
+            if native.end_time <= NOW:
+                services._admit_bar(key, native, received, indicators=False)
+    assert {key: list(w) for key, w in services.windows.items()} == batched
+    a = batched[next(k for k in batched if k[1] == ids["A"])]
+    assert [b.close for b in a] == [103, 102, 101, 100]
+    b = batched[next(k for k in batched if k[1] == ids["B"])]
+    assert [b.close for b in b] == [49, 50, 52, 53]

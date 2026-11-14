@@ -204,6 +204,34 @@ class LeanAPI:
             ),
         )
 
+    def daily_histories(self, algorithm, symbols, req, cutoff, count):
+        """Regular-session daily bars of several securities in one native history call,
+        ending at an explicit aware cutoff: {SID string: bars, oldest first}.
+
+        The span is ``count`` sessions in calendar days (about 252 sessions a year,
+        365 days) plus ten days for holidays and closures. As for ``history``, it is a
+        warmup attempt, not a readiness guarantee.
+        """
+        end = self.lean.Extensions.convert_from_utc(
+            cutoff.astimezone(UTC).replace(tzinfo=None), algorithm.time_zone
+        )
+        days = int(count * 1.45) + 10
+        out = {str(symbol.id): [] for symbol in symbols}
+        for data in algorithm.history[self.lean.TradeBar](
+            list(symbols),
+            end - timedelta(days=days),
+            end,
+            self.lean.Resolution.DAILY,
+            fill_forward=req.fill_forward,
+            extended_market_hours=False,
+            data_normalization_mode=getattr(
+                self.lean.DataNormalizationMode, getattr(req, "normalization", "raw").upper()
+            ),
+        ):
+            for symbol, bar in data.items():
+                out.setdefault(str(symbol.id), []).append(bar)
+        return out
+
     def scan(self, consolidator, security, cutoff):
         """Flush a consolidator through the aware cutoff converted to exchange-local time."""
         local = self.lean.Extensions.convert_from_utc(
@@ -593,6 +621,68 @@ class LeanAPI:
                 self.lean.DataNormalizationMode, source.normalization.upper()
             ),
         )
+
+    def earnings(self, algorithm, start, end):
+        """Earnings-calendar listings published in (start, end], as rows of (SID string,
+        aware publication time, report date, timing), from QuantConnect's EODHD Upcoming
+        Earnings dataset. Each native record is stamped with the day its listing was
+        published and gives the security's next report date and whether it falls before
+        the open or after the close."""
+        from QuantConnect.DataSource import EODHDUpcomingEarnings
+
+        if getattr(self, "_earnings_symbol", None) is None:
+            self._earnings_symbol = algorithm.add_data(EODHDUpcomingEarnings, "earnings").symbol
+        timings = {"BEFORE_MARKET": "before_open", "BEFOREMARKET": "before_open",
+                   "AFTER_MARKET": "after_close", "AFTERMARKET": "after_close"}
+        zone = self._new_york()
+        # Read a calendar year at a time: few native calls, each frame of bounded size.
+        year = start
+        while year < end:
+            stop = min(end, year.replace(year=year.year + 1, month=1, day=1, hour=0, minute=0,
+                                         second=0, microsecond=0))
+            frame = algorithm.history(EODHDUpcomingEarnings, self._earnings_symbol,
+                                      year.astimezone(UTC).replace(tzinfo=None),
+                                      stop.astimezone(UTC).replace(tzinfo=None))
+            year = stop
+            if frame is None or len(frame) == 0:
+                continue
+            # The stamp is the publication day; it is known from the start of that day in
+            # New York. Each day lists every covered company: the frame is reduced first,
+            # to the days in (start, end], to one listing per security and day (the
+            # earliest report date; of several timings, the first listed: a day can list
+            # the same report as both before and after the market) and to the rows where
+            # a security's listing changes (the services keep only changes), before any
+            # per-row work.
+            frame = frame.reset_index()
+            days = frame["time"].dt.normalize()
+            wanted = [d for d in days.drop_duplicates()
+                      if start < datetime(d.year, d.month, d.day, tzinfo=zone).astimezone(UTC)
+                      <= end]
+            frame = frame[days.isin(wanted)]
+            if len(frame) == 0:
+                continue
+            ids = {s: str(s.id) if hasattr(s, "id") else str(s)
+                   for s in frame["symbol"].drop_duplicates()}
+            frame = frame.assign(
+                sid=frame["symbol"].map(ids),
+                day=frame["time"].dt.normalize(),
+                listing=frame["reportdate"].astype(str) + "|" + frame["reporttime"].astype(str),
+            ).sort_values(["sid", "day", "reportdate"], kind="stable")
+            frame = frame.drop_duplicates(["sid", "day"], keep="first")
+            change = ((frame["sid"] != frame["sid"].shift())
+                      | (frame["listing"] != frame["listing"].shift()))
+            frame = frame[change]
+            for sid, stamp, report, timing in zip(
+                    frame["sid"], frame["time"], frame["reportdate"], frame["reporttime"]):
+                stamp = datetime(stamp.year, stamp.month, stamp.day, tzinfo=zone).astimezone(UTC)
+                key = str(timing).upper().replace(" ", "")
+                yield (sid, stamp, report.date() if hasattr(report, "date") else report,
+                       timings.get(key, "unknown"))
+
+    def _new_york(self):
+        from zoneinfo import ZoneInfo
+
+        return ZoneInfo("America/New_York")
 
     def corporate_actions(self, algorithm, symbol, start, end):
         """Sparse native split/dividend facts staged by causal research replay."""
