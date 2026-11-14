@@ -616,17 +616,32 @@ class LeanAPI:
             month = stop
             if frame is None or len(frame) == 0:
                 continue
+            # The stamp is the publication day; it is known from the start of that day in
+            # New York. Each day lists every covered company: the frame is reduced first,
+            # to the days in (start, end] and the rows where a security's listing changes
+            # (the services keep only changes), before any per-row work.
             frame = frame.reset_index()
-            for symbol, stamp, report, timing in zip(
-                    frame["symbol"], frame["time"], frame["reportdate"], frame["reporttime"]):
-                # The stamp is the publication day; it is known from the start of that
-                # day in New York.
+            days = frame["time"].dt.normalize()
+            wanted = [d for d in days.drop_duplicates()
+                      if start < datetime(d.year, d.month, d.day, tzinfo=zone).astimezone(UTC)
+                      <= end]
+            frame = frame[days.isin(wanted)]
+            if len(frame) == 0:
+                continue
+            ids = {s: str(s.id) if hasattr(s, "id") else str(s)
+                   for s in frame["symbol"].drop_duplicates()}
+            frame = frame.assign(
+                sid=frame["symbol"].map(ids),
+                listing=frame["reportdate"].astype(str) + "|" + frame["reporttime"].astype(str),
+            ).sort_values(["sid", "time"])
+            change = ((frame["sid"] != frame["sid"].shift())
+                      | (frame["listing"] != frame["listing"].shift()))
+            frame = frame[change]
+            for sid, stamp, report, timing in zip(
+                    frame["sid"], frame["time"], frame["reportdate"], frame["reporttime"]):
                 stamp = datetime(stamp.year, stamp.month, stamp.day, tzinfo=zone).astimezone(UTC)
-                if not (start < stamp <= end):
-                    continue
                 key = str(timing).upper().replace(" ", "")
-                yield (str(symbol.id) if hasattr(symbol, "id") else str(symbol), stamp,
-                       report.date() if hasattr(report, "date") else report,
+                yield (sid, stamp, report.date() if hasattr(report, "date") else report,
                        timings.get(key, "unknown"))
 
     def _new_york(self):
