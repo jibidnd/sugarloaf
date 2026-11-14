@@ -204,6 +204,34 @@ class LeanAPI:
             ),
         )
 
+    def daily_histories(self, algorithm, symbols, req, cutoff, count):
+        """Regular-session daily bars of several securities in one native history call,
+        ending at an explicit aware cutoff: {SID string: bars, oldest first}.
+
+        The span is ``count`` sessions in calendar days (about 252 sessions a year,
+        365 days) plus ten days for holidays and closures. As for ``history``, it is a
+        warmup attempt, not a readiness guarantee.
+        """
+        end = self.lean.Extensions.convert_from_utc(
+            cutoff.astimezone(UTC).replace(tzinfo=None), algorithm.time_zone
+        )
+        days = int(count * 1.45) + 10
+        out = {str(symbol.id): [] for symbol in symbols}
+        for data in algorithm.history[self.lean.TradeBar](
+            list(symbols),
+            end - timedelta(days=days),
+            end,
+            self.lean.Resolution.DAILY,
+            fill_forward=req.fill_forward,
+            extended_market_hours=False,
+            data_normalization_mode=getattr(
+                self.lean.DataNormalizationMode, getattr(req, "normalization", "raw").upper()
+            ),
+        ):
+            for symbol, bar in data.items():
+                out.setdefault(str(symbol.id), []).append(bar)
+        return out
+
     def scan(self, consolidator, security, cutoff):
         """Flush a consolidator through the aware cutoff converted to exchange-local time."""
         local = self.lean.Extensions.convert_from_utc(
@@ -607,13 +635,15 @@ class LeanAPI:
         timings = {"BEFORE_MARKET": "before_open", "BEFOREMARKET": "before_open",
                    "AFTER_MARKET": "after_close", "AFTERMARKET": "after_close"}
         zone = self._new_york()
-        month = start
-        while month < end:
-            stop = min(end, (month.replace(day=1) + timedelta(days=32)).replace(day=1))
+        # Read a calendar year at a time: few native calls, each frame of bounded size.
+        year = start
+        while year < end:
+            stop = min(end, year.replace(year=year.year + 1, month=1, day=1, hour=0, minute=0,
+                                         second=0, microsecond=0))
             frame = algorithm.history(EODHDUpcomingEarnings, self._earnings_symbol,
-                                      month.astimezone(UTC).replace(tzinfo=None),
+                                      year.astimezone(UTC).replace(tzinfo=None),
                                       stop.astimezone(UTC).replace(tzinfo=None))
-            month = stop
+            year = stop
             if frame is None or len(frame) == 0:
                 continue
             # The stamp is the publication day; it is known from the start of that day in

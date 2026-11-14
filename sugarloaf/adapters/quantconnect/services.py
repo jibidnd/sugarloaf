@@ -539,6 +539,7 @@ class QuantConnectDataServices(ProviderServices):
             self._subscriptions[instrument] = semantics
         # Create or enlarge only the required windows. Replacing a consolidator
         # prevents the old handler from continuing to own the same resource key.
+        created = []
         for key, req in desired.items():
             if key in self.windows and self.windows[key].maxlen >= req.lookback:
                 continue
@@ -574,26 +575,33 @@ class QuantConnectDataServices(ProviderServices):
                     self._changed()
 
             consolidator.data_consolidated += completed
-            # Historical retrieval is capped at the explicit observation cutoff.
-            # The native history span may still be too short to satisfy readiness.
-            self._prefilling = True
-            try:
+            created.append((key, req))
+        # Silent prefill, capped at the explicit observation cutoff. The native
+        # history span may still be too short to satisfy readiness.
+        self._prefilling = True
+        try:
+            self._prefill_daily(
+                [(k, r) for k, r in created if self._native_daily(r)], cutoff, periods
+            )
+            for key, req in created:
+                if self._native_daily(req):
+                    continue
+                symbol = self.symbols[key[1]]
+                consolidator = self.consolidators[key]
                 history = self.api.history(
-                    self.algorithm, symbol, req, cutoff, req.lookback, period
+                    self.algorithm, symbol, req, cutoff, req.lookback, periods[key[1]]
                 )
                 for bar in history:
                     if self.api.to_utc(self.algorithm.securities[symbol], bar.end_time) <= cutoff:
-                        # Native regular-session daily history is already
-                        # consolidated; other histories feed the interval builder.
-                        if req.interval == DAY and req.session == "regular":
-                            completed(consolidator, bar)
-                        else:
-                            consolidator.update(bar)
+                        consolidator.update(bar)
                 self.api.scan(consolidator, self.algorithm.securities[symbol], cutoff)
-            finally:
-                self._prefilling = False
-            # Attach streaming ownership only after silent initialization finishes.
-            self.algorithm.subscription_manager.add_consolidator(symbol, consolidator)
+        finally:
+            self._prefilling = False
+        # Attach streaming ownership only after silent initialization finishes.
+        for key, _ in created:
+            self.algorithm.subscription_manager.add_consolidator(
+                self.symbols[key[1]], self.consolidators[key]
+            )
         for key in set(self.windows) - set(desired):
             symbol = self.symbols[key[1]]
             self.algorithm.subscription_manager.remove_consolidator(
@@ -608,6 +616,70 @@ class QuantConnectDataServices(ProviderServices):
                 if not self.api.release_subscription(self.algorithm, self.symbols[instrument]):
                     continue
             del self._subscriptions[instrument]
+
+    @staticmethod
+    def _native_daily(req):
+        """Regular-session daily bars: LEAN's daily history is already the requested
+        bar, so it fills the window directly, without the interval builder."""
+        return (
+            isinstance(req, BarsRequirement) and req.interval == DAY and req.session == "regular"
+        )
+
+    def _prefill_daily(self, items, cutoff, periods):
+        """Fill new regular-session daily windows from history, in bulk.
+
+        Windows sharing price normalization and fill-forward policy are read together:
+        one native history call for all their securities when the platform API offers
+        it (``daily_histories``), else one call per security. Each window then takes,
+        in order, its newest bars ending at or before the cutoff, at most its lookback,
+        one per bar end (a repeated end keeps the later bar). That is what admitting
+        the bars one at a time gives, without its per-bar search of the window.
+        Indicators are not fed, as in any silent prefill.
+        """
+        groups = {}
+        for key, req in items:
+            groups.setdefault((req.normalization, req.fill_forward), []).append((key, req))
+        batched = getattr(self.api, "daily_histories", None)
+        received = self._receipt_time()
+        for group in groups.values():
+            longest = max((r for _, r in group), key=lambda r: r.lookback)
+            symbols = [self.symbols[key[1]] for key, _ in group]
+            if batched is not None:
+                bars = batched(self.algorithm, symbols, longest, cutoff, longest.lookback)
+            else:
+                bars = {
+                    str(symbol.id): self.api.history(
+                        self.algorithm, symbol, req, cutoff, req.lookback, periods[key[1]]
+                    )
+                    for symbol, (key, req) in zip(symbols, group)
+                }
+            for (key, _), symbol in zip(group, symbols):
+                self._fill_window(key, bars.get(str(symbol.id), ()), cutoff, received)
+                self.api.scan(self.consolidators[key], self.algorithm.securities[symbol], cutoff)
+
+    def _fill_window(self, key, bars, cutoff, received):
+        instrument = key[1]
+        security = self.algorithm.securities[self.symbols[instrument]]
+        to_utc = self.api.to_utc
+        values = {}
+        for bar in bars:
+            end = to_utc(security, bar.end_time)
+            if end > cutoff:
+                continue
+            values[end] = Bar(
+                instrument,
+                to_utc(security, bar.time),
+                end,
+                received,
+                float(bar.open),
+                float(bar.high),
+                float(bar.low),
+                float(bar.close),
+                float(bar.volume),
+                bool(bar.is_fill_forward),
+            )
+        window = self.windows[key]
+        window.extend(values[end] for end in sorted(values)[-window.maxlen :])
 
     def _data(self, req, instrument, cutoff):
         key = resource_key(req, instrument)

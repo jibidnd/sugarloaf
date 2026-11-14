@@ -1668,3 +1668,63 @@ def test_qc_earnings_calendar_is_read_by_security_and_kept_as_changes():
               asset_classification=NS(morningstar_sector_code=311))
     assert _fundamental_record(A, item, NOW).sector == 311
     assert _fundamental_record(A, NS(market_cap=1.0), NOW).sector is None
+
+
+def test_qc_daily_prefill_in_bulk_gives_the_bars_one_at_a_time_admission_gives():
+    day = timedelta(days=1)
+
+    def bar(end, price):
+        return NS(time=end - day, end_time=end, open=price, high=price + 1, low=price - 1,
+                  close=price, volume=1000, is_fill_forward=False)
+
+    # Per ticker, history as the platform might return it: a bar after the cutoff, a
+    # revised repeat of one bar end, one bar out of order, more bars than the lookback.
+    fixture = {
+        "A": [bar(NOW - k * day, 100 + k) for k in range(8, -1, -1)] + [bar(NOW + day, 1)],
+        "B": [bar(NOW - 3 * day, 50), bar(NOW - 2 * day, 51), bar(NOW - 2 * day, 52),
+              bar(NOW - 5 * day, 49), bar(NOW - day, 53)],
+        "C": [bar(NOW - 2 * day, 10)],
+    }
+
+    class FixtureAPI(API):
+        def history(self, algorithm, symbol, req, cutoff, count, period=MINUTE):
+            self.history_reads += 1
+            return list(fixture[symbol.value])
+
+    class BatchedAPI(FixtureAPI):
+        calls = 0
+
+        def daily_histories(self, algorithm, symbols, req, cutoff, count):
+            self.calls += 1
+            return {str(s.id): list(fixture[s.value]) for s in symbols}
+
+    ids = {t: InstrumentId(f"USA:{t}") for t in fixture}
+    req = BarsRequirement(Selection(tuple(ids.values())), DAY, 4, normalization="adjusted")
+
+    def windows(api):
+        services = QuantConnectServices(algorithm(), api=api)
+        for ticker, instrument in ids.items():
+            services.register(instrument, ticker)
+        services.install("n", ResourceUpdate((req,), ()))
+        services.apply(EventBatch(0, NOW))
+        return services, {key: list(w) for key, w in services.windows.items()}
+
+    batched_api = BatchedAPI()
+    services, batched = windows(batched_api)
+    # One history call serves every security of the group.
+    assert batched_api.calls == 1 and batched_api.history_reads == 0
+    per_security_api = FixtureAPI()
+    _, per_security = windows(per_security_api)
+    assert per_security_api.history_reads == 3 and per_security == batched
+    # The old path: each bar ending at or before the cutoff admitted one at a time.
+    received = services._receipt_time()
+    for key in services.windows:
+        services.windows[key].clear()
+        for native in fixture[key[1].value.split(":")[1]]:
+            if native.end_time <= NOW:
+                services._admit_bar(key, native, received, indicators=False)
+    assert {key: list(w) for key, w in services.windows.items()} == batched
+    a = batched[next(k for k in batched if k[1] == ids["A"])]
+    assert [b.close for b in a] == [103, 102, 101, 100]
+    b = batched[next(k for k in batched if k[1] == ids["B"])]
+    assert [b.close for b in b] == [49, 50, 52, 53]
