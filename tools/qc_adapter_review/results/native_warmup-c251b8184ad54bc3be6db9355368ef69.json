@@ -1,0 +1,168 @@
+{
+ "backtest_end": "2021-01-08 23:59:59",
+ "backtest_id": "c251b8184ad54bc3be6db9355368ef69",
+ "backtest_start": "2021-01-04 00:00:00",
+ "created": "2026-11-14 15:40:41",
+ "error": null,
+ "lean": "v2.5.0.0.18264",
+ "log_lines": 17,
+ "manifest": "native_warmup",
+ "name": "native warm-up 4900 daily bars, train check",
+ "node": "B2-8 node 52155dbe",
+ "other_log_lines": [
+  "2001-07-12 00:00:00 Launching analysis for c251b8184ad54bc3be6db9355368ef69 with LEAN Engine v2.5.0.0.18264",
+  "2001-07-12 00:00:00 Algorithm starting warm up...",
+  "2006-04-10 16:00:00 Processing algorithm warm-up request 24%...",
+  "2011-09-13 00:00:00 Processing algorithm warm-up request 52%...",
+  "2016-10-28 16:00:00 Processing algorithm warm-up request 78%...",
+  "2021-01-04 00:00:00 Algorithm finished warming up.",
+  "2021-01-05 16:00:00 Warning: 'Training: Now: 2021-01-05T21:00:00.0000000Z' has been executing for over 1 minute(s). It will be stopped once the algorithm time loop limit is exhausted",
+  "2021-01-08 16:15:00 Algorithm Id:(c251b8184ad54bc3be6db9355368ef69) completed in 144.65 seconds at 11k data points per second. Processing total of 1,620,135 data points.",
+  "2021-01-08 16:15:00 Due to numerical precision issues in the factor file, data for the following symbols was adjust to a later starting date: [BABA, 9/18/2014], [FUBO, 10/7/2020], [NIO, 9/11/2018], [BIDU, 8/4/2005], [ZM, 4/17/2019], [NFLX, 5/22/2002], [GOOGL, 8/18/2004], [FB, 6/25/2025], [TSLA, 6/28/2010], [GOOG, 3/26/2014]...",
+  "2021-01-08 16:15:00 The starting dates for the following symbols have been adjusted to match their map files first date: [BABA, 2014-09-19], [FUBO, 2020-10-08], [NIO, 2018-09-12], [BIDU, 2005-08-05], [ZM, 2019-04-18], [NFLX, 2002-05-23], [GOOGL, 2004-08-19], [FB, 2025-06-26], [TSLA, 2010-06-29], [GOOG, 2014-03-27]..."
+ ],
+ "parameters": {
+  "earnings": "off"
+ },
+ "project_id": 39378262,
+ "records": [
+  {
+   "at": "2021-01-04 00:00:00",
+   "label": "NATIVE_DIAG",
+   "value": {
+    "at": "2021-01-04T00:00:00",
+    "earnings": false,
+    "lean": "2.5.0.0.18264",
+    "lookback_bars": 4900,
+    "securities": 215,
+    "task": "initialize"
+   }
+  },
+  {
+   "at": "2021-01-04 00:00:00",
+   "label": "NATIVE_DIAG",
+   "value": {
+    "at": "2021-01-04T00:00:00",
+    "bars": 754902,
+    "callbacks": 12538,
+    "finished_at": "2021-01-04T00:00:00",
+    "first_time": "2001-07-12T16:00:00",
+    "listings": 0,
+    "seconds": 10.4,
+    "task": "warmup"
+   }
+  },
+  {
+   "at": "2021-01-05 16:00:00",
+   "label": "NATIVE_DIAG",
+   "value": {
+    "at": "2021-01-05T16:00:00",
+    "at_utc": "2021-01-05 21:00:00+00:00",
+    "task": "train_requested"
+   }
+  },
+  {
+   "at": "2021-01-05 16:00:00",
+   "label": "NATIVE_DIAG",
+   "value": {
+    "at": "2021-01-05T16:00:00",
+    "at_utc": "2021-01-05 21:00:00+00:00",
+    "task": "train_started"
+   }
+  },
+  {
+   "at": "2021-01-05 16:00:00",
+   "label": "NATIVE_DIAG",
+   "value": {
+    "at": "2021-01-05T16:00:00",
+    "at_utc": "2021-01-05 21:00:00+00:00",
+    "seconds": 75.0,
+    "task": "train_finished"
+   }
+  },
+  {
+   "at": "2021-01-06 16:00:00",
+   "label": "NATIVE_DIAG",
+   "value": {
+    "at": "2021-01-06T16:00:00",
+    "dataframe_range": {
+     "rows": 170200,
+     "seconds": 57.9
+    },
+    "slices_range_daily": {
+     "error": "TypeError: No method matches given arguments for history: (<class 'datetime.datetime'>, <class 'datetime.datetime'>, <class 'QuantConnect.Resolution'>). The following overloads are available:\n  history(requests: List[HistoryRequest])\n  history(request: HistoryRequest)\n  history(periods: int, resolut",
+     "seconds": 0.01
+    },
+    "task": "earnings_typed_variants",
+    "typed_list_range_daily": {
+     "rows": 164641,
+     "seconds": 0.55
+    },
+    "typed_symbol_range": {
+     "rows": 0,
+     "seconds": 0.61
+    },
+    "typed_symbol_range_daily": {
+     "rows": 0,
+     "seconds": 0.55
+    },
+    "typed_symbol_span_daily": {
+     "rows": 0,
+     "seconds": 0.45
+    }
+   }
+  },
+  {
+   "at": "2021-01-08 16:15:00",
+   "label": "NATIVE_DIAG",
+   "value": {
+    "at": "2021-01-08T16:15:00",
+    "sessions_after_warmup": 5,
+    "task": "summary",
+    "total_seconds": 145.5
+   }
+  }
+ ],
+ "runtime_statistics": {
+  "Equity": "$1,000,000.00",
+  "Fees": "-$0.00",
+  "Holdings": "$0.00",
+  "Net Profit": "$0.00",
+  "Probabilistic Sharpe Ratio": "0%",
+  "Return": "0.00 %",
+  "Unrealized": "$0.00",
+  "Volume": "$0.00"
+ },
+ "source_hash": "fd4af3b07e608a4e7de6605a60c3f5959eec22d5c42cec675bd7117eace4bc2a",
+ "statistics": {
+  "Alpha": "0",
+  "Annual Standard Deviation": "0",
+  "Annual Variance": "0",
+  "Average Loss": "0%",
+  "Average Win": "0%",
+  "Beta": "0",
+  "Compounding Annual Return": "0%",
+  "Drawdown": "0%",
+  "Drawdown Recovery": "0",
+  "End Equity": "1000000",
+  "Estimated Strategy Capacity": "$0",
+  "Expectancy": "0",
+  "Information Ratio": "-103.055",
+  "Loss Rate": "0%",
+  "Lowest Capacity Asset": "",
+  "Net Profit": "0%",
+  "Portfolio Turnover": "0%",
+  "Probabilistic Sharpe Ratio": "0%",
+  "Profit-Loss Ratio": "0",
+  "Sharpe Ratio": "0",
+  "Sortino Ratio": "0",
+  "Start Equity": "1000000",
+  "Total Fees": "$0.00",
+  "Total Orders": "0",
+  "Tracking Error": "0.069",
+  "Treynor Ratio": "0",
+  "Win Rate": "0%"
+ },
+ "status": "Completed.",
+ "sugarloaf_revision": "bb6aaa152fb3692bef1deafe501dcd038d581769"
+}

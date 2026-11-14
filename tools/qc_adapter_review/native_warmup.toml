@@ -1,0 +1,13 @@
+# Plain-LEAN warm-up cost for the panel and the behaviour of train(); see native_warmup.py.
+# Run from the repository root:
+#   uv run --cache-dir .uv-cache sugarloaf run --adapter quantconnect --manifest tools/qc_adapter_review/native_warmup.toml
+name = "Sugarloaf QC adapter review 2026-11-14"
+root = "../.."
+# The review's own QuantConnect project, created on 2026-11-14 for these diagnostics.
+project_id = 39378262
+entrypoint = "tools/qc_adapter_review/native_warmup.py"
+include = []
+
+[parameters]
+# "on" also subscribes the EODHD earnings calendar, so the warm-up streams it as well.
+earnings = "off"

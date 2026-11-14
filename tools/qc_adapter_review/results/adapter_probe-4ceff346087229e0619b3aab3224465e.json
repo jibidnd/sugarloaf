@@ -1,0 +1,977 @@
+{
+ "backtest_end": "2021-01-29 23:59:59",
+ "backtest_id": "4ceff346087229e0619b3aab3224465e",
+ "backtest_start": "2021-01-04 00:00:00",
+ "created": "2026-11-14 06:09:18",
+ "error": null,
+ "lean": "v2.5.0.0.18264",
+ "log_lines": 21,
+ "manifest": "adapter_probe",
+ "name": "adapter probe 2021-01 full lookbacks",
+ "node": "B2-8 node 52155dbe",
+ "other_log_lines": [
+  "Algorithm Initialization: Warning: when performing history requests, the start date will be adjusted if there are numerical precision errors in the factor files.",
+  "Algorithm Initialization: Warning: when performing history requests, the start date will be adjusted if it is before the first known date for the symbol.",
+  "2021-01-04 00:00:00 Launching analysis for 4ceff346087229e0619b3aab3224465e with LEAN Engine v2.5.0.0.18264",
+  "2021-01-04 00:00:00 Changing account currency from USD to USD...",
+  "2021-01-04 00:00:00 Warning: SetBenchmark(SPY): no existing symbol found, benchmark security will be added with Equity type.",
+  "2021-01-04 16:00:00 Warning: the current time step has been executing for 3.0 minutes and the algorithm will be stopped if it exceeds 10 minutes. Common causes: a slow scheduled event (named in 'TimeMonitor' logs), large history() requests, heavy on_data work or an infinite loop.",
+  "2021-01-04 16:00:00 Warning: large history request, estimated at ~5,082,000 data cells across 200 request(s). This can be slow and memory intensive: request fewer symbols, a shorter period or a coarser resolution.",
+  "2021-01-04 16:00:00 Request for future history modified to end now.",
+  "2021-01-30 00:00:00 Algorithm Id:(4ceff346087229e0619b3aab3224465e) completed in 597.30 seconds at 5k data points per second. Processing total of 2,875,268 data points."
+ ],
+ "parameters": {
+  "bars_lookback": "4900",
+  "earnings_days": "6800",
+  "end_date": "2021-01-29",
+  "profile": "on",
+  "start_date": "2021-01-04"
+ },
+ "project_id": 39378262,
+ "records": [
+  {
+   "at": "2021-01-04 00:00:00",
+   "label": "SUGARLOAF_RUN",
+   "value": {
+    "environment": {
+     "account_type": "MARGIN",
+     "benchmark": "SPY",
+     "borrow_data": null,
+     "brokerage": "DEFAULT",
+     "cash": 1000000,
+     "currency": "USD",
+     "end": "2021-01-29",
+     "leverage": 1.0,
+     "slippage": 0.0005,
+     "start": "2021-01-04",
+     "timezone": "America/New_York"
+    },
+    "execution": {
+     "lifetime": null,
+     "max_target_age": 345600.0,
+     "min_trade_value": 0.0,
+     "order_type": "market",
+     "rebalance_band": 0.0025,
+     "session": "regular",
+     "time_in_force": "gtc"
+    },
+    "name": "qc-adapter-review-probe",
+    "strategy": {
+     "bars_lookback": 4900,
+     "earnings_days": 6800,
+     "profile": true,
+     "window": [
+      "2021-01-04",
+      "2021-01-29"
+     ]
+    },
+    "versions": {
+     "numpy": "1.26.4",
+     "python": "3.11.14",
+     "scipy": "1.13.1",
+     "sugarloaf": "0.1.0"
+    }
+   }
+  },
+  {
+   "at": "2021-01-30 00:00:00",
+   "label": "SUGARLOAF_RESULT",
+   "value": {
+    "batches": 49,
+    "execution_diagnostic_count": 0,
+    "execution_diagnostics": [],
+    "memberships": {
+     "size-panel-200": {
+      "count": 200,
+      "cutoff": "2021-01-04T05:00:00+00:00",
+      "ready": true
+     }
+    },
+    "note": "Orders, fills and performance statistics are in the platform report.",
+    "runtime_diagnostic_count": 0,
+    "runtime_diagnostics": [],
+    "strategy": {
+     "calls": 64,
+     "sessions": 19
+    }
+   }
+  },
+  {
+   "at": "2021-01-30 00:00:00",
+   "label": "SUGARLOAF_MEMBERS",
+   "value": {
+    "first": 0,
+    "members": [
+     "TSLA UNU3P8Y3WFAD",
+     "AAPL R735QTJ8XC9X",
+     "AMZN R735QTJ8XC9X",
+     "NIO WXT2HG8Z7JAD",
+     "BABA VU1EHIDJYJXH",
+     "MSFT R735QTJ8XC9X",
+     "FB V6OIPNZEM8V9",
+     "BIDU TAWKXZJ50P5X",
+     "NFLX SEWJWLJNHZDX",
+     "NVDA RHM8UTD8DT2D",
+     "MRNA X05QXHPHSF39",
+     "AMD R735QTJ8XC9X",
+     "BA R735QTJ8XC9X",
+     "ZM X3RPXTZRW09X",
+     "GOOG T1AZ164W5VTX",
+     "MU R735QTJ8XC9X",
+     "FUBO XIIFW85R4NS5",
+     "GOOCV VP83T1ZUHROL",
+     "DNJR WSZRSZV9QR1H",
+     "SQ W5OUXC7GJYAT",
+     "SNOW XHWS2641G291",
+     "INTC R735QTJ8XC9X",
+     "CRM SZQUJUA9SVOL",
+     "V U12VRGLO8PR9",
+     "DIS R735QTJ8XC9X",
+     "KCAC XH38ND4Z5FFP",
+     "PYPL W2CQDXKV7WPX",
+     "PFE R735QTJ8XC9X",
+     "SBC R735QTJ8XC9X",
+     "CMB R735QTJ8XC9X",
+     "MA TIX2XDPLFR6T",
+     "ENPH V5C9T324VA05",
+     "XON R735QTJ8XC9X",
+     "SHOP W0PNKBMQMN39",
+     "PLTR XIAKBH8EIMHX",
+     "BILI WT7NDQSMCSBP",
+     "AAL VM9RIYHM8ACL",
+     "BRKB R735QTJ8XC9X",
+     "XPEV XHD34ASNWZ1H",
+     "NB R735QTJ8XC9X",
+     "WDC R735QTJ8XC9X",
+     "WMT R735QTJ8XC9X",
+     "PTON X868WVVY7H45",
+     "JNJ R735QTJ8XC9X",
+     "SNAP WIINL6RMFSKL",
+     "LRCX R735QTJ8XC9X",
+     "TRV R735QTJ8XC9X",
+     "BEL R735QTJ8XC9X",
+     "QCOM R735QTJ8XC9X",
+     "CHV R735QTJ8XC9X",
+     "ROKU WO9FGTL2I89X",
+     "UNH R735QTJ8XC9X",
+     "DEAC X5UJWXSLPCH1",
+     "ADBE R735QTJ8XC9X",
+     "UBER X4DDRW1HKLT1",
+     "DOW R735QTJ8XC9X",
+     "HD R735QTJ8XC9X",
+     "JD VQR8UAHAS0O5",
+     "CSCO R735QTJ8XC9X",
+     "APPY TVI0KDZ8MT0L",
+     "FDX R735QTJ8XC9X",
+     "TTD WE3561IA1KKL",
+     "GILD R735QTJ8XC9X",
+     "ABBV VCY032R250MD",
+     "NOB R735QTJ8XC9X",
+     "COST R735QTJ8XC9X",
+     "CMCSA SJTSDFE19S9X",
+     "LMND XFTY32B7MQ1X",
+     "MCD R735QTJ8XC9X",
+     "PG R735QTJ8XC9X",
+     "CCL R735QTJ8XC9X",
+     "CRWD X59VIZ423I3P",
+     "UAUA TFUSUWQOV97P",
+     "GS RKEOGCOG6RFP",
+     "TSM R735QTJ8XC9X",
+     "BMY R735QTJ8XC9X",
+     "TWLO WBMIXML35O4L",
+     "PLUG RP9Y0ZSHT205",
+     "GE R735QTJ8XC9X",
+     "BLNK WRXDDCLORBS5",
+     "ZEN R735QTJ8XC9X",
+     "DOCU WU16SJRONF51",
+     "BLDR T9P99VFPNI3P",
+     "AMAT R735QTJ8XC9X",
+     "RCL R735QTJ8XC9X",
+     "GM URPX6IW2RK2T",
+     "LMT R735QTJ8XC9X",
+     "TXN R735QTJ8XC9X",
+     "PIC X7JLMQH2G4F9",
+     "TMO R735QTJ8XC9X",
+     "KO R735QTJ8XC9X",
+     "DH R735QTJ8XC9X",
+     "IBM R735QTJ8XC9X",
+     "ORCL R735QTJ8XC9X",
+     "LI XGLILOJXRUJP",
+     "REGN R735QTJ8XC9X",
+     "MRK R735QTJ8XC9X",
+     "FCX R735QTJ8XC9X",
+     "AVGO UEW4IOBWVPT1",
+     "IFF R735QTJ8XC9X"
+    ],
+    "universe": "size-panel-200"
+   }
+  },
+  {
+   "at": "2021-01-30 00:00:00",
+   "label": "SUGARLOAF_MEMBERS",
+   "value": {
+    "first": 100,
+    "members": [
+     "PINS X3RPXTZRW09X",
+     "MELI TV0AIPE7984L",
+     "OKTA WJI3OJXP6YCL",
+     "ABX R735QTJ8XC9X",
+     "AMGN R735QTJ8XC9X",
+     "PANW V8EJVK11FRZ9",
+     "ABNB XK8H247DY6W5",
+     "DHR R735QTJ8XC9X",
+     "NOX R735QTJ8XC9X",
+     "ATVI R735QTJ8XC9X",
+     "NKE R735QTJ8XC9X",
+     "UPS RPLRE46IQ3XH",
+     "TDOC W1U0W5MNRKO5",
+     "CEY S67FQV7Z62CL",
+     "INTU R735QTJ8XC9X",
+     "CRSP WEUPONR06P2D",
+     "DASH XK7HM0U7VFQD",
+     "ERC R735QTJ8XC9X",
+     "AMT RBASL7V8PIZP",
+     "FD R735QTJ8XC9X",
+     "NCLH VDDR8KLRD36T",
+     "LOW R735QTJ8XC9X",
+     "UNP R735QTJ8XC9X",
+     "CVS R735QTJ8XC9X",
+     "ETSY VZR6X1TTY8H1",
+     "SBUX R735QTJ8XC9X",
+     "MARA VSI9G9W3OAXX",
+     "PCLN RJG7T2VJICTH",
+     "NOW V7TVHLCHTXLX",
+     "RNG VK9VW4SAN7MT",
+     "F R735QTJ8XC9X",
+     "ATUS WLKXNNQJ0AJP",
+     "DAL TSAT9G6HOJ8L",
+     "MWD R735QTJ8XC9X",
+     "MHP R735QTJ8XC9X",
+     "ACN S6HA7SVNXLYD",
+     "WDAY VAP9FER7V5GL",
+     "BYND X45I7544YKIT",
+     "MMM R735QTJ8XC9X",
+     "CHWY X5BUF5UE90F9",
+     "AI XK7HM0U7VFQD",
+     "KFT S5HU4FPL6G6D",
+     "ABT R735QTJ8XC9X",
+     "TJX R735QTJ8XC9X",
+     "FPL R735QTJ8XC9X",
+     "ISRG RVIFYB6Z92LH",
+     "P R735QTJ8XC9X",
+     "DXCM T7TBFF72DG11",
+     "CAT R735QTJ8XC9X",
+     "MO R735QTJ8XC9X",
+     "PEP R735QTJ8XC9X",
+     "CMG TFNWQ96IBZ39",
+     "DG UHLLRXJMGEP1",
+     "UTX R735QTJ8XC9X",
+     "ZS WSVU0MELFQED",
+     "MDT R735QTJ8XC9X",
+     "ALD R735QTJ8XC9X",
+     "CVNA WK2S2IM8SSPX",
+     "FSLY X4K9WJLO3VXH",
+     "KORS V2FWF6A8RAZP",
+     "MSTR RBGP9S2961YD",
+     "MGG R735QTJ8XC9X",
+     "PCS TRX10524LYZP",
+     "ADSK R735QTJ8XC9X",
+     "LULU TUPGLODCEXD1",
+     "SGEN S2TCB9V1OIG5",
+     "W VUE7AQ4QYD0L",
+     "LLY R735QTJ8XC9X",
+     "WAG R735QTJ8XC9X",
+     "VRTX R735QTJ8XC9X",
+     "VTRSV XJGWJHYNT2ED",
+     "CSX R735QTJ8XC9X",
+     "GPN S1VV43FB2UZP",
+     "GD R735QTJ8XC9X",
+     "OXY R735QTJ8XC9X",
+     "TWTR VLE97YS7S57P",
+     "BLK ROIDIDJRNXID",
+     "WR R735QTJ8XC9X",
+     "NET X7TG3O4R7O11",
+     "NNDM W8O6NJ2UW6SL",
+     "WKHS W713TX4QAX5X",
+     "WORK X5HR3Q1EPJDX",
+     "TWRS RDBNO4XQDCV9",
+     "FVRR X5AUZ2H8699H",
+     "CI R735QTJ8XC9X",
+     "RUN W2SHJFFKFZAD",
+     "LUV R735QTJ8XC9X",
+     "CME SKAIZ0LWKM05",
+     "ATH S9AP9FK1TBHH",
+     "ERTS R735QTJ8XC9X",
+     "OSTK SF3G193U19ID",
+     "FTCH WY1XIAJHWBQD",
+     "ADI R735QTJ8XC9X",
+     "BP R735QTJ8XC9X",
+     "IDPH R735QTJ8XC9X",
+     "EDU TLSGV74BGZ1H",
+     "PX R735QTJ8XC9X",
+     "WYNN SJ56738TCX9H",
+     "EBON XFO1EI476739",
+     "MTCH XFSYMYY1JYW5"
+    ],
+    "universe": "size-panel-200"
+   }
+  },
+  {
+   "at": "2021-01-30 00:00:00",
+   "label": "probe.sessions",
+   "value": {
+    "columns": [
+     "date",
+     "readiness",
+     "bars",
+     "fundamentals",
+     "earnings",
+     "evaluate",
+     "ready_members",
+     "bars_read",
+     "listings"
+    ],
+    "rows": [
+     [
+      "2021-01-04",
+      2.45,
+      2.45,
+      0.37,
+      438.96,
+      444.23,
+      187,
+      759531,
+      10076
+     ],
+     [
+      "2021-01-05",
+      2.4,
+      2.42,
+      0.04,
+      0.29,
+      5.15,
+      187,
+      759720,
+      10074
+     ],
+     [
+      "2021-01-06",
+      2.44,
+      2.46,
+      0.04,
+      0.27,
+      5.22,
+      187,
+      759807,
+      10076
+     ],
+     [
+      "2021-01-07",
+      2.44,
+      2.44,
+      0.05,
+      0.26,
+      5.19,
+      187,
+      759890,
+      10079
+     ],
+     [
+      "2021-01-08",
+      2.38,
+      2.43,
+      0.05,
+      0.24,
+      5.1,
+      187,
+      759972,
+      10079
+     ],
+     [
+      "2021-01-11",
+      2.36,
+      2.38,
+      0.04,
+      0.36,
+      5.14,
+      187,
+      760052,
+      10082
+     ],
+     [
+      "2021-01-12",
+      2.4,
+      2.41,
+      0.04,
+      0.4,
+      5.25,
+      187,
+      760132,
+      10086
+     ],
+     [
+      "2021-01-13",
+      2.42,
+      2.42,
+      0.04,
+      0.48,
+      5.36,
+      187,
+      760212,
+      10092
+     ],
+     [
+      "2021-01-14",
+      2.4,
+      2.43,
+      0.04,
+      0.5,
+      5.36,
+      187,
+      760292,
+      10094
+     ],
+     [
+      "2021-01-15",
+      2.43,
+      2.44,
+      0.04,
+      0.51,
+      5.42,
+      187,
+      760372,
+      10094
+     ],
+     [
+      "2021-01-19",
+      2.42,
+      2.42,
+      0.04,
+      1.46,
+      6.34,
+      187,
+      760452,
+      10117
+     ],
+     [
+      "2021-01-20",
+      2.53,
+      2.45,
+      0.02,
+      1.69,
+      6.69,
+      187,
+      760532,
+      10128
+     ],
+     [
+      "2021-01-21",
+      2.4,
+      2.43,
+      0.04,
+      1.65,
+      6.52,
+      187,
+      760612,
+      10131
+     ],
+     [
+      "2021-01-22",
+      2.43,
+      2.42,
+      0.02,
+      1.65,
+      6.51,
+      187,
+      760692,
+      10131
+     ],
+     [
+      "2021-01-25",
+      2.41,
+      2.41,
+      0.02,
+      2.37,
+      7.21,
+      187,
+      760772,
+      10143
+     ],
+     [
+      "2021-01-26",
+      2.39,
+      2.42,
+      0.04,
+      2.23,
+      7.08,
+      187,
+      760852,
+      10148
+     ],
+     [
+      "2021-01-27",
+      2.42,
+      2.44,
+      0.04,
+      2.5,
+      7.4,
+      187,
+      760932,
+      10158
+     ],
+     [
+      "2021-01-28",
+      2.41,
+      2.42,
+      0.04,
+      1.85,
+      6.72,
+      187,
+      761012,
+      10158
+     ],
+     [
+      "2021-01-29",
+      2.42,
+      2.44,
+      0.05,
+      2.17,
+      7.08,
+      187,
+      761092,
+      10158
+     ]
+    ]
+   }
+  },
+  {
+   "at": "2021-01-30 00:00:00",
+   "label": "probe.calls",
+   "value": {
+    "columns": [
+     "utc",
+     "bars_in_slice",
+     "seconds"
+    ],
+    "rows": [
+     [
+      "construction",
+      0,
+      4.6
+     ],
+     [
+      "2021-01-04 21:00:00+00:00",
+      214,
+      470.28
+     ],
+     [
+      "2021-01-04 21:15:00+00:00",
+      1,
+      0.01
+     ],
+     [
+      "2021-01-05 05:00:00+00:00",
+      0,
+      0.0
+     ],
+     [
+      "2021-01-05 21:00:00+00:00",
+      214,
+      5.73
+     ],
+     [
+      "2021-01-05 21:15:00+00:00",
+      1,
+      0.01
+     ],
+     [
+      "2021-01-06 05:00:00+00:00",
+      0,
+      0.0
+     ],
+     [
+      "2021-01-06 21:00:00+00:00",
+      214,
+      5.8
+     ],
+     [
+      "2021-01-06 21:15:00+00:00",
+      1,
+      0.01
+     ],
+     [
+      "2021-01-07 05:00:00+00:00",
+      0,
+      0.0
+     ],
+     [
+      "2021-01-07 21:00:00+00:00",
+      214,
+      5.78
+     ],
+     [
+      "2021-01-07 21:15:00+00:00",
+      1,
+      0.01
+     ],
+     [
+      "2021-01-08 05:00:00+00:00",
+      0,
+      0.0
+     ],
+     [
+      "2021-01-08 21:00:00+00:00",
+      214,
+      5.74
+     ],
+     [
+      "2021-01-08 21:15:00+00:00",
+      1,
+      0.01
+     ],
+     [
+      "2021-01-09 05:00:00+00:00",
+      0,
+      0.0
+     ],
+     [
+      "2021-01-10 05:00:00+00:00",
+      0,
+      0.0
+     ],
+     [
+      "2021-01-11 05:00:00+00:00",
+      0,
+      0.0
+     ],
+     [
+      "2021-01-11 21:00:00+00:00",
+      214,
+      5.74
+     ],
+     [
+      "2021-01-11 21:15:00+00:00",
+      1,
+      0.01
+     ],
+     [
+      "2021-01-12 05:00:00+00:00",
+      0,
+      0.0
+     ],
+     [
+      "2021-01-12 21:00:00+00:00",
+      214,
+      5.83
+     ],
+     [
+      "2021-01-12 21:15:00+00:00",
+      1,
+      0.01
+     ],
+     [
+      "2021-01-13 05:00:00+00:00",
+      0,
+      0.0
+     ],
+     [
+      "2021-01-13 21:00:00+00:00",
+      214,
+      5.94
+     ],
+     [
+      "2021-01-13 21:15:00+00:00",
+      1,
+      0.01
+     ],
+     [
+      "2021-01-14 05:00:00+00:00",
+      0,
+      0.0
+     ],
+     [
+      "2021-01-14 21:00:00+00:00",
+      214,
+      5.94
+     ],
+     [
+      "2021-01-14 21:15:00+00:00",
+      1,
+      0.01
+     ],
+     [
+      "2021-01-15 05:00:00+00:00",
+      0,
+      0.0
+     ],
+     [
+      "2021-01-15 21:00:00+00:00",
+      214,
+      5.99
+     ],
+     [
+      "2021-01-15 21:15:00+00:00",
+      1,
+      0.01
+     ],
+     [
+      "2021-01-16 05:00:00+00:00",
+      0,
+      0.0
+     ],
+     [
+      "2021-01-17 05:00:00+00:00",
+      0,
+      0.0
+     ],
+     [
+      "2021-01-18 05:00:00+00:00",
+      0,
+      0.0
+     ],
+     [
+      "2021-01-19 05:00:00+00:00",
+      0,
+      0.0
+     ],
+     [
+      "2021-01-19 21:00:00+00:00",
+      214,
+      6.93
+     ],
+     [
+      "2021-01-19 21:15:00+00:00",
+      1,
+      0.01
+     ],
+     [
+      "2021-01-20 05:00:00+00:00",
+      0,
+      0.0
+     ],
+     [
+      "2021-01-20 21:00:00+00:00",
+      214,
+      7.27
+     ],
+     [
+      "2021-01-20 21:15:00+00:00",
+      1,
+      0.01
+     ],
+     [
+      "2021-01-21 05:00:00+00:00",
+      0,
+      0.0
+     ],
+     [
+      "2021-01-21 21:00:00+00:00",
+      214,
+      7.11
+     ],
+     [
+      "2021-01-21 21:15:00+00:00",
+      1,
+      0.01
+     ],
+     [
+      "2021-01-22 05:00:00+00:00",
+      0,
+      0.0
+     ],
+     [
+      "2021-01-22 21:00:00+00:00",
+      214,
+      7.09
+     ],
+     [
+      "2021-01-22 21:15:00+00:00",
+      1,
+      0.01
+     ],
+     [
+      "2021-01-23 05:00:00+00:00",
+      0,
+      0.0
+     ],
+     [
+      "2021-01-24 05:00:00+00:00",
+      0,
+      0.0
+     ],
+     [
+      "2021-01-25 05:00:00+00:00",
+      0,
+      0.0
+     ],
+     [
+      "2021-01-25 21:00:00+00:00",
+      214,
+      7.82
+     ],
+     [
+      "2021-01-25 21:15:00+00:00",
+      1,
+      0.01
+     ],
+     [
+      "2021-01-26 05:00:00+00:00",
+      0,
+      0.0
+     ],
+     [
+      "2021-01-26 21:00:00+00:00",
+      214,
+      7.67
+     ],
+     [
+      "2021-01-26 21:15:00+00:00",
+      1,
+      0.01
+     ],
+     [
+      "2021-01-27 05:00:00+00:00",
+      0,
+      0.0
+     ],
+     [
+      "2021-01-27 21:00:00+00:00",
+      214,
+      7.97
+     ],
+     [
+      "2021-01-27 21:15:00+00:00",
+      1,
+      0.01
+     ],
+     [
+      "2021-01-28 05:00:00+00:00",
+      0,
+      0.0
+     ],
+     [
+      "2021-01-28 21:00:00+00:00",
+      214,
+      7.31
+     ],
+     [
+      "2021-01-28 21:15:00+00:00",
+      1,
+      0.01
+     ],
+     [
+      "2021-01-29 05:00:00+00:00",
+      0,
+      0.0
+     ],
+     [
+      "2021-01-29 21:00:00+00:00",
+      214,
+      7.66
+     ],
+     [
+      "2021-01-29 21:15:00+00:00",
+      1,
+      0.01
+     ]
+    ]
+   }
+  },
+  {
+   "at": "2021-01-30 00:00:00",
+   "label": "probe.profile.construction.cumulative",
+   "value": {
+    "part": 0,
+    "parts": 1,
+    "text": "ncalls  tottime  percall  cumtime  percall filename:lineno(function)\n        1    0.003    0.003    4.605    4.605 host.py:118(__init__)\n        1    0.008    0.008    4.554    4.554 services.py:424(_sync_resources)\n        1    0.020    0.020    4.263    4.263 services.py:628(_prefill_daily)\n       15    0.414    0.028    2.733    0.182 services.py:660(_fill_window)\n        2    1.461    0.731    1.508    0.754 lean.py:207(daily_histories)\n   145090    0.977    0.000    1.140    0.000 lean.py:244(to_utc)\n    72545    0.131    0.000    1.053    0.000 <string>:2(__init__)\n    72545    0.205    0.000    0.922    0.000 contracts.py:644(__post_init__)\n   217635    0.305    0.000    0.369    0.000 primitives.py:22(aware)\n       15    0.031    0.002    0.278    0.019 lean.py:95(subscribe)\n       15    0.246    0.016    0.246    0.016 lean.py:67(initialize_security)\n    72545    0.037    0.000    0.210    0.000 primitives.py:34(finite)\n    72545    0.059    0.000    0.173    0.000 {built-in method builtins.all}\n   145107    0.163    0.000    0.163    0.000 {method 'replace' of 'datetime.datetime' objects}\n   435270    0.087    0.000    0.114    0.000 primitives.py:42(<genexpr>)\n   145075    0.067    0.000    0.087    0.000 none:17(__lt__)\n   217635    0.064    0.000    0.064    0.000 {method 'utcoffset' of 'datetime.datetime' objects}\n    72545    0.046    0.000    0.059    0.000 none:27(__gt__)\n    72545    0.044    0.000    0.059    0.000 none:32(__ge__)\n       15    0.012    0.001    0.050    0.003 {built-in method builtins.sorted}\n   580569    0.048    0.000    0.048    0.000 {built-in method builtins.isinstance}\n    72590    0.041    0.000    0.041    0.000 {method 'setdefault' of 'dict' objects}\n        1    0.000    0.000    0.034    0.034 services.py:1199(__init__)\n        1    0.000    0.000    0.034    0.034 services.py:59(__init__)\n        1    0.030    0.030    0.034    0.034 lean.py:62(setup)\n   362725    0.027    0.000    0.027    0.000 {built-in method math.isfinite}\n       15    0.006    0.000    0.017    0.001 {method 'extend' of 'collections.deque' objects}\n    72577    0.016    0.000    0.016    0.000 {built-in method builtins.min}\n    72550    0.013    0.000    0.013    0.000 {built-in method builtins.max}\n        1    0.000    0.000    0.013    0.013 session.py:24(__init__)\n        1    0.000    0.000    0.013    0.013 runtime.py:183(__init__)\n        1    0.000    0.000    0.013    0.013 services.py:151(install)\n    72560    0.011    0.000    0.011    0.000 services.py:682(<genexpr>)\n        1    0.001    0.001    0.009    0.009 services.py:240(_install_universe)\n        1    0.007    0.007    0.008    0.008 lean.py:312(universe)\n    72577    0.006    0.000    0.006    0.000 {method 'append' of 'list' objects}\n        1    0.000    0.000    0.004    0.004 base.py:237(install)\n        1    0.000    0.000    0.004    0.004 base.py:288(_rebuild_owners)\n        1    0.004    0.004    0.004    0.004 services.py:772(_retained_instruments)\n       15    0.004    0.000    0.004    0.000 lean.py:124(feed_period)\n       15    0.001    0.000    0.001    0.000 lean.py:235(scan)\n       15    0.001    0.000    0.001    0.000 lean.py:143(consolidator)\n        1    0.001    0.001    0.001    0.001 <string>:1(<module>)\n        1    0.001    0.001    0.001    0.001 none:1(<module>)\n      586    0.000    0.000    0.000    0.000 <string>:2(__hash__)\n      152    0.000    0.000    0.000    0.000 {built-in method builtins.getattr}\n        1    0.000    0.000    0.000    0.000 none:4(to_action1)\n       16    0.000    0.000    0.000    0.000 lean.py:87(resolution)\n        3    0.000    0.000    0.000    0.000 <frozen importlib._bootstrap_external>:1713(_fix_up_module)\n        1    0.000    0.000    0.000    0.000 inspect.py:1332(getfullargspec)\n      133    0.000    0.000    0.000    0.000 {method 'get' of 'dict' objects}\n        3    0.000    0.000    0.000    0.000 <frozen importlib._bootstrap_external>:778(spec_from_file_location)\n      586    0.000    0.000    0.000    0.000 {built-in method builtins.hash}\n        1    0.000    0.000    0.000    0.000 inspect.py:2435(_signature_from_callable)\n        1    0.000    0.000    0.000    0.000 inspect.py:2331(_signature_from_function)\n       15    0.000    0.000    0.000    0.000 services.py:141(_asset_class)\n        2    0.000    0.000    0.000    0.000 lean.py:219(<dictcomp>)\n        3    0.000    0.000    0.000    0.000 <frozen importlib._bootstrap_external>:923(is_package)\n        2    0.000    0.000    0.000    0.000 {built-in method builtins.__build_class__}\n       19    0.000    0.000    0.000    0.000 {method 'astimezone' of 'datetime.datetime' objects}\n\n\n"
+   }
+  },
+  {
+   "at": "2021-01-30 00:00:00",
+   "label": "probe.profile.construction.tottime",
+   "value": {
+    "part": 0,
+    "parts": 1,
+    "text": "ncalls  tottime  percall  cumtime  percall filename:lineno(function)\n        2    1.461    0.731    1.508    0.754 lean.py:207(daily_histories)\n   145090    0.977    0.000    1.140    0.000 lean.py:244(to_utc)\n       15    0.414    0.028    2.733    0.182 services.py:660(_fill_window)\n   217635    0.305    0.000    0.369    0.000 primitives.py:22(aware)\n       15    0.246    0.016    0.246    0.016 lean.py:67(initialize_security)\n    72545    0.205    0.000    0.922    0.000 contracts.py:644(__post_init__)\n   145107    0.163    0.000    0.163    0.000 {method 'replace' of 'datetime.datetime' objects}\n    72545    0.131    0.000    1.053    0.000 <string>:2(__init__)\n   435270    0.087    0.000    0.114    0.000 primitives.py:42(<genexpr>)\n   145075    0.067    0.000    0.087    0.000 none:17(__lt__)\n   217635    0.064    0.000    0.064    0.000 {method 'utcoffset' of 'datetime.datetime' objects}\n    72545    0.059    0.000    0.173    0.000 {built-in method builtins.all}\n   580569    0.048    0.000    0.048    0.000 {built-in method builtins.isinstance}\n    72545    0.046    0.000    0.059    0.000 none:27(__gt__)\n    72545    0.044    0.000    0.059    0.000 none:32(__ge__)\n    72590    0.041    0.000    0.041    0.000 {method 'setdefault' of 'dict' objects}\n    72545    0.037    0.000    0.210    0.000 primitives.py:34(finite)\n       15    0.031    0.002    0.278    0.019 lean.py:95(subscribe)\n        1    0.030    0.030    0.034    0.034 lean.py:62(setup)\n   362725    0.027    0.000    0.027    0.000 {built-in method math.isfinite}\n        1    0.020    0.020    4.263    4.263 services.py:628(_prefill_daily)\n    72577    0.016    0.000    0.016    0.000 {built-in method builtins.min}\n    72550    0.013    0.000    0.013    0.000 {built-in method builtins.max}\n       15    0.012    0.001    0.050    0.003 {built-in method builtins.sorted}\n    72560    0.011    0.000    0.011    0.000 services.py:682(<genexpr>)\n        1    0.008    0.008    4.554    4.554 services.py:424(_sync_resources)\n        1    0.007    0.007    0.008    0.008 lean.py:312(universe)\n    72577    0.006    0.000    0.006    0.000 {method 'append' of 'list' objects}\n       15    0.006    0.000    0.017    0.001 {method 'extend' of 'collections.deque' objects}\n        1    0.004    0.004    0.004    0.004 services.py:772(_retained_instruments)\n       15    0.004    0.000    0.004    0.000 lean.py:124(feed_period)\n        1    0.003    0.003    4.605    4.605 host.py:118(__init__)\n       15    0.001    0.000    0.001    0.000 lean.py:143(consolidator)\n       15    0.001    0.000    0.001    0.000 lean.py:235(scan)\n        1    0.001    0.001    0.001    0.001 <string>:1(<module>)\n\n\n"
+   }
+  },
+  {
+   "at": "2021-01-30 00:00:00",
+   "label": "probe.profile.first.cumulative",
+   "value": {
+    "part": 0,
+    "parts": 1,
+    "text": "ncalls  tottime  percall  cumtime  percall filename:lineno(function)\n        1    0.002    0.002  470.278  470.278 host.py:206(on_data)\n        1    0.000    0.000  470.269  470.269 session.py:31(process)\n        1    0.000    0.000  470.265  470.265 runtime.py:249(process)\n        1    0.007    0.007  444.232  444.232 adapter_probe.py:85(evaluate)\n      792    0.003    0.000  439.312    0.555 services.py:317(compute)\n      187    0.004    0.000  438.963    2.347 base.py:732(earnings)\n      187    0.000    0.000  438.929    2.347 base.py:740(<lambda>)\n      187    0.001    0.000  438.929    2.347 services.py:1109(_earnings)\n        1    0.289    0.289  438.882  438.882 services.py:1134(_load_earnings)\n   232763   19.035    0.000  438.484    0.002 lean.py:625(earnings)\n       20    0.055    0.003  295.574   14.779 concat.py:157(concat)\n       20    0.397    0.020  294.989   14.749 concat.py:622(get_result)\n       20    0.000    0.000  277.480   13.874 concat.py:699(new_axes)\n       20    0.001    0.000  277.480   13.874 concat.py:702(<listcomp>)\n       20    0.000    0.000  276.666   13.833 concat.py:717(_get_concat_axis)\n       20    0.009    0.000  276.605   13.830 concat.py:777(_concat_indexes)\n       20    1.105    0.055  276.596   13.830 multi.py:2286(append)\n   230073    1.150    0.000  262.948    0.001 base.py:3245(union)\n   122054    0.743    0.000  237.531    0.002 base.py:3367(_union)\n   117569  175.955    0.001  177.834    0.002 base.py:411(_outer_indexer)\n    61075    0.223    0.000   58.724    0.001 multi.py:216(new_meth)\n    61075    1.148    0.000   58.501    0.001 multi.py:546(from_tuples)\n    61075    0.389    0.000   56.011    0.001 multi.py:475(from_arrays)\n    61075    0.287    0.000   52.410    0.001 categorical.py:3089(factorize_from_iterables)\n   183225    0.183    0.000   52.117    0.000 categorical.py:3110(<genexpr>)\n   122150    0.691    0.000   51.934    0.000 categorical.py:3046(factorize_from_iterable)\n   122210    1.711    0.000   49.829    0.000 categorical.py:371(__init__)\n169278/169258    2.749    0.000   33.354    0.000 series.py:392(__init__)\n   687714    4.417    0.000   32.579    0.000 construction.py:517(sanitize_array)\n        1    0.000    0.000   25.998   25.998 services.py:337(apply)\n        1    0.479    0.479   25.947   25.947 services.py:424(_sync_resources)\n        1    0.010    0.010   25.454   25.454 services.py:628(_prefill_daily)\n   305167   22.339    0.000   25.204    0.000 base.py:2236(is_monotonic_increasing)\n    61075    0.443    0.000   25.008    0.000 frame.py:698(__init__)\n60734992/59295920   12.425    0.000   23.935    0.000 {built-in method builtins.isinstance}\n    61075    0.350    0.000   23.822    0.000 construction.py:423(dict_to_mgr)\n   126715    0.997    0.000   21.278    0.000 algorithms.py:1452(safe_sort)\n   488840    0.306    0.000   20.914    0.000 dtypes.py:220(__init__)\n   488840    0.599    0.000   20.608    0.000 dtypes.py:373(_finalize)\n   305495    2.560    0.000   20.174    0.000 datetimes.py:331(_from_sequence_not_strict)\n    60999    0.271    0.000   20.158    0.000 datetimelike.py:709(_union)\n   244420    1.790    0.000   19.846    0.000 dtypes.py:550(validate_categories)\n   366441   16.340    0.000   19.721    0.000 base.py:2320(is_unique)\n   427828    5.528    0.000   19.037    0.000 cast.py:1166(maybe_infer_to_datetimelike)\n   274036    2.825    0.000   18.924    0.000 base.py:475(__new__)\n      200    2.968    0.015   18.862    0.094 services.py:660(_fill_window)\n   248965   17.814    0.000   17.814    0.000 {method 'argsort' of 'numpy.ndarray' objects}\n     4485    0.010    0.000   17.807    0.004 base.py:7816(_maybe_try_sort)\n   187693    1.025    0.000   17.560    0.000 base.py:3827(get_indexer)\n   314291    0.099    0.000   16.890    0.000 base.py:6324(_index_as_unique)\n    61075    0.223    0.000   16.807    0.000 construction.py:96(arrays_to_mgr)\n    61039    1.036    0.000   15.802    0.000 datetimelike.py:2296(_with_freq)\n       40    0.282    0.007   13.874    0.347 multi.py:2322(<listcomp>)\n   122150    0.305    0.000   13.220    0.000 categorical.py:3003(recode_for_categories)\n   504929    1.124    0.000   12.489    0.000 construction.py:481(ensure_wrapped_if_datetimelike)\n    61039    0.209    0.000   12.424    0.000 datetimelike.py:933(inferred_freq)\n    61039    0.510    0.000   12.216    0.000 frequencies.py:89(infer_freq)\n   122250    0.738    0.000   12.179    0.000 algorithms.py:610(factorize)\n   183249    0.704    0.000   12.172    0.000 datetimes.py:320(__new__)\n   122333    0.675    0.000   11.457    0.000 base.py:675(_with_infer)\n\n\n"
+   }
+  },
+  {
+   "at": "2021-01-30 00:00:00",
+   "label": "probe.profile.first.tottime",
+   "value": {
+    "part": 0,
+    "parts": 1,
+    "text": "ncalls  tottime  percall  cumtime  percall filename:lineno(function)\n   117569  175.955    0.001  177.834    0.002 base.py:411(_outer_indexer)\n   305167   22.339    0.000   25.204    0.000 base.py:2236(is_monotonic_increasing)\n   232763   19.035    0.000  438.484    0.002 lean.py:625(earnings)\n   248965   17.814    0.000   17.814    0.000 {method 'argsort' of 'numpy.ndarray' objects}\n   366441   16.340    0.000   19.721    0.000 base.py:2320(is_unique)\n60734992/59295920   12.425    0.000   23.935    0.000 {built-in method builtins.isinstance}\n        1    6.414    6.414    6.577    6.577 lean.py:207(daily_histories)\n   427828    5.528    0.000   19.037    0.000 cast.py:1166(maybe_infer_to_datetimelike)\n  9435452    5.144    0.000    9.843    0.000 generic.py:42(_instancecheck)\n   687714    4.417    0.000   32.579    0.000 construction.py:517(sanitize_array)\n  1376131    3.823    0.000    5.196    0.000 lean.py:244(to_utc)\n  9435452    3.328    0.000    4.484    0.000 generic.py:37(_check)\n   187693    3.052    0.000    4.035    0.000 base.py:3962(_get_indexer)\n17730660/17334938    3.002    0.000    4.543    0.000 {built-in method builtins.getattr}\n      200    2.968    0.015   18.862    0.094 services.py:660(_fill_window)\n   274036    2.825    0.000   18.924    0.000 base.py:475(__new__)\n  2074146    2.816    0.000    3.405    0.000 primitives.py:22(aware)\n169278/169258    2.749    0.000   33.354    0.000 series.py:392(__init__)\n   305495    2.582    0.000   10.565    0.000 datetimes.py:2201(_sequence_to_dt64)\n   305495    2.560    0.000   20.174    0.000 datetimes.py:331(_from_sequence_not_strict)\n   366524    2.560    0.000    6.114    0.000 base.py:843(_engine)\n11986202/9019798    2.521    0.000    6.368    0.000 {built-in method builtins.len}\n   824142    2.329    0.000    3.051    0.000 base.py:650(_simple_new)\n   366873    2.293    0.000    3.834    0.000 take.py:120(_take_nd_ndarray)\n  1520451    2.232    0.000    4.657    0.000 base.py:695(<genexpr>)\n   122250    2.210    0.000    6.539    0.000 algorithms.py:548(factorize_array)\n  1531556    2.012    0.000    2.541    0.000 frozen.py:76(__getitem__)\n   676733    1.875    0.000    2.844    0.000 numeric.py:274(full)\n   509467    1.864    0.000    1.864    0.000 {method 'reduce' of 'numpy.ufunc' objects}\n   687958    1.844    0.000    8.364    0.000 contracts.py:644(__post_init__)\n   244420    1.790    0.000   19.846    0.000 dtypes.py:550(validate_categories)\n   122210    1.711    0.000   49.829    0.000 categorical.py:371(__init__)\n    61075    1.685    0.000    5.702    0.000 managers.py:727(_slice_take_blocks_ax0)\n   122170    1.635    0.000    1.707    0.000 datetimes.py:2371(objects_to_datetime64)\n610840/610839    1.618    0.000    1.921    0.000 <frozen importlib._bootstrap>:1207(_handle_fromlist)\n\n\n"
+   }
+  },
+  {
+   "at": "2021-01-30 00:00:00",
+   "label": "probe.profile.steady.cumulative",
+   "value": {
+    "part": 0,
+    "parts": 1,
+    "text": "ncalls  tottime  percall  cumtime  percall filename:lineno(function)\n        1    0.000    0.000    0.010    0.010 host.py:206(on_data)\n        1    0.000    0.000    0.010    0.010 session.py:31(process)\n        1    0.000    0.000    0.008    0.008 runtime.py:249(process)\n        1    0.000    0.000    0.008    0.008 services.py:337(apply)\n        1    0.000    0.000    0.004    0.004 services.py:417(_admit_pending_data)\n        1    0.000    0.000    0.004    0.004 services.py:928(_admit_bar)\n        1    0.000    0.000    0.004    0.004 {built-in method builtins.next}\n        1    0.002    0.002    0.004    0.004 services.py:938(<genexpr>)\n        1    0.001    0.001    0.003    0.003 services.py:424(_sync_resources)\n     4428    0.002    0.000    0.002    0.000 services.py:923(_stamp)\n        1    0.000    0.000    0.002    0.002 engine.py:253(accept)\n        1    0.000    0.000    0.002    0.002 engine.py:411(reconcile)\n        1    0.000    0.000    0.002    0.002 engine.py:482(_reconcile)\n        1    0.000    0.000    0.002    0.002 base.py:852(snapshot)\n        1    0.000    0.000    0.002    0.002 services.py:317(compute)\n        1    0.001    0.001    0.002    0.002 services.py:1033(_account)\n        1    0.000    0.000    0.001    0.001 base.py:334(apply)\n     4348    0.001    0.000    0.001    0.000 <string>:2(__hash__)\n        1    0.000    0.000    0.001    0.001 base.py:288(_rebuild_owners)\n      216    0.000    0.000    0.001    0.000 services.py:119(bind)\n      870    0.000    0.000    0.000    0.000 {method 'get' of 'dict' objects}\n        1    0.000    0.000    0.000    0.000 services.py:772(_retained_instruments)\n      430    0.000    0.000    0.000    0.000 {method 'setdefault' of 'dict' objects}\n     4348    0.000    0.000    0.000    0.000 {built-in method builtins.hash}\n     4761    0.000    0.000    0.000    0.000 {built-in method builtins.isinstance}\n      215    0.000    0.000    0.000    0.000 lean.py:31(native_period)\n      430    0.000    0.000    0.000    0.000 base.py:179(resource_key)\n        1    0.000    0.000    0.000    0.000 base.py:322(<setcomp>)\n        1    0.000    0.000    0.000    0.000 services.py:777(<setcomp>)\n        1    0.000    0.000    0.000    0.000 services.py:613(<setcomp>)\n      890    0.000    0.000    0.000    0.000 {built-in method builtins.getattr}\n        1    0.000    0.000    0.000    0.000 services.py:68(__post_init__)\n        2    0.000    0.000    0.000    0.000 primitives.py:34(finite)\n        2    0.000    0.000    0.000    0.000 {built-in method builtins.all}\n        1    0.000    0.000    0.000    0.000 services.py:694(_neutral)\n      447    0.000    0.000    0.000    0.000 {built-in method builtins.min}\n      224    0.000    0.000    0.000    0.000 primitives.py:42(<genexpr>)\n        1    0.000    0.000    0.000    0.000 runtime.py:154(expire)\n        1    0.000    0.000    0.000    0.000 host.py:171(_lifecycle)\n        3    0.000    0.000    0.000    0.000 lean.py:244(to_utc)\n        1    0.000    0.000    0.000    0.000 host.py:36(context)\n        3    0.000    0.000    0.000    0.000 services.py:38(utc)\n        3    0.000    0.000    0.000    0.000 events.py:152(__post_init__)\n        3    0.000    0.000    0.000    0.000 {method 'astimezone' of 'datetime.datetime' objects}\n        1    0.000    0.000    0.000    0.000 <string>:2(__init__)\n      216    0.000    0.000    0.000    0.000 primitives.py:54(__post_init__)\n        1    0.000    0.000    0.000    0.000 dataclasses.py:1455(replace)\n        1    0.000    0.000    0.000    0.000 runtime.py:95(replace)\n        9    0.000    0.000    0.000    0.000 {built-in method builtins.any}\n        6    0.000    0.000    0.000    0.000 {method 'update' of 'set' objects}\n        1    0.000    0.000    0.000    0.000 contracts.py:644(__post_init__)\n      216    0.000    0.000    0.000    0.000 {method 'add' of 'set' objects}\n        1    0.000    0.000    0.000    0.000 services.py:628(_prefill_daily)\n        1    0.000    0.000    0.000    0.000 base.py:420(context)\n       13    0.000    0.000    0.000    0.000 none:27(__gt__)\n      222    0.000    0.000    0.000    0.000 {built-in method math.isfinite}\n        1    0.000    0.000    0.000    0.000 services.py:769(_receipt_time)\n        1    0.000    0.000    0.000    0.000 runtime.py:310(<genexpr>)\n       10    0.000    0.000    0.000    0.000 primitives.py:22(aware)\n        3    0.000    0.000    0.000    0.000 none:7(utcoffset)\n\n\n"
+   }
+  },
+  {
+   "at": "2021-01-30 00:00:00",
+   "label": "probe.profile.steady.tottime",
+   "value": {
+    "part": 0,
+    "parts": 1,
+    "text": "ncalls  tottime  percall  cumtime  percall filename:lineno(function)\n        1    0.002    0.002    0.004    0.004 services.py:938(<genexpr>)\n     4428    0.002    0.000    0.002    0.000 services.py:923(_stamp)\n        1    0.001    0.001    0.003    0.003 services.py:424(_sync_resources)\n     4348    0.001    0.000    0.001    0.000 <string>:2(__hash__)\n        1    0.001    0.001    0.002    0.002 services.py:1033(_account)\n      216    0.000    0.000    0.001    0.000 services.py:119(bind)\n     4348    0.000    0.000    0.000    0.000 {built-in method builtins.hash}\n        1    0.000    0.000    0.000    0.000 services.py:772(_retained_instruments)\n        1    0.000    0.000    0.001    0.001 base.py:288(_rebuild_owners)\n     4761    0.000    0.000    0.000    0.000 {built-in method builtins.isinstance}\n      870    0.000    0.000    0.000    0.000 {method 'get' of 'dict' objects}\n      215    0.000    0.000    0.000    0.000 lean.py:31(native_period)\n      430    0.000    0.000    0.000    0.000 {method 'setdefault' of 'dict' objects}\n      430    0.000    0.000    0.000    0.000 base.py:179(resource_key)\n        1    0.000    0.000    0.000    0.000 services.py:777(<setcomp>)\n      890    0.000    0.000    0.000    0.000 {built-in method builtins.getattr}\n        1    0.000    0.000    0.010    0.010 host.py:206(on_data)\n      447    0.000    0.000    0.000    0.000 {built-in method builtins.min}\n        1    0.000    0.000    0.000    0.000 base.py:322(<setcomp>)\n        1    0.000    0.000    0.000    0.000 services.py:613(<setcomp>)\n      224    0.000    0.000    0.000    0.000 primitives.py:42(<genexpr>)\n        1    0.000    0.000    0.000    0.000 host.py:171(_lifecycle)\n        3    0.000    0.000    0.000    0.000 lean.py:244(to_utc)\n        1    0.000    0.000    0.008    0.008 runtime.py:249(process)\n      216    0.000    0.000    0.000    0.000 primitives.py:54(__post_init__)\n        1    0.000    0.000    0.008    0.008 services.py:337(apply)\n        1    0.000    0.000    0.000    0.000 services.py:694(_neutral)\n        2    0.000    0.000    0.000    0.000 {built-in method builtins.all}\n        3    0.000    0.000    0.000    0.000 {method 'astimezone' of 'datetime.datetime' objects}\n        1    0.000    0.000    0.002    0.002 engine.py:482(_reconcile)\n        1    0.000    0.000    0.004    0.004 services.py:928(_admit_bar)\n      216    0.000    0.000    0.000    0.000 {method 'add' of 'set' objects}\n        1    0.000    0.000    0.000    0.000 services.py:68(__post_init__)\n        3    0.000    0.000    0.000    0.000 events.py:152(__post_init__)\n      222    0.000    0.000    0.000    0.000 {built-in method math.isfinite}\n\n\n"
+   }
+  }
+ ],
+ "runtime_statistics": {
+  "Equity": "$1,000,000.00",
+  "Fees": "-$0.00",
+  "Holdings": "$0.00",
+  "Net Profit": "$0.00",
+  "Probabilistic Sharpe Ratio": "0%",
+  "Return": "0.00 %",
+  "Unrealized": "$0.00",
+  "Volume": "$0.00"
+ },
+ "source_hash": "e2e8958edd4307fda9c0f27ef8364c8b40070fff14285c5c56df13716b5dc6fe",
+ "statistics": {
+  "Alpha": "0",
+  "Annual Standard Deviation": "0",
+  "Annual Variance": "0",
+  "Average Loss": "0%",
+  "Average Win": "0%",
+  "Beta": "0",
+  "Compounding Annual Return": "0%",
+  "Drawdown": "0%",
+  "Drawdown Recovery": "0",
+  "End Equity": "1000000",
+  "Estimated Strategy Capacity": "$0",
+  "Expectancy": "0",
+  "Information Ratio": "-0.327",
+  "Loss Rate": "0%",
+  "Lowest Capacity Asset": "",
+  "Net Profit": "0%",
+  "Portfolio Turnover": "0%",
+  "Probabilistic Sharpe Ratio": "0%",
+  "Profit-Loss Ratio": "0",
+  "Sharpe Ratio": "0",
+  "Sortino Ratio": "0",
+  "Start Equity": "1000000",
+  "Total Fees": "$0.00",
+  "Total Orders": "0",
+  "Tracking Error": "0.138",
+  "Treynor Ratio": "0",
+  "Win Rate": "0%"
+ },
+ "status": "Completed.",
+ "sugarloaf_revision": "bb6aaa152fb3692bef1deafe501dcd038d581769"
+}

@@ -1,0 +1,922 @@
+{
+ "backtest_end": "2021-01-29 23:59:59",
+ "backtest_id": "1a4e11b1f0a4f936b241ca7569778032",
+ "backtest_start": "2021-01-04 00:00:00",
+ "created": "2026-11-14 15:44:19",
+ "error": null,
+ "lean": "v2.5.0.0.18264",
+ "log_lines": 14,
+ "manifest": "adapter_probe",
+ "name": "adapter probe 2021-01 full lookbacks, unprofiled",
+ "node": "B2-8 node 52155dbe",
+ "other_log_lines": [
+  "Algorithm Initialization: Warning: when performing history requests, the start date will be adjusted if there are numerical precision errors in the factor files.",
+  "Algorithm Initialization: Warning: when performing history requests, the start date will be adjusted if it is before the first known date for the symbol.",
+  "2021-01-04 00:00:00 Launching analysis for 1a4e11b1f0a4f936b241ca7569778032 with LEAN Engine v2.5.0.0.18264",
+  "2021-01-04 00:00:00 Changing account currency from USD to USD...",
+  "2021-01-04 00:00:00 Warning: SetBenchmark(SPY): no existing symbol found, benchmark security will be added with Equity type.",
+  "2021-01-04 16:00:00 Warning: large history request, estimated at ~5,082,000 data cells across 200 request(s). This can be slow and memory intensive: request fewer symbols, a shorter period or a coarser resolution.",
+  "2021-01-04 16:00:00 Request for future history modified to end now.",
+  "2021-01-30 00:00:00 Algorithm Id:(1a4e11b1f0a4f936b241ca7569778032) completed in 170.00 seconds at 17k data points per second. Processing total of 2,875,268 data points."
+ ],
+ "parameters": {
+  "bars_lookback": "4900",
+  "earnings_days": "6800",
+  "end_date": "2021-01-29",
+  "profile": "off",
+  "start_date": "2021-01-04"
+ },
+ "project_id": 39378262,
+ "records": [
+  {
+   "at": "2021-01-04 00:00:00",
+   "label": "SUGARLOAF_RUN",
+   "value": {
+    "environment": {
+     "account_type": "MARGIN",
+     "benchmark": "SPY",
+     "borrow_data": null,
+     "brokerage": "DEFAULT",
+     "cash": 1000000,
+     "currency": "USD",
+     "end": "2021-01-29",
+     "leverage": 1.0,
+     "slippage": 0.0005,
+     "start": "2021-01-04",
+     "timezone": "America/New_York"
+    },
+    "execution": {
+     "lifetime": null,
+     "max_target_age": 345600.0,
+     "min_trade_value": 0.0,
+     "order_type": "market",
+     "rebalance_band": 0.0025,
+     "session": "regular",
+     "time_in_force": "gtc"
+    },
+    "name": "qc-adapter-review-probe",
+    "strategy": {
+     "bars_lookback": 4900,
+     "earnings_days": 6800,
+     "profile": false,
+     "window": [
+      "2021-01-04",
+      "2021-01-29"
+     ]
+    },
+    "versions": {
+     "numpy": "1.26.4",
+     "python": "3.11.14",
+     "scipy": "1.13.1",
+     "sugarloaf": "0.1.0"
+    }
+   }
+  },
+  {
+   "at": "2021-01-30 00:00:00",
+   "label": "SUGARLOAF_RESULT",
+   "value": {
+    "batches": 49,
+    "execution_diagnostic_count": 0,
+    "execution_diagnostics": [],
+    "memberships": {
+     "size-panel-200": {
+      "count": 200,
+      "cutoff": "2021-01-04T05:00:00+00:00",
+      "ready": true
+     }
+    },
+    "note": "Orders, fills and performance statistics are in the platform report.",
+    "runtime_diagnostic_count": 0,
+    "runtime_diagnostics": [],
+    "strategy": {
+     "calls": 64,
+     "sessions": 19
+    }
+   }
+  },
+  {
+   "at": "2021-01-30 00:00:00",
+   "label": "SUGARLOAF_MEMBERS",
+   "value": {
+    "first": 0,
+    "members": [
+     "TSLA UNU3P8Y3WFAD",
+     "AAPL R735QTJ8XC9X",
+     "AMZN R735QTJ8XC9X",
+     "NIO WXT2HG8Z7JAD",
+     "BABA VU1EHIDJYJXH",
+     "MSFT R735QTJ8XC9X",
+     "FB V6OIPNZEM8V9",
+     "BIDU TAWKXZJ50P5X",
+     "NFLX SEWJWLJNHZDX",
+     "NVDA RHM8UTD8DT2D",
+     "MRNA X05QXHPHSF39",
+     "AMD R735QTJ8XC9X",
+     "BA R735QTJ8XC9X",
+     "ZM X3RPXTZRW09X",
+     "GOOG T1AZ164W5VTX",
+     "MU R735QTJ8XC9X",
+     "FUBO XIIFW85R4NS5",
+     "GOOCV VP83T1ZUHROL",
+     "DNJR WSZRSZV9QR1H",
+     "SQ W5OUXC7GJYAT",
+     "SNOW XHWS2641G291",
+     "INTC R735QTJ8XC9X",
+     "CRM SZQUJUA9SVOL",
+     "V U12VRGLO8PR9",
+     "DIS R735QTJ8XC9X",
+     "KCAC XH38ND4Z5FFP",
+     "PYPL W2CQDXKV7WPX",
+     "PFE R735QTJ8XC9X",
+     "SBC R735QTJ8XC9X",
+     "CMB R735QTJ8XC9X",
+     "MA TIX2XDPLFR6T",
+     "ENPH V5C9T324VA05",
+     "XON R735QTJ8XC9X",
+     "SHOP W0PNKBMQMN39",
+     "PLTR XIAKBH8EIMHX",
+     "BILI WT7NDQSMCSBP",
+     "AAL VM9RIYHM8ACL",
+     "BRKB R735QTJ8XC9X",
+     "XPEV XHD34ASNWZ1H",
+     "NB R735QTJ8XC9X",
+     "WDC R735QTJ8XC9X",
+     "WMT R735QTJ8XC9X",
+     "PTON X868WVVY7H45",
+     "JNJ R735QTJ8XC9X",
+     "SNAP WIINL6RMFSKL",
+     "LRCX R735QTJ8XC9X",
+     "TRV R735QTJ8XC9X",
+     "BEL R735QTJ8XC9X",
+     "QCOM R735QTJ8XC9X",
+     "CHV R735QTJ8XC9X",
+     "ROKU WO9FGTL2I89X",
+     "UNH R735QTJ8XC9X",
+     "DEAC X5UJWXSLPCH1",
+     "ADBE R735QTJ8XC9X",
+     "UBER X4DDRW1HKLT1",
+     "DOW R735QTJ8XC9X",
+     "HD R735QTJ8XC9X",
+     "JD VQR8UAHAS0O5",
+     "CSCO R735QTJ8XC9X",
+     "APPY TVI0KDZ8MT0L",
+     "FDX R735QTJ8XC9X",
+     "TTD WE3561IA1KKL",
+     "GILD R735QTJ8XC9X",
+     "ABBV VCY032R250MD",
+     "NOB R735QTJ8XC9X",
+     "COST R735QTJ8XC9X",
+     "CMCSA SJTSDFE19S9X",
+     "LMND XFTY32B7MQ1X",
+     "MCD R735QTJ8XC9X",
+     "PG R735QTJ8XC9X",
+     "CCL R735QTJ8XC9X",
+     "CRWD X59VIZ423I3P",
+     "UAUA TFUSUWQOV97P",
+     "GS RKEOGCOG6RFP",
+     "TSM R735QTJ8XC9X",
+     "BMY R735QTJ8XC9X",
+     "TWLO WBMIXML35O4L",
+     "PLUG RP9Y0ZSHT205",
+     "GE R735QTJ8XC9X",
+     "BLNK WRXDDCLORBS5",
+     "ZEN R735QTJ8XC9X",
+     "DOCU WU16SJRONF51",
+     "BLDR T9P99VFPNI3P",
+     "AMAT R735QTJ8XC9X",
+     "RCL R735QTJ8XC9X",
+     "GM URPX6IW2RK2T",
+     "LMT R735QTJ8XC9X",
+     "TXN R735QTJ8XC9X",
+     "PIC X7JLMQH2G4F9",
+     "TMO R735QTJ8XC9X",
+     "KO R735QTJ8XC9X",
+     "DH R735QTJ8XC9X",
+     "IBM R735QTJ8XC9X",
+     "ORCL R735QTJ8XC9X",
+     "LI XGLILOJXRUJP",
+     "REGN R735QTJ8XC9X",
+     "MRK R735QTJ8XC9X",
+     "FCX R735QTJ8XC9X",
+     "AVGO UEW4IOBWVPT1",
+     "IFF R735QTJ8XC9X"
+    ],
+    "universe": "size-panel-200"
+   }
+  },
+  {
+   "at": "2021-01-30 00:00:00",
+   "label": "SUGARLOAF_MEMBERS",
+   "value": {
+    "first": 100,
+    "members": [
+     "PINS X3RPXTZRW09X",
+     "MELI TV0AIPE7984L",
+     "OKTA WJI3OJXP6YCL",
+     "ABX R735QTJ8XC9X",
+     "AMGN R735QTJ8XC9X",
+     "PANW V8EJVK11FRZ9",
+     "ABNB XK8H247DY6W5",
+     "DHR R735QTJ8XC9X",
+     "NOX R735QTJ8XC9X",
+     "ATVI R735QTJ8XC9X",
+     "NKE R735QTJ8XC9X",
+     "UPS RPLRE46IQ3XH",
+     "TDOC W1U0W5MNRKO5",
+     "CEY S67FQV7Z62CL",
+     "INTU R735QTJ8XC9X",
+     "CRSP WEUPONR06P2D",
+     "DASH XK7HM0U7VFQD",
+     "ERC R735QTJ8XC9X",
+     "AMT RBASL7V8PIZP",
+     "FD R735QTJ8XC9X",
+     "NCLH VDDR8KLRD36T",
+     "LOW R735QTJ8XC9X",
+     "UNP R735QTJ8XC9X",
+     "CVS R735QTJ8XC9X",
+     "ETSY VZR6X1TTY8H1",
+     "SBUX R735QTJ8XC9X",
+     "MARA VSI9G9W3OAXX",
+     "PCLN RJG7T2VJICTH",
+     "NOW V7TVHLCHTXLX",
+     "RNG VK9VW4SAN7MT",
+     "F R735QTJ8XC9X",
+     "ATUS WLKXNNQJ0AJP",
+     "DAL TSAT9G6HOJ8L",
+     "MWD R735QTJ8XC9X",
+     "MHP R735QTJ8XC9X",
+     "ACN S6HA7SVNXLYD",
+     "WDAY VAP9FER7V5GL",
+     "BYND X45I7544YKIT",
+     "MMM R735QTJ8XC9X",
+     "CHWY X5BUF5UE90F9",
+     "AI XK7HM0U7VFQD",
+     "KFT S5HU4FPL6G6D",
+     "ABT R735QTJ8XC9X",
+     "TJX R735QTJ8XC9X",
+     "FPL R735QTJ8XC9X",
+     "ISRG RVIFYB6Z92LH",
+     "P R735QTJ8XC9X",
+     "DXCM T7TBFF72DG11",
+     "CAT R735QTJ8XC9X",
+     "MO R735QTJ8XC9X",
+     "PEP R735QTJ8XC9X",
+     "CMG TFNWQ96IBZ39",
+     "DG UHLLRXJMGEP1",
+     "UTX R735QTJ8XC9X",
+     "ZS WSVU0MELFQED",
+     "MDT R735QTJ8XC9X",
+     "ALD R735QTJ8XC9X",
+     "CVNA WK2S2IM8SSPX",
+     "FSLY X4K9WJLO3VXH",
+     "KORS V2FWF6A8RAZP",
+     "MSTR RBGP9S2961YD",
+     "MGG R735QTJ8XC9X",
+     "PCS TRX10524LYZP",
+     "ADSK R735QTJ8XC9X",
+     "LULU TUPGLODCEXD1",
+     "SGEN S2TCB9V1OIG5",
+     "W VUE7AQ4QYD0L",
+     "LLY R735QTJ8XC9X",
+     "WAG R735QTJ8XC9X",
+     "VRTX R735QTJ8XC9X",
+     "VTRSV XJGWJHYNT2ED",
+     "CSX R735QTJ8XC9X",
+     "GPN S1VV43FB2UZP",
+     "GD R735QTJ8XC9X",
+     "OXY R735QTJ8XC9X",
+     "TWTR VLE97YS7S57P",
+     "BLK ROIDIDJRNXID",
+     "WR R735QTJ8XC9X",
+     "NET X7TG3O4R7O11",
+     "NNDM W8O6NJ2UW6SL",
+     "WKHS W713TX4QAX5X",
+     "WORK X5HR3Q1EPJDX",
+     "TWRS RDBNO4XQDCV9",
+     "FVRR X5AUZ2H8699H",
+     "CI R735QTJ8XC9X",
+     "RUN W2SHJFFKFZAD",
+     "LUV R735QTJ8XC9X",
+     "CME SKAIZ0LWKM05",
+     "ATH S9AP9FK1TBHH",
+     "ERTS R735QTJ8XC9X",
+     "OSTK SF3G193U19ID",
+     "FTCH WY1XIAJHWBQD",
+     "ADI R735QTJ8XC9X",
+     "BP R735QTJ8XC9X",
+     "IDPH R735QTJ8XC9X",
+     "EDU TLSGV74BGZ1H",
+     "PX R735QTJ8XC9X",
+     "WYNN SJ56738TCX9H",
+     "EBON XFO1EI476739",
+     "MTCH XFSYMYY1JYW5"
+    ],
+    "universe": "size-panel-200"
+   }
+  },
+  {
+   "at": "2021-01-30 00:00:00",
+   "label": "probe.sessions",
+   "value": {
+    "columns": [
+     "date",
+     "readiness",
+     "bars",
+     "fundamentals",
+     "earnings",
+     "evaluate",
+     "ready_members",
+     "bars_read",
+     "listings"
+    ],
+    "rows": [
+     [
+      "2021-01-04",
+      0.21,
+      0.24,
+      0.13,
+      142.07,
+      142.66,
+      187,
+      759531,
+      10076
+     ],
+     [
+      "2021-01-05",
+      0.21,
+      0.21,
+      0.01,
+      0.11,
+      0.55,
+      187,
+      759720,
+      10074
+     ],
+     [
+      "2021-01-06",
+      0.21,
+      0.21,
+      0.01,
+      0.08,
+      0.51,
+      187,
+      759807,
+      10076
+     ],
+     [
+      "2021-01-07",
+      0.22,
+      0.21,
+      0.01,
+      0.05,
+      0.5,
+      187,
+      759890,
+      10079
+     ],
+     [
+      "2021-01-08",
+      0.22,
+      0.21,
+      0.01,
+      0.07,
+      0.51,
+      187,
+      759972,
+      10079
+     ],
+     [
+      "2021-01-11",
+      0.22,
+      0.21,
+      0.0,
+      0.09,
+      0.52,
+      187,
+      760052,
+      10082
+     ],
+     [
+      "2021-01-12",
+      0.22,
+      0.22,
+      0.01,
+      0.08,
+      0.52,
+      187,
+      760132,
+      10086
+     ],
+     [
+      "2021-01-13",
+      0.22,
+      0.21,
+      0.0,
+      0.13,
+      0.56,
+      187,
+      760212,
+      10092
+     ],
+     [
+      "2021-01-14",
+      0.21,
+      0.21,
+      0.01,
+      0.11,
+      0.55,
+      187,
+      760292,
+      10094
+     ],
+     [
+      "2021-01-15",
+      0.22,
+      0.21,
+      0.0,
+      0.11,
+      0.54,
+      187,
+      760372,
+      10094
+     ],
+     [
+      "2021-01-19",
+      0.21,
+      0.21,
+      0.01,
+      0.35,
+      0.78,
+      187,
+      760452,
+      10117
+     ],
+     [
+      "2021-01-20",
+      0.22,
+      0.21,
+      0.0,
+      0.45,
+      0.89,
+      187,
+      760532,
+      10128
+     ],
+     [
+      "2021-01-21",
+      0.22,
+      0.22,
+      0.01,
+      0.44,
+      0.9,
+      187,
+      760612,
+      10131
+     ],
+     [
+      "2021-01-22",
+      0.22,
+      0.21,
+      0.0,
+      0.41,
+      0.85,
+      187,
+      760692,
+      10131
+     ],
+     [
+      "2021-01-25",
+      0.22,
+      0.24,
+      0.0,
+      0.63,
+      1.09,
+      187,
+      760772,
+      10143
+     ],
+     [
+      "2021-01-26",
+      0.22,
+      0.21,
+      0.0,
+      0.58,
+      1.02,
+      187,
+      760852,
+      10148
+     ],
+     [
+      "2021-01-27",
+      0.22,
+      0.21,
+      0.01,
+      0.93,
+      1.37,
+      187,
+      760932,
+      10158
+     ],
+     [
+      "2021-01-28",
+      0.22,
+      0.21,
+      0.01,
+      0.46,
+      0.9,
+      187,
+      761012,
+      10158
+     ],
+     [
+      "2021-01-29",
+      0.21,
+      0.21,
+      0.01,
+      0.41,
+      0.85,
+      187,
+      761092,
+      10158
+     ]
+    ]
+   }
+  },
+  {
+   "at": "2021-01-30 00:00:00",
+   "label": "probe.calls",
+   "value": {
+    "columns": [
+     "utc",
+     "bars_in_slice",
+     "seconds"
+    ],
+    "rows": [
+     [
+      "construction",
+      0,
+      1.79
+     ],
+     [
+      "2021-01-04 21:00:00+00:00",
+      214,
+      151.35
+     ],
+     [
+      "2021-01-04 21:15:00+00:00",
+      1,
+      0.0
+     ],
+     [
+      "2021-01-05 05:00:00+00:00",
+      0,
+      0.0
+     ],
+     [
+      "2021-01-05 21:00:00+00:00",
+      214,
+      0.61
+     ],
+     [
+      "2021-01-05 21:15:00+00:00",
+      1,
+      0.0
+     ],
+     [
+      "2021-01-06 05:00:00+00:00",
+      0,
+      0.0
+     ],
+     [
+      "2021-01-06 21:00:00+00:00",
+      214,
+      0.6
+     ],
+     [
+      "2021-01-06 21:15:00+00:00",
+      1,
+      0.01
+     ],
+     [
+      "2021-01-07 05:00:00+00:00",
+      0,
+      0.0
+     ],
+     [
+      "2021-01-07 21:00:00+00:00",
+      214,
+      0.58
+     ],
+     [
+      "2021-01-07 21:15:00+00:00",
+      1,
+      0.0
+     ],
+     [
+      "2021-01-08 05:00:00+00:00",
+      0,
+      0.0
+     ],
+     [
+      "2021-01-08 21:00:00+00:00",
+      214,
+      0.61
+     ],
+     [
+      "2021-01-08 21:15:00+00:00",
+      1,
+      0.0
+     ],
+     [
+      "2021-01-09 05:00:00+00:00",
+      0,
+      0.0
+     ],
+     [
+      "2021-01-10 05:00:00+00:00",
+      0,
+      0.0
+     ],
+     [
+      "2021-01-11 05:00:00+00:00",
+      0,
+      0.0
+     ],
+     [
+      "2021-01-11 21:00:00+00:00",
+      214,
+      0.6
+     ],
+     [
+      "2021-01-11 21:15:00+00:00",
+      1,
+      0.0
+     ],
+     [
+      "2021-01-12 05:00:00+00:00",
+      0,
+      0.0
+     ],
+     [
+      "2021-01-12 21:00:00+00:00",
+      214,
+      0.59
+     ],
+     [
+      "2021-01-12 21:15:00+00:00",
+      1,
+      0.0
+     ],
+     [
+      "2021-01-13 05:00:00+00:00",
+      0,
+      0.0
+     ],
+     [
+      "2021-01-13 21:00:00+00:00",
+      214,
+      0.63
+     ],
+     [
+      "2021-01-13 21:15:00+00:00",
+      1,
+      0.01
+     ],
+     [
+      "2021-01-14 05:00:00+00:00",
+      0,
+      0.0
+     ],
+     [
+      "2021-01-14 21:00:00+00:00",
+      214,
+      0.64
+     ],
+     [
+      "2021-01-14 21:15:00+00:00",
+      1,
+      0.0
+     ],
+     [
+      "2021-01-15 05:00:00+00:00",
+      0,
+      0.0
+     ],
+     [
+      "2021-01-15 21:00:00+00:00",
+      214,
+      0.61
+     ],
+     [
+      "2021-01-15 21:15:00+00:00",
+      1,
+      0.0
+     ],
+     [
+      "2021-01-16 05:00:00+00:00",
+      0,
+      0.0
+     ],
+     [
+      "2021-01-17 05:00:00+00:00",
+      0,
+      0.0
+     ],
+     [
+      "2021-01-18 05:00:00+00:00",
+      0,
+      0.0
+     ],
+     [
+      "2021-01-19 05:00:00+00:00",
+      0,
+      0.0
+     ],
+     [
+      "2021-01-19 21:00:00+00:00",
+      214,
+      0.86
+     ],
+     [
+      "2021-01-19 21:15:00+00:00",
+      1,
+      0.0
+     ],
+     [
+      "2021-01-20 05:00:00+00:00",
+      0,
+      0.0
+     ],
+     [
+      "2021-01-20 21:00:00+00:00",
+      214,
+      0.96
+     ],
+     [
+      "2021-01-20 21:15:00+00:00",
+      1,
+      0.0
+     ],
+     [
+      "2021-01-21 05:00:00+00:00",
+      0,
+      0.0
+     ],
+     [
+      "2021-01-21 21:00:00+00:00",
+      214,
+      0.97
+     ],
+     [
+      "2021-01-21 21:15:00+00:00",
+      1,
+      0.0
+     ],
+     [
+      "2021-01-22 05:00:00+00:00",
+      0,
+      0.0
+     ],
+     [
+      "2021-01-22 21:00:00+00:00",
+      214,
+      0.92
+     ],
+     [
+      "2021-01-22 21:15:00+00:00",
+      1,
+      0.0
+     ],
+     [
+      "2021-01-23 05:00:00+00:00",
+      0,
+      0.0
+     ],
+     [
+      "2021-01-24 05:00:00+00:00",
+      0,
+      0.0
+     ],
+     [
+      "2021-01-25 05:00:00+00:00",
+      0,
+      0.0
+     ],
+     [
+      "2021-01-25 21:00:00+00:00",
+      214,
+      1.16
+     ],
+     [
+      "2021-01-25 21:15:00+00:00",
+      1,
+      0.0
+     ],
+     [
+      "2021-01-26 05:00:00+00:00",
+      0,
+      0.0
+     ],
+     [
+      "2021-01-26 21:00:00+00:00",
+      214,
+      1.09
+     ],
+     [
+      "2021-01-26 21:15:00+00:00",
+      1,
+      0.0
+     ],
+     [
+      "2021-01-27 05:00:00+00:00",
+      0,
+      0.0
+     ],
+     [
+      "2021-01-27 21:00:00+00:00",
+      214,
+      1.44
+     ],
+     [
+      "2021-01-27 21:15:00+00:00",
+      1,
+      0.0
+     ],
+     [
+      "2021-01-28 05:00:00+00:00",
+      0,
+      0.0
+     ],
+     [
+      "2021-01-28 21:00:00+00:00",
+      214,
+      0.97
+     ],
+     [
+      "2021-01-28 21:15:00+00:00",
+      1,
+      0.0
+     ],
+     [
+      "2021-01-29 05:00:00+00:00",
+      0,
+      0.0
+     ],
+     [
+      "2021-01-29 21:00:00+00:00",
+      214,
+      0.91
+     ],
+     [
+      "2021-01-29 21:15:00+00:00",
+      1,
+      0.0
+     ]
+    ]
+   }
+  }
+ ],
+ "runtime_statistics": {
+  "Equity": "$1,000,000.00",
+  "Fees": "-$0.00",
+  "Holdings": "$0.00",
+  "Net Profit": "$0.00",
+  "Probabilistic Sharpe Ratio": "0%",
+  "Return": "0.00 %",
+  "Unrealized": "$0.00",
+  "Volume": "$0.00"
+ },
+ "source_hash": "e2e8958edd4307fda9c0f27ef8364c8b40070fff14285c5c56df13716b5dc6fe",
+ "statistics": {
+  "Alpha": "0",
+  "Annual Standard Deviation": "0",
+  "Annual Variance": "0",
+  "Average Loss": "0%",
+  "Average Win": "0%",
+  "Beta": "0",
+  "Compounding Annual Return": "0%",
+  "Drawdown": "0%",
+  "Drawdown Recovery": "0",
+  "End Equity": "1000000",
+  "Estimated Strategy Capacity": "$0",
+  "Expectancy": "0",
+  "Information Ratio": "-0.327",
+  "Loss Rate": "0%",
+  "Lowest Capacity Asset": "",
+  "Net Profit": "0%",
+  "Portfolio Turnover": "0%",
+  "Probabilistic Sharpe Ratio": "0%",
+  "Profit-Loss Ratio": "0",
+  "Sharpe Ratio": "0",
+  "Sortino Ratio": "0",
+  "Start Equity": "1000000",
+  "Total Fees": "$0.00",
+  "Total Orders": "0",
+  "Tracking Error": "0.138",
+  "Treynor Ratio": "0",
+  "Win Rate": "0%"
+ },
+ "status": "Completed.",
+ "sugarloaf_revision": "bb6aaa152fb3692bef1deafe501dcd038d581769"
+}

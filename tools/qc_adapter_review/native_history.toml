@@ -1,0 +1,9 @@
+# Plain-LEAN cost of the adapter's reads for a 214-security daily panel; see native_history.py.
+# Run from the repository root:
+#   uv run --cache-dir .uv-cache sugarloaf run --adapter quantconnect --manifest tools/qc_adapter_review/native_history.toml
+name = "Sugarloaf QC adapter review 2026-11-14"
+root = "../.."
+# The review's own QuantConnect project, created on 2026-11-14 for these diagnostics.
+project_id = 39378262
+entrypoint = "tools/qc_adapter_review/native_history.py"
+include = []

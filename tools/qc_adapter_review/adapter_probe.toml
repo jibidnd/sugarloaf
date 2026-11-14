@@ -1,0 +1,16 @@
+# Where the adapter spends its time for the move-size node's declarations; see adapter_probe.py.
+# Run from the repository root:
+#   uv run --cache-dir .uv-cache sugarloaf run --adapter quantconnect --manifest tools/qc_adapter_review/adapter_probe.toml
+name = "Sugarloaf QC adapter review 2026-11-14"
+root = "../.."
+# The review's own QuantConnect project, created on 2026-11-14 for these diagnostics.
+project_id = 39378262
+factory = "tools.qc_adapter_review.adapter_probe:deployment"
+include = ["tools/qc_adapter_review/adapter_probe.py"]
+
+[parameters]
+start_date = "2021-01-04"
+end_date = "2021-01-29"
+bars_lookback = "4900"
+earnings_days = "6800"
+profile = "on"

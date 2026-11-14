@@ -1,0 +1,692 @@
+{
+ "backtest_end": "2021-01-22 23:59:59",
+ "backtest_id": "22bfc237954ecaf0d68b2ac66b590974",
+ "backtest_start": "2021-01-04 00:00:00",
+ "created": "2026-11-14 05:59:24",
+ "error": null,
+ "lean": "v2.5.0.0.18264",
+ "log_lines": 19,
+ "manifest": "native_history",
+ "name": "native history cost 2021-01",
+ "node": "B2-8 node 52155dbe",
+ "other_log_lines": [
+  "2021-01-04 00:00:00 Launching analysis for 22bfc237954ecaf0d68b2ac66b590974 with LEAN Engine v2.5.0.0.18264",
+  "2021-01-04 16:00:00 Warning: when performing history requests, the start date will be adjusted if there are numerical precision errors in the factor files.",
+  "2021-01-04 16:00:00 Warning: when performing history requests, the start date will be adjusted if it is before the first known date for the symbol.",
+  "2021-01-04 16:00:00 Warning: large history request, estimated at ~5,437,740 data cells across 214 request(s). This can be slow and memory intensive: request fewer symbols, a shorter period or a coarser resolution.",
+  "2021-01-11 16:00:00 Warning: the current time step has been executing for 3.0 minutes and the algorithm will be stopped if it exceeds 10 minutes. Common causes: a slow scheduled event (named in 'TimeMonitor' logs), large history() requests, heavy on_data work or an infinite loop.",
+  "2021-01-23 00:00:00 Algorithm Id:(22bfc237954ecaf0d68b2ac66b590974) completed in 420.61 seconds at 20k data points per second. Processing total of 8,545,974 data points."
+ ],
+ "parameters": {},
+ "project_id": 39378262,
+ "records": [
+  {
+   "at": "2021-01-04 00:00:00",
+   "label": "NATIVE_DIAG",
+   "value": {
+    "at": "2021-01-04T00:00:00",
+    "earnings_days": 6800,
+    "lean": "2.5.0.0.18264",
+    "lookback_bars": 4900,
+    "span_days": 7115,
+    "task": "initialize"
+   }
+  },
+  {
+   "at": "2021-01-04 00:00:00",
+   "label": "NATIVE_DIAG",
+   "value": {
+    "at": "2021-01-04T00:00:00",
+    "eligible": 3932,
+    "members": 200,
+    "rows": 8923,
+    "seconds": 3.871,
+    "task": "selection"
+   }
+  },
+  {
+   "at": "2021-01-04 00:00:00",
+   "label": "NATIVE_DIAG",
+   "value": {
+    "at": "2021-01-04T00:00:00",
+    "first": 0,
+    "task": "members",
+    "tickers": [
+     "TSLA",
+     "AAPL",
+     "AMZN",
+     "NIO",
+     "BABA",
+     "MSFT",
+     "FB",
+     "BIDU",
+     "NFLX",
+     "NVDA",
+     "MRNA",
+     "AMD",
+     "BA",
+     "ZM",
+     "GOOGL",
+     "MU",
+     "FUBO",
+     "GOOG",
+     "BTBT",
+     "SQ",
+     "SNOW",
+     "INTC",
+     "CRM",
+     "V",
+     "DIS",
+     "QS",
+     "PYPL",
+     "PFE",
+     "T",
+     "JPM",
+     "MA",
+     "ENPH",
+     "XOM",
+     "SHOP",
+     "PLTR",
+     "BILI",
+     "AAL",
+     "BRK.B",
+     "XPEV",
+     "BAC",
+     "WDC",
+     "WMT",
+     "PTON",
+     "JNJ",
+     "SNAP",
+     "LRCX",
+     "C",
+     "VZ",
+     "QCOM",
+     "CVX",
+     "ROKU",
+     "UNH",
+     "DKNG",
+     "ADBE",
+     "UBER",
+     "DD",
+     "HD",
+     "JD",
+     "CSCO",
+     "RIOT",
+     "FDX",
+     "TTD",
+     "GILD",
+     "ABBV",
+     "WFC",
+     "COST",
+     "CMCSA",
+     "LMND",
+     "MCD",
+     "PG",
+     "CCL",
+     "CRWD",
+     "UAL",
+     "GS",
+     "TSM",
+     "BMY",
+     "TWLO",
+     "PLUG",
+     "GE",
+     "BLNK",
+     "AZN",
+     "DOCU",
+     "BLDR",
+     "AMAT",
+     "RCL",
+     "GM",
+     "LMT",
+     "TXN",
+     "XL",
+     "TMO",
+     "KO",
+     "TGT",
+     "IBM",
+     "ORCL",
+     "LI",
+     "REGN",
+     "MRK",
+     "FCX",
+     "AVGO",
+     "IFF"
+    ]
+   }
+  },
+  {
+   "at": "2021-01-04 00:00:00",
+   "label": "NATIVE_DIAG",
+   "value": {
+    "at": "2021-01-04T00:00:00",
+    "first": 100,
+    "task": "members",
+    "tickers": [
+     "PINS",
+     "MELI",
+     "OKTA",
+     "GOLD",
+     "AMGN",
+     "PANW",
+     "ABNB",
+     "DHR",
+     "NVAX",
+     "ATVI",
+     "NKE",
+     "UPS",
+     "TDOC",
+     "FIS",
+     "INTU",
+     "CRSP",
+     "DASH",
+     "FCEL",
+     "AMT",
+     "M",
+     "NCLH",
+     "LOW",
+     "UNP",
+     "CVS",
+     "ETSY",
+     "SBUX",
+     "MARA",
+     "BKNG",
+     "NOW",
+     "RNG",
+     "F",
+     "ATUS",
+     "DAL",
+     "MS",
+     "SPGI",
+     "ACN",
+     "WDAY",
+     "BYND",
+     "MMM",
+     "CHWY",
+     "AI",
+     "MDLZ",
+     "ABT",
+     "TJX",
+     "NEE",
+     "ISRG",
+     "COP",
+     "DXCM",
+     "CAT",
+     "MO",
+     "PEP",
+     "CMG",
+     "DG",
+     "RTX",
+     "ZS",
+     "MDT",
+     "HON",
+     "CVNA",
+     "FSLY",
+     "CPRI",
+     "MSTR",
+     "MGM",
+     "TMUS",
+     "ADSK",
+     "LULU",
+     "SGEN",
+     "W",
+     "LLY",
+     "WBA",
+     "VRTX",
+     "VTRS",
+     "CSX",
+     "GPN",
+     "GD",
+     "OXY",
+     "TWTR",
+     "BLK",
+     "EVRG",
+     "NET",
+     "NNDM",
+     "WKHS",
+     "WORK",
+     "CCI",
+     "FVRR",
+     "CI",
+     "RUN",
+     "LUV",
+     "CME",
+     "ANTM",
+     "EA",
+     "OSTK",
+     "FTCH",
+     "ADI",
+     "BP",
+     "BIIB",
+     "EDU",
+     "LIN",
+     "WYNN",
+     "EBON",
+     "MTCH"
+    ]
+   }
+  },
+  {
+   "at": "2021-01-04 16:00:00",
+   "label": "NATIVE_DIAG",
+   "value": {
+    "at": "2021-01-04T16:00:00",
+    "enumerate_only": {
+     "bars": 756082,
+     "seconds": 5.38,
+     "slices": 4899
+    },
+    "python_fields": {
+     "bars": 756082,
+     "seconds": 5.43
+    },
+    "python_fields_and_utc": {
+     "bars": 756082,
+     "seconds": 8.03
+    },
+    "seconds": 18.85,
+    "task": "bars_bulk_typed"
+   }
+  },
+  {
+   "at": "2021-01-05 16:00:00",
+   "label": "NATIVE_DIAG",
+   "value": {
+    "at": "2021-01-05T16:00:00",
+    "columns": 214,
+    "dataframe_seconds": 5.81,
+    "rows": 756296,
+    "seconds": 6.0,
+    "sessions": 4900,
+    "task": "bars_dataframe",
+    "unstack_seconds": 0.19
+   }
+  },
+  {
+   "at": "2021-01-06 16:00:00",
+   "label": "NATIVE_DIAG",
+   "value": {
+    "at": "2021-01-06T16:00:00",
+    "bars": 756389,
+    "seconds": 2.36,
+    "seconds_read": 2.36,
+    "task": "bars_count_based"
+   }
+  },
+  {
+   "at": "2021-01-07 16:00:00",
+   "label": "NATIVE_DIAG",
+   "value": {
+    "at": "2021-01-07T16:00:00",
+    "bars": 756603,
+    "calls": 214,
+    "complete": true,
+    "seconds": 3.89,
+    "task": "bars_per_symbol"
+   }
+  },
+  {
+   "at": "2021-01-08 16:00:00",
+   "label": "NATIVE_DIAG",
+   "value": {
+    "at": "2021-01-08T16:00:00",
+    "complete": true,
+    "per_year": [
+     [
+      2002,
+      0,
+      0.18
+     ],
+     [
+      2003,
+      0,
+      0.31
+     ],
+     [
+      2004,
+      0,
+      0.29
+     ],
+     [
+      2005,
+      0,
+      0.29
+     ],
+     [
+      2006,
+      0,
+      0.29
+     ],
+     [
+      2007,
+      0,
+      0.3
+     ],
+     [
+      2008,
+      0,
+      0.37
+     ],
+     [
+      2009,
+      0,
+      0.34
+     ],
+     [
+      2010,
+      0,
+      0.31
+     ],
+     [
+      2011,
+      0,
+      0.34
+     ],
+     [
+      2012,
+      0,
+      0.36
+     ],
+     [
+      2013,
+      0,
+      0.33
+     ],
+     [
+      2014,
+      0,
+      0.37
+     ],
+     [
+      2015,
+      0,
+      0.38
+     ],
+     [
+      2016,
+      0,
+      0.38
+     ],
+     [
+      2017,
+      0,
+      0.41
+     ],
+     [
+      2018,
+      0,
+      0.42
+     ],
+     [
+      2019,
+      0,
+      0.45
+     ],
+     [
+      2020,
+      0,
+      0.45
+     ],
+     [
+      2021,
+      0,
+      0.01
+     ]
+    ],
+    "rows": 0,
+    "seconds": 6.56,
+    "task": "earnings_typed"
+   }
+  },
+  {
+   "at": "2021-01-11 16:00:00",
+   "label": "NATIVE_DIAG",
+   "value": {
+    "at": "2021-01-11T16:00:00",
+    "complete": true,
+    "kept": 232778,
+    "per_year": [
+     [
+      2002,
+      31995,
+      3971,
+      6.97,
+      0.07
+     ],
+     [
+      2003,
+      60505,
+      7468,
+      8.27,
+      0.13
+     ],
+     [
+      2004,
+      66314,
+      8164,
+      9.38,
+      0.14
+     ],
+     [
+      2005,
+      69771,
+      8585,
+      10.47,
+      0.16
+     ],
+     [
+      2006,
+      72651,
+      8936,
+      10.14,
+      0.15
+     ],
+     [
+      2007,
+      77187,
+      9502,
+      11.33,
+      0.17
+     ],
+     [
+      2008,
+      80936,
+      9945,
+      12.49,
+      0.21
+     ],
+     [
+      2009,
+      82676,
+      10146,
+      13.07,
+      0.18
+     ],
+     [
+      2010,
+      86602,
+      10618,
+      14.2,
+      0.21
+     ],
+     [
+      2011,
+      96313,
+      11824,
+      16.45,
+      0.21
+     ],
+     [
+      2012,
+      99632,
+      12223,
+      16.44,
+      0.19
+     ],
+     [
+      2013,
+      103776,
+      12714,
+      19.51,
+      0.27
+     ],
+     [
+      2014,
+      112634,
+      13758,
+      22.73,
+      0.27
+     ],
+     [
+      2015,
+      121257,
+      14773,
+      24.91,
+      0.31
+     ],
+     [
+      2016,
+      127815,
+      15557,
+      26.35,
+      0.29
+     ],
+     [
+      2017,
+      135609,
+      16530,
+      30.06,
+      0.28
+     ],
+     [
+      2018,
+      147368,
+      17962,
+      33.32,
+      0.31
+     ],
+     [
+      2019,
+      157444,
+      19190,
+      37.21,
+      0.32
+     ],
+     [
+      2020,
+      170200,
+      20765,
+      46.53,
+      0.39
+     ],
+     [
+      2021,
+      647,
+      147,
+      0.31,
+      0.01
+     ]
+    ],
+    "rows": 1901332,
+    "seconds": 374.4,
+    "task": "earnings_dataframe"
+   }
+  },
+  {
+   "at": "2021-01-12 16:00:00",
+   "label": "NATIVE_DIAG",
+   "value": {
+    "at": "2021-01-12T16:00:00",
+    "indicator_history_points": 4900,
+    "indicator_history_seconds": 0.03,
+    "indicators": 214,
+    "ready": 197,
+    "seconds": 0.49,
+    "task": "indicator_warmup",
+    "warm_up_indicator_seconds": 0.46
+   }
+  },
+  {
+   "at": "2021-01-13 16:00:00",
+   "label": "NATIVE_DIAG",
+   "value": {
+    "actions_seconds": 2.49,
+    "actions_symbols": 214,
+    "at": "2021-01-13T16:00:00",
+    "bulk_records": 200,
+    "bulk_seconds": 0.001,
+    "direct_seconds": 0.112,
+    "dividends": 7814,
+    "seconds": 2.6,
+    "splits": 222,
+    "task": "fundamentals_and_actions",
+    "with_sector": 185
+   }
+  },
+  {
+   "at": "2021-01-23 00:00:00",
+   "label": "NATIVE_DIAG",
+   "value": {
+    "at": "2021-01-23T00:00:00",
+    "task": "summary",
+    "tasks_completed": [
+     "initialize",
+     "selection",
+     "members",
+     "members",
+     "bars_bulk_typed",
+     "bars_dataframe",
+     "bars_count_based",
+     "bars_per_symbol",
+     "earnings_typed",
+     "earnings_dataframe",
+     "indicator_warmup",
+     "fundamentals_and_actions"
+    ],
+    "tasks_left": []
+   }
+  }
+ ],
+ "runtime_statistics": {
+  "Equity": "$1,000,000.00",
+  "Fees": "-$0.00",
+  "Holdings": "$0.00",
+  "Net Profit": "$0.00",
+  "Probabilistic Sharpe Ratio": "0%",
+  "Return": "0.00 %",
+  "Unrealized": "$0.00",
+  "Volume": "$0.00"
+ },
+ "source_hash": "ac36fb7cb1ce124b0d00d7f6b33aed6f42cc93f9394c7d61fa45a6688e2eb52d",
+ "statistics": {
+  "Alpha": "0",
+  "Annual Standard Deviation": "0",
+  "Annual Variance": "0",
+  "Average Loss": "0%",
+  "Average Win": "0%",
+  "Beta": "0",
+  "Compounding Annual Return": "0%",
+  "Drawdown": "0%",
+  "Drawdown Recovery": "0",
+  "End Equity": "1000000",
+  "Estimated Strategy Capacity": "$0",
+  "Expectancy": "0",
+  "Information Ratio": "-7.157",
+  "Loss Rate": "0%",
+  "Lowest Capacity Asset": "",
+  "Net Profit": "0%",
+  "Portfolio Turnover": "0%",
+  "Probabilistic Sharpe Ratio": "0%",
+  "Profit-Loss Ratio": "0",
+  "Sharpe Ratio": "0",
+  "Sortino Ratio": "0",
+  "Start Equity": "1000000",
+  "Total Fees": "$0.00",
+  "Total Orders": "0",
+  "Tracking Error": "0.098",
+  "Treynor Ratio": "0",
+  "Win Rate": "0%"
+ },
+ "status": "Completed.",
+ "sugarloaf_revision": "bb6aaa152fb3692bef1deafe501dcd038d581769"
+}
