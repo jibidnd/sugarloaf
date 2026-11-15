@@ -2,11 +2,15 @@
 
 The node declares daily windows of SPY (the security's own daily feed) and QQQ (a minute
 feed consolidated to the exchange session), an EMA on each, and a WarmUp of 45 calendar
-days. The adapter fills each window from one history call at ``subscribe`` and LEAN's
-indicator warm-up fills each indicator; LEAN's warm-up replay then delivers the same
-sessions again. The report counts, for every window and indicator, the values held and
-the distinct end times among them: equal counts mean each bar period is held once. It
-also records the first bar delivered after warm-up and whether it heads its window.
+days. The adapter fills each window from one history call and warms each indicator with
+``warm_up_indicator``, both ending at the clock of LEAN's first callback, the start of the
+warm-up replay; the replay then delivers the sessions up to the start date.
+
+The report counts, for every window and indicator, the values held and the distinct end
+times among them: equal counts mean each bar period is held once. It counts the evaluations
+at which a window's or indicator's newest end time is later than ``ctx.time`` (zero means
+no value from the future), records when the adapter ran its history fills, and records the
+first bar delivered after warm-up and whether it heads its window.
 The graph's output port emits views, so this is a forecast run: nothing is traded.
 
     sugarloaf run --adapter quantconnect --manifest deployments/quantconnect/warm_up_check.toml
@@ -72,6 +76,7 @@ class WarmUpProbe:
         self.config = {"window": WINDOW, "warm_up_days": 45}
         self.latest = {}
         self.unequal = {}  # evaluations at which a count and its distinct count differed
+        self.ahead = {}  # evaluations at which the newest end time is later than ctx.time
         self.evaluations = {"warming_up": 0, "live": 0}
         self.replayed = {"SPY": 0, "QQQ": 0}  # bars delivered in warm-up slices
         self.first_live = {}
@@ -96,10 +101,18 @@ class WarmUpProbe:
                 "window": _window_counts(window),
                 "indicator": _indicator_counts(ctx.indicator(indicator, instrument)),
             }
+            reading = ctx.indicator(indicator, instrument)
+            newest = {
+                "window": window[0].end if len(window) else None,
+                "indicator": reading.values[0][0] if reading.values else None,
+            }
             for part, key in (("window", "bars"), ("indicator", "values")):
+                name = f"{label}:{part}"
                 if counts[part][key] != counts[part]["distinct_end_times"]:
-                    name = f"{label}:{part}"
                     self.unequal[name] = self.unequal.get(name, 0) + 1
+                self.ahead.setdefault(name, 0)
+                if newest[part] is not None and newest[part] > ctx.time:
+                    self.ahead[name] += 1
             self.latest[label] = counts
         return None
 
@@ -109,6 +122,7 @@ def _report(context):
     summary = {
         "final": probe.latest,
         "evaluations_with_repeated_end_times": probe.unequal,
+        "evaluations_with_end_time_after_ctx_time": probe.ahead,
         "evaluations": probe.evaluations,
         "bars_delivered_while_warming_up": probe.replayed,
         "first_live_bar": probe.first_live,
@@ -121,11 +135,18 @@ def _report(context):
                 parts["indicator"]["values"], parts["indicator"]["distinct_end_times"]]
         for label, parts in probe.latest.items()
     }
-    algorithm = getattr(context.runner.adapter, "algorithm", None)
+    adapter = context.runner.adapter
+    first_fill = getattr(adapter, "first_fill", None)
+    summary["first_fill"] = None if first_fill is None else [first_fill[0].isoformat(),
+                                                              first_fill[1]]
+    algorithm = getattr(adapter, "algorithm", None)
     if algorithm is not None:
         algorithm.log("WARM_UP_CHECK " + json.dumps({
             "window_bars_distinct_indicator_values_distinct": counts,
             "evaluations_with_repeated_end_times": probe.unequal,
+            "evaluations_with_end_time_after_ctx_time": probe.ahead,
+            "evaluations": probe.evaluations,
+            "first_fill": summary["first_fill"],
             "bars_delivered_while_warming_up": probe.replayed,
             "first_live_bar": probe.first_live,
         }, sort_keys=True))

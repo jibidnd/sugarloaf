@@ -140,47 +140,58 @@ consolidator, and a refused ticket.
 
 ### Windows and indicators under warm-up
 
-`add_in_order` adds a bar to a window only when its end time is later than that of the
-window's newest bar; `update_in_order` feeds a bar to an indicator only when it ends after
-`indicator.current.end_time` ([adapter README](../sugarloaf/adapters/quantconnect/README.md#windows-and-warm-up)).
-`tests/test_qc_window_order.py` tests both rules without LEAN. The native check is
-[warm_up_check.py](../deployments/quantconnect/warm_up_check.py)
+A window or indicator holds each bar period once, newest first, and no value ending after the
+clock ([adapter README](../sugarloaf/adapters/quantconnect/README.md#windows-and-warm-up)).
+The setup's history fills and `warm_up_indicator` calls run at LEAN's first callback after
+`initialize`, when the clock stands at the start of the warm-up replay, and take the bars
+ending before the clock (`fill_before`). `add_in_order` adds a bar to a window only when it
+ends after the window's newest bar; `update_in_order` feeds a bar to an indicator only when it
+ends after `indicator.current.end_time`. An indicator's window is sized before it is warmed.
+`tests/test_qc_window_order.py` tests the three rules without LEAN.
+
+The native check is [warm_up_check.py](../deployments/quantconnect/warm_up_check.py)
 ([warm_up_check.toml](../deployments/quantconnect/warm_up_check.toml), listed in
 `native_checks.json`): project `37377184`, January 6–10, 2025, a `WarmUp(span=45 days)`, a
 60-bar daily window and a 60-value `ema(10)` on SPY (subscribed daily) and on QQQ (subscribed
 at minute, consolidated to the exchange session). At every evaluation the node counts each
-window's bars and each indicator's values beside the distinct end times among them; the
-report saves the counts in the result record
-(`sugarloaf/results/37377184/<backtest id>/result.json`, record `warm_up_check`) and writes
-them to the backtest log as `WARM_UP_CHECK`.
+window's bars and each indicator's values beside the distinct end times among them, and
+whether the newest end time is later than `ctx.time`; the report saves the counts in the
+result record (`sugarloaf/results/37377184/<backtest id>/result.json`, record
+`warm_up_check`) and writes them to the backtest log as `WARM_UP_CHECK`.
 
-| Source | Backtest | SPY window: bars / distinct | SPY indicator: values / distinct | QQQ window | QQQ indicator |
-| --- | --- | --- | --- | --- | --- |
-| Adapter at `54a25e2` (no bar-order rule) | `9663916e6460a28d772f9281f1dd88f0` | 60 / 32 | 7 / 6 | 60 / 60 | 6 / 6 |
-| Adapter with `add_in_order` and `update_in_order` | `7c6cd3e6f16ccf08ead6c71dbe3cc986` | 60 / 60 | 6 / 6 | 60 / 60 | 6 / 6 |
+| Source | Backtest | SPY window: bars / distinct | SPY indicator: values / distinct | QQQ window | QQQ indicator | Evaluations with a value after `ctx.time` |
+| --- | --- | --- | --- | --- | --- | --- |
+| Adapter at `54a25e2` | `9663916e6460a28d772f9281f1dd88f0` | 60 / 32 | 7 / 6 | 60 / 60 | 6 / 6 | not counted |
+| Adapter with the rules (source hash `71931629…f483`) | `c780c0493ddf42a45d7371762c51140d` | 60 / 60 | 43 / 43 | 60 / 60 | 43 / 43 | 0 of 35, for each window and indicator |
 
-At `54a25e2` the warm-up replay delivers 28 SPY sessions the subscribe-time history already
-put in the window, and the window holds each of them twice; 34 evaluations see a repeated SPY
-bar and 5 a repeated SPY indicator value. LEAN's helper-built `ema` accepts the replayed bar
-for the session it read last from history, a new object with the same end time, and updates
-twice on it. The QQQ session consolidator delivers one bar during the replay, and the QQQ window and
-indicator hold no repeat. With the rules, no evaluation sees a repeated end time, the 28
-replayed SPY bars still reach the node
-in `data.bars` with `ctx.warming_up` set, and the first bar after warm-up (the session ending
-21:00 UTC on 6 January 2025, for SPY and QQQ) heads its window. Both runs: no orders, no
-diagnostics, no runtime errors, 12,122 steps. The run with the rules exercises
-`set_warm_up(span)`, `IdentityDataConsolidator[TradeBar]` and `TradeBarConsolidator` feeding
-`ExponentialMovingAverage.update` through `subscription_manager.add_consolidator`, and
-`warm_up_indicator` at a `Resolution` and at a session interval.
+At `54a25e2` the history fill in `initialize` ends at the start date, the warm-up replay
+delivers 28 SPY sessions the window already holds, and the window holds each of them twice;
+34 evaluations see a repeated SPY bar and 5 a repeated SPY indicator value. LEAN's
+helper-built `ema` accepts the replayed bar for the session it read last from history, a new
+object with the same end time, and updates twice on it.
+
+With the rules, the four setup fills (two windows, two indicators) run at 05:00 UTC on 22
+November 2024, the start date minus 45 days. No evaluation, of 31 during warm-up and 4 after
+it, sees a repeated end time or a window or indicator value ending after `ctx.time`. The
+replay delivers 28 SPY and 29 QQQ bars to the node in `data.bars` with `ctx.warming_up` set,
+and the first bar after warm-up (the session ending 21:00 UTC on 6 January 2025, for SPY and
+QQQ) heads its window. Each EMA's window holds 43 values at the end of the run: the values
+from `warm_up_indicator`, which reads the indicator's own warm-up period of history, and one
+per session the replay and the run deliver; its 60 places fill as the run continues. Both runs: no orders, no diagnostics, no runtime errors,
+12,122 steps. The run with the rules exercises `set_warm_up(span)`,
+`IdentityDataConsolidator[TradeBar]` and `TradeBarConsolidator` feeding
+`ExponentialMovingAverage.update` through `subscription_manager.add_consolidator`,
+and `warm_up_indicator` at a `Resolution` and at a session interval and `history[TradeBar]`,
+both called from LEAN's first callback during warm-up.
 
 The other native checks on the adapter with the rules match their expectations, with no
 runtime errors and no diagnostics:
 
 | Check | Backtest | Observed |
 | --- | --- | --- |
-| EMA example, trading | `f1909108fef026b8f6a051d2f0056914` | pass: 6 orders, USD 6.00 fees, end equity USD 99,665.11, 1,560 steps, as recorded |
-| EMA forecast run | `d3961fc92ca8764a6238d470a92439a2` | pass: no orders, 313 views archived, 1,560 steps, as recorded |
-| Index check | `0600a36dcbfff60827e115341ec45e45` | pass: no orders, 38 steps, as recorded |
+| EMA example, trading | `d5c5763cfb9fa17779d6cbdf4344f4f7` | pass: 6 orders, USD 6.00 fees, end equity USD 99,665.11, 1,560 steps, as recorded |
+| EMA forecast run | `d2838e47ead99b9367e7a24a21638d60` | pass: no orders, 313 views archived, 1,560 steps, as recorded |
+| Index check | `2789097bd4779599e7c676b3d312b9b6` | pass: no orders, 38 steps, as recorded |
 
 Local evidence is in `artifacts/native_checks/` and `artifacts/<manifest stem>/` (git-ignored).
 

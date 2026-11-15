@@ -87,6 +87,7 @@ SugarloafAlgorithm.initialize
 ```text
 LEAN on_data(slice)
   -> SugarloafAlgorithm.on_data -> QuantConnectAdapter.on_data
+       first callback only: setup's history fills and warm_up_indicator calls, ending at the clock
        bars of feeds without an interval: from slice.bars, added to their windows
        bars of feeds with an interval: completed by consolidator handlers since the last slice
        earnings, fundamentals, borrow; dividends, splits, delistings, symbol changes

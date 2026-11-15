@@ -40,7 +40,7 @@
       "name": "warm_up_check",
       "manifest": "warm_up_check.toml",
       "description": "Windows and indicators under a 45-day WarmUp, January 6-10, 2025: no orders; the WARM_UP_CHECK log line and the result record hold each window's and indicator's count beside its distinct end times.",
-      "recorded_backtest": "7c6cd3e6f16ccf08ead6c71dbe3cc986",
+      "recorded_backtest": "c780c0493ddf42a45d7371762c51140d",
       "backtest_timeout": 1800,
       "expected": {
         "Total Orders": 0

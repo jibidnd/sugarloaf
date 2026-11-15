@@ -28,33 +28,39 @@ Scheduled functions call `runner.on_scheduled(name)`. `on_end_of_algorithm` call
 
 ## Windows and warm-up
 
-`subscribe` fills a named instrument's `RollingWindow` from one `history` call ending at the
-algorithm's start; a member's window is filled the same way when it joins. A `WarmUp`
-declaration makes LEAN replay the period before the start through the same subscriptions and
-consolidators, so the replay delivers bars the window already holds. Every bar reaches a
-window through `add_in_order`: a bar is added only when its end time is later than the end
-time of the window's newest bar (`window[0]`), so a window holds each bar period once,
-newest first.
+A window or indicator never holds a value ending after the adapter's clock, and holds each
+bar period once, newest first.
 
-- A replayed bar ends at or before the newest bar from history and stays out of the window.
-  The arrival still carries it in `data.bars`, with `ctx.warming_up` set, so nodes receive
-  the replay as `WarmUp` describes.
+**Fill.** `subscribe` creates a named instrument's `RollingWindow`; `add_indicator` builds
+its indicators. The window's one `history` call and the indicator's `warm_up_indicator` run
+at LEAN's first callback after `initialize` (`on_securities_changed`, `on_data` or a
+scheduled function, whichever comes first), when LEAN has moved the clock to the start of
+the warm-up replay: the start date minus the span of a declared `WarmUp`, or the start date
+without one. The fill takes the history bars ending before the clock (`fill_before`); the
+bar ending at the clock arrives in the slice being delivered. A member's window and
+indicators are filled the same way when it joins, at that callback's clock. The replay then
+delivers the bars from the fill's end up to the start date, in order.
+
+**Window rule.** Every bar reaches a window through `add_in_order`: it is added only when
+its end time is later than that of the window's newest bar (`window[0]`).
+
 - The first bar after warm-up ends after the last warm-up bar and is added.
-- A late bar, one that arrives after a bar ending later than it, is handled the same way:
-  it stays out of the window and the arrival carries it as LEAN delivered it. A node that
-  must tell such a bar apart compares `data.bars[i].end` with `ctx.window(...)[0].end`.
+- A late bar, one that arrives after a bar ending later than it, stays out of the window;
+  the arrival carries it in `data.bars` as LEAN delivered it. A node that must tell such a
+  bar apart compares `data.bars[i].end` with `ctx.window(...)[0].end`.
 
-Indicators follow the same rule. Each is built by class, fed by a consolidator of its period
-(an identity consolidator at the security's own resolution) through `update_in_order`, and
-warmed with `warm_up_indicator`. A bar updates the indicator only when it ends after
-`indicator.current.end_time`. LEAN's indicators drop an input ending before the previous
-one but accept a different bar object ending at the same time, which is what the warm-up
-replay delivers for the last period `warm_up_indicator` read; the rule leaves it out.
+**Indicator rule.** Each indicator is built by class, its `window.size` set to the declared
+window, warmed with `warm_up_indicator`, and fed by a consolidator of its period (an identity
+consolidator at the security's own resolution) through `update_in_order`: a bar updates it
+only when it ends after `indicator.current.end_time`. LEAN's indicators drop an input ending
+before the previous one but accept a different bar object ending at the same time; the rule
+leaves such a bar out. The window keeps the warmed values, up to its size.
 
-`add_in_order` and `update_in_order` are module functions, tested without LEAN in
-[tests/test_qc_window_order.py](../../../tests/test_qc_window_order.py). The native
+`add_in_order`, `fill_before` and `update_in_order` are module functions, tested without
+LEAN in [tests/test_qc_window_order.py](../../../tests/test_qc_window_order.py). The native
 [warm-up check](../../../deployments/quantconnect/warm_up_check.py) counts each window's and
-indicator's values beside their distinct end times.
+indicator's values beside their distinct end times, and the evaluations at which either
+holds a value ending after `ctx.time`.
 
 ## Scope
 

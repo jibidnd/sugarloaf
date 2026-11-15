@@ -9,7 +9,7 @@ from collections import deque
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
-from sugarloaf.adapters.quantconnect.adapter import add_in_order, update_in_order
+from sugarloaf.adapters.quantconnect.adapter import add_in_order, fill_before, update_in_order
 
 DAY = timedelta(days=1)
 CLOSE = datetime(2025, 1, 2, 16)  # exchange-local, as LEAN stamps bars
@@ -107,3 +107,17 @@ def test_a_whole_bar_goes_to_an_indicator_without_a_field():
     bar = session(0)
     assert update_in_order(mean, bar)
     assert mean.bars == [bar] and not update_in_order(mean, session(0))
+
+
+def test_a_history_fill_ends_before_the_clock():
+    # The clock stands at the close of session 5: a fill takes sessions 0..4, the slice
+    # being delivered brings session 5, and sessions 6..7 are later than the clock.
+    window = DequeWindow(10)
+    history = [session(k) for k in range(8)]
+    now = session(5).end_time
+    taken = fill_before(history, now, lambda bar: bar.end_time,
+                        lambda bar: add_in_order(window, bar))
+    assert taken == 5
+    assert ends(window) == [session(k).end_time for k in range(4, -1, -1)]
+    assert add_in_order(window, session(5))  # the slice's own bar follows the fill
+    assert all(end <= now for end in ends(window))
