@@ -9,7 +9,8 @@ coverage and the native checks below. On branch `redesign/push-model-2026-11-14`
 evidence further down this page was recorded on the earlier design and applies to the source
 snapshots named there.
 
-The QuantConnect adapter has no local tests; it is verified by the backtests listed below,
+The QuantConnect adapter has local tests only for its bar-order rules
+(`tests/test_qc_window_order.py`); its LEAN calls are verified by the backtests listed below,
 run with `tools/native_checks.py`. Each backtest establishes that LEAN accepts the calls it
 exercises.
 
@@ -29,10 +30,10 @@ uv run --cache-dir .uv-cache python tools/native_checks.py deployments/quantconn
 service. `--only NAME` (repeatable) runs the named checks. `--out` names the output file; the
 default is `artifacts/native_checks/<UTC time>.json`, and an existing file is refused so that
 earlier results are kept. Each run is a backtest on the account's backtest node, billed as
-any other; the three checks below take a few minutes in total.
+any other; the four checks below take a few minutes in total.
 
 The script runs each manifest through `run_backtest` (upload, compile, backtest, status and
-logs, with evidence under `artifacts/<manifest stem>/`), one backtest after another; the three
+logs, with evidence under `artifacts/<manifest stem>/`), one backtest after another; the four
 manifests share project `37377184`, and each upload replaces the project's files. A run needs
 a selected QuantConnect project: the manifest's `project_id`, or the `project_id` that
 `sugarloaf create --adapter quantconnect --manifest <manifest>` saved in
@@ -133,8 +134,55 @@ time_rules.after_market_open(symbol, 1), fn)` firing `on_scheduled` once a sessi
 
 Not yet exercised natively: `universe.etf`, `UniverseSettings.schedule.on` (every Lab universe
 refreshes daily), `add_data(EODHDUpcomingEarnings)` and `slice.get` for it (no Lab node declares
-`Custom("earnings")`), `time_rules.at` with a NodaTime zone, `set_warm_up`, quote bars,
-`rsi`/`sma`/`dch`, `deregister_indicator`, and a refused ticket.
+`Custom("earnings")`), `time_rules.at` with a NodaTime zone, quote bars,
+`SimpleMovingAverage`/`RelativeStrengthIndex`/`DonchianChannel`, removal of a member's indicator
+consolidator, and a refused ticket.
+
+### Windows and indicators under warm-up
+
+`add_in_order` adds a bar to a window only when its end time is later than that of the
+window's newest bar; `update_in_order` feeds a bar to an indicator only when it ends after
+`indicator.current.end_time` ([adapter README](../sugarloaf/adapters/quantconnect/README.md#windows-and-warm-up)).
+`tests/test_qc_window_order.py` tests both rules without LEAN. The native check is
+[warm_up_check.py](../deployments/quantconnect/warm_up_check.py)
+([warm_up_check.toml](../deployments/quantconnect/warm_up_check.toml), listed in
+`native_checks.json`): project `37377184`, January 6–10, 2025, a `WarmUp(span=45 days)`, a
+60-bar daily window and a 60-value `ema(10)` on SPY (subscribed daily) and on QQQ (subscribed
+at minute, consolidated to the exchange session). At every evaluation the node counts each
+window's bars and each indicator's values beside the distinct end times among them; the
+report saves the counts in the result record
+(`sugarloaf/results/37377184/<backtest id>/result.json`, record `warm_up_check`) and writes
+them to the backtest log as `WARM_UP_CHECK`.
+
+| Source | Backtest | SPY window: bars / distinct | SPY indicator: values / distinct | QQQ window | QQQ indicator |
+| --- | --- | --- | --- | --- | --- |
+| Adapter at `54a25e2` (no bar-order rule) | `9663916e6460a28d772f9281f1dd88f0` | 60 / 32 | 7 / 6 | 60 / 60 | 6 / 6 |
+| Adapter with `add_in_order` and `update_in_order` | `7c6cd3e6f16ccf08ead6c71dbe3cc986` | 60 / 60 | 6 / 6 | 60 / 60 | 6 / 6 |
+
+At `54a25e2` the warm-up replay delivers 28 SPY sessions the subscribe-time history already
+put in the window, and the window holds each of them twice; 34 evaluations see a repeated SPY
+bar and 5 a repeated SPY indicator value. LEAN's helper-built `ema` accepts the replayed bar
+for the session it read last from history, a new object with the same end time, and updates
+twice on it. The QQQ session consolidator delivers one bar during the replay, and the QQQ window and
+indicator hold no repeat. With the rules, no evaluation sees a repeated end time, the 28
+replayed SPY bars still reach the node
+in `data.bars` with `ctx.warming_up` set, and the first bar after warm-up (the session ending
+21:00 UTC on 6 January 2025, for SPY and QQQ) heads its window. Both runs: no orders, no
+diagnostics, no runtime errors, 12,122 steps. The run with the rules exercises
+`set_warm_up(span)`, `IdentityDataConsolidator[TradeBar]` and `TradeBarConsolidator` feeding
+`ExponentialMovingAverage.update` through `subscription_manager.add_consolidator`, and
+`warm_up_indicator` at a `Resolution` and at a session interval.
+
+The other native checks on the adapter with the rules match their expectations, with no
+runtime errors and no diagnostics:
+
+| Check | Backtest | Observed |
+| --- | --- | --- |
+| EMA example, trading | `f1909108fef026b8f6a051d2f0056914` | pass: 6 orders, USD 6.00 fees, end equity USD 99,665.11, 1,560 steps, as recorded |
+| EMA forecast run | `d3961fc92ca8764a6238d470a92439a2` | pass: no orders, 313 views archived, 1,560 steps, as recorded |
+| Index check | `0600a36dcbfff60827e115341ec45e45` | pass: no orders, 38 steps, as recorded |
+
+Local evidence is in `artifacts/native_checks/` and `artifacts/<manifest stem>/` (git-ignored).
 
 ### Capability limits
 

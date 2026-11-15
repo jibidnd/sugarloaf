@@ -8,8 +8,9 @@ Setup (called by the runner before the clock starts):
   with ``universe_settings.schedule`` for the cadence.
 * ``Custom("earnings")``: ``add_data(EODHDUpcomingEarnings, ...)``; items from
   ``slice.get(EODHDUpcomingEarnings)``.
-* ``Indicator``: ``algorithm.sma/ema/rsi/dch(symbol, period, resolution or interval)``
-  with automatic warm-up.
+* ``Indicator``: ``SimpleMovingAverage``/``ExponentialMovingAverage``/
+  ``RelativeStrengthIndex``/``DonchianChannel`` fed by a consolidator through
+  ``update_in_order``, warmed with ``warm_up_indicator``.
 * ``Schedule``: ``schedule.on(date_rules..., time_rules..., fn)``.
 * ``WarmUp``: ``set_warm_up``.
 
@@ -86,6 +87,38 @@ ORDER_STATUSES = {
     "invalid": "invalid",
     "updatesubmitted": "submitted",
 }
+
+
+def add_in_order(window, bar) -> bool:
+    """Add ``bar`` to a rolling window when it ends after the newest bar the window holds.
+
+    ``window`` is newest first, as LEAN's ``RollingWindow``: ``count``, ``[0]`` and ``add``.
+    A bar ending at or before ``window[0]`` is a period the window holds or has passed; it is
+    left out and False returned, so the window holds each bar period once, in time order.
+    LEAN's warm-up replay delivers the sessions the subscribe-time history already put in
+    the window; this rule keeps them out. The first bar after warm-up ends later and is kept.
+    """
+    if window.count and bar.end_time <= window[0].end_time:
+        return False
+    window.add(bar)
+    return True
+
+
+def update_in_order(indicator, bar, field: str | None = None) -> bool:
+    """Feed ``bar`` to a native indicator when it ends after the indicator's current value.
+
+    ``field`` names the bar attribute a scalar indicator reads (``close``, ``volume``, ...);
+    None passes the whole bar, as Donchian reads it. A bar ending at or before
+    ``indicator.current.end_time`` is a period the indicator has read; it is left out and
+    False returned. LEAN starts ``current`` at the earliest representable time.
+    """
+    if bar.end_time <= indicator.current.end_time:
+        return False
+    if field is None:
+        indicator.update(bar)
+    else:
+        indicator.update(bar.end_time, getattr(bar, field))
+    return True
 
 
 def _name(value) -> str:
@@ -209,12 +242,12 @@ class QuantConnectAdapter:
         self.customs: dict[str, Custom] = {}
         self.indicators: dict[tuple[Indicator, InstrumentId], object] = {}
         self._indicator_declarations: list[Indicator] = []
+        self._indicator_consolidators: dict[tuple[Indicator, InstrumentId], object] = {}
         self.schedules: dict[str, Schedule] = {}
         self.tags: dict[str, str] = {}
         self._last_daily_custom = None
         self._earnings_symbol = None
         self._pending_history = None
-        algorithm.settings.automatic_indicator_warm_up = True
         algorithm.settings.daily_precise_end_time = True
 
         def initialize_security(security):
@@ -333,7 +366,8 @@ class QuantConnectAdapter:
         consolidator = self._consolidator(feed, symbol, quotes, interval)
 
         def completed(sender, bar, key=key, instrument=instrument, window=window):
-            window.add(bar)
+            add_in_order(window, bar)
+            # The arrival carries the bar either way, as LEAN delivered it (see on_data).
             self._completed.setdefault(key, {})[instrument] = bar
 
         consolidator.data_consolidated += completed
@@ -464,14 +498,14 @@ class QuantConnectAdapter:
             self._create_indicator(declaration, instrument)
 
     def _create_indicator(self, declaration: Indicator, instrument: InstrumentId) -> None:
-        """One native indicator per instrument.
+        """One native indicator per instrument, fed in bar order by the adapter.
 
-        At the security's own resolution the ``algorithm.sma/ema/rsi/dch`` helpers
-        create, register and warm it. For a consolidated interval (or a declaration
-        coarser than the subscription) LEAN's helpers take only a ``Resolution``, so
-        the indicator is built by class, registered with a consolidator of that
-        period through ``register_indicator`` and warmed with ``warm_up_indicator``,
-        the documented manual-indicator path.
+        The indicator is built by class and warmed with ``warm_up_indicator``. A consolidator
+        of the declaration's period (``IdentityDataConsolidator`` at the security's own
+        resolution) feeds it through ``update_in_order``. LEAN's own check drops an input
+        ending before the previous one but accepts a new bar object ending with it, which is
+        what warm-up replay delivers for the last period ``warm_up_indicator`` read; the
+        adapter's rule leaves that bar out, so each period updates the indicator once.
         """
         if (declaration, instrument) in self.indicators:
             return
@@ -479,63 +513,48 @@ class QuantConnectAdapter:
         algorithm = self.algorithm
         lean = self.lean
         params = dict(declaration.parameters)
-        selector = (
-            None if declaration.field == "close"
-            else getattr(lean.Field, declaration.field.capitalize())
-        )
-        interval = self._effective_interval(declaration.bars, instrument)
         name = f"{declaration.name}:{declaration.kind}:{declaration.period}:{instrument.value}"
-        if interval is None:
-            resolution = self._resolution(declaration.resolution)
-            if declaration.kind == "sma":
-                native = algorithm.sma(symbol, declaration.period, resolution, selector)
-            elif declaration.kind == "ema":
-                smoothing = params.get("smoothing_factor")
-                native = (
-                    algorithm.ema(symbol, declaration.period, resolution, selector)
-                    if smoothing is None
-                    else algorithm.ema(
-                        symbol, declaration.period, float(smoothing), resolution, selector
-                    )
-                )
-            elif declaration.kind == "rsi":
-                kind = str(params.get("moving_average_type", "wilders")).upper()
-                average = getattr(lean.MovingAverageType, kind)
-                native = algorithm.rsi(symbol, declaration.period, average, resolution, selector)
-            elif declaration.kind == "donchian":
-                native = algorithm.dch(symbol, declaration.period, resolution)
-            else:
-                raise CapabilityError(f"Unsupported native indicator kind {declaration.kind}")
+        if declaration.kind == "sma":
+            native = lean.SimpleMovingAverage(name, declaration.period)
+        elif declaration.kind == "ema":
+            smoothing = params.get("smoothing_factor")
+            native = (
+                lean.ExponentialMovingAverage(name, declaration.period)
+                if smoothing is None
+                else lean.ExponentialMovingAverage(name, declaration.period, float(smoothing))
+            )
+        elif declaration.kind == "rsi":
+            kind = str(params.get("moving_average_type", "wilders")).upper()
+            native = lean.RelativeStrengthIndex(
+                name, declaration.period, getattr(lean.MovingAverageType, kind)
+            )
+        elif declaration.kind == "donchian":
+            native = lean.DonchianChannel(name, declaration.period)
         else:
-            if declaration.kind == "sma":
-                native = lean.SimpleMovingAverage(name, declaration.period)
-            elif declaration.kind == "ema":
-                smoothing = params.get("smoothing_factor")
-                native = (
-                    lean.ExponentialMovingAverage(name, declaration.period)
-                    if smoothing is None
-                    else lean.ExponentialMovingAverage(name, declaration.period, float(smoothing))
-                )
-            elif declaration.kind == "rsi":
-                kind = str(params.get("moving_average_type", "wilders")).upper()
-                native = lean.RelativeStrengthIndex(
-                    name, declaration.period, getattr(lean.MovingAverageType, kind)
-                )
-            elif declaration.kind == "donchian":
-                native = lean.DonchianChannel(name, declaration.period)
-            else:
-                raise CapabilityError(f"Unsupported native indicator kind {declaration.kind}")
+            raise CapabilityError(f"Unsupported native indicator kind {declaration.kind}")
+        # Donchian reads whole bars; the others read one field of each bar.
+        field = None if declaration.kind == "donchian" else declaration.field
+        interval = self._effective_interval(declaration.bars, instrument)
+        if interval is None:
+            consolidator = lean.IdentityDataConsolidator[lean.TradeBar]()
+            period = self._resolution(declaration.resolution)
+        else:
             consolidator = self._consolidator(declaration.bars, symbol, False, interval)
-            if selector is None:
-                algorithm.register_indicator(symbol, native, consolidator)
-            else:
-                algorithm.register_indicator(symbol, native, consolidator, selector)
-            if selector is None:
-                algorithm.warm_up_indicator(symbol, native, interval)
-            else:
-                algorithm.warm_up_indicator(symbol, native, interval, selector)
+            period = interval
+
+        def feed(sender, bar, native=native, field=field):
+            update_in_order(native, bar, field)
+
+        consolidator.data_consolidated += feed
+        algorithm.subscription_manager.add_consolidator(symbol, consolidator)
+        if field is None or field == "close":
+            algorithm.warm_up_indicator(symbol, native, period)
+        else:
+            selector = getattr(lean.Field, field.capitalize())
+            algorithm.warm_up_indicator(symbol, native, period, selector)
         native.window.size = declaration.window
         self.indicators[(declaration, instrument)] = native
+        self._indicator_consolidators[(declaration, instrument)] = consolidator
 
     def schedule(self, declaration: Schedule) -> None:
         algorithm = self.algorithm
@@ -771,7 +790,9 @@ class QuantConnectAdapter:
                 window = windows.get(instrument)
                 if window is None or instrument in consolidated:
                     continue
-                window.add(bar)
+                # A bar ending at or before window[0] stays out of the window; the arrival
+                # still carries it, so warm-up replay reaches nodes as WarmUp promises.
+                add_in_order(window, bar)
                 delivered[instrument] = convert(instrument, symbol, bar)
             if delivered:
                 target[key] = delivered
@@ -912,9 +933,14 @@ class QuantConnectAdapter:
                 for instrument in joined:
                     self._create_indicator(declaration, instrument)
                 for instrument in left:
-                    native = self.indicators.pop((declaration, instrument), None)
-                    if native is not None:
-                        self.algorithm.deregister_indicator(native)
+                    self.indicators.pop((declaration, instrument), None)
+                    consolidator = self._indicator_consolidators.pop(
+                        (declaration, instrument), None
+                    )
+                    if consolidator is not None:
+                        self.algorithm.subscription_manager.remove_consolidator(
+                            self.symbols[instrument], consolidator
+                        )
             for instrument in joined:
                 self.periods.setdefault(instrument, finest)
             if joined:
@@ -961,7 +987,7 @@ class QuantConnectAdapter:
                 if instrument in consolidators:
                     consolidators[instrument].update(bar)
                 else:
-                    windows[instrument].add(bar)
+                    add_in_order(windows[instrument], bar)
         # Bars consolidated from history are warm-up, not this slice's news.
         self._completed.pop(feed.key, None)
 

@@ -76,7 +76,7 @@ SugarloafAlgorithm.initialize
          adapter.subscribe      -> add_security, RollingWindow, consolidator
          adapter.add_universe   -> add_universe(FundamentalUniverse.usa or universe.etf)
          adapter.add_custom     -> add_data
-         adapter.add_indicator  -> sma / ema / rsi / dch
+         adapter.add_indicator  -> indicator class, consolidator, warm_up_indicator
          adapter.schedule       -> schedule.on
          adapter.warm_up        -> set_warm_up
        debug("SUGARLOAF_RUN ...")

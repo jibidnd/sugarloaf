@@ -34,7 +34,8 @@ uv run --cache-dir .uv-cache pytest
 uv run --cache-dir .uv-cache ruff check .
 ```
 
-The QuantConnect adapter has no local tests; it is verified by the backtests listed in
+The QuantConnect adapter has local tests only for its bar-order rules
+(`tests/test_qc_window_order.py`); its LEAN calls are verified by the backtests listed in
 [validation](VALIDATION.md#native-checks), run with `tools/native_checks.py`. After a change
 to the adapter, the launcher or a LEAN call, run the native checks:
 
