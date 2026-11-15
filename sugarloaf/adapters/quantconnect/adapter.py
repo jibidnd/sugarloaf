@@ -461,32 +461,76 @@ class QuantConnectAdapter:
             self._create_indicator(declaration, instrument)
 
     def _create_indicator(self, declaration: Indicator, instrument: InstrumentId) -> None:
+        """One native indicator per instrument.
+
+        At the security's own resolution the ``algorithm.sma/ema/rsi/dch`` helpers
+        create, register and warm it. For a consolidated interval (or a declaration
+        coarser than the subscription) LEAN's helpers take only a ``Resolution``, so
+        the indicator is built by class, registered with a consolidator of that
+        period through ``register_indicator`` and warmed with ``warm_up_indicator``,
+        the documented manual-indicator path.
+        """
         if (declaration, instrument) in self.indicators:
             return
         symbol = self._symbol(instrument)
         algorithm = self.algorithm
-        cadence = declaration.interval or self._resolution(declaration.resolution)
+        lean = self.lean
         params = dict(declaration.parameters)
-        field = None if declaration.field == "close" else getattr(
-            self.lean.Field, declaration.field.capitalize()
+        selector = (
+            None if declaration.field == "close"
+            else getattr(lean.Field, declaration.field.capitalize())
         )
-        if declaration.kind == "sma":
-            native = algorithm.sma(symbol, declaration.period, cadence, field)
-        elif declaration.kind == "ema":
-            smoothing = params.get("smoothing_factor")
-            native = (
-                algorithm.ema(symbol, declaration.period, cadence, field)
-                if smoothing is None
-                else algorithm.ema(symbol, declaration.period, float(smoothing), cadence, field)
-            )
-        elif declaration.kind == "rsi":
-            kind = str(params.get("moving_average_type", "wilders")).upper()
-            average = getattr(self.lean.MovingAverageType, kind)
-            native = algorithm.rsi(symbol, declaration.period, average, cadence, field)
-        elif declaration.kind == "donchian":
-            native = algorithm.dch(symbol, declaration.period, cadence)
+        interval = self._effective_interval(declaration.bars, instrument)
+        name = f"{declaration.name}:{declaration.kind}:{declaration.period}:{instrument.value}"
+        if interval is None:
+            resolution = self._resolution(declaration.resolution)
+            if declaration.kind == "sma":
+                native = algorithm.sma(symbol, declaration.period, resolution, selector)
+            elif declaration.kind == "ema":
+                smoothing = params.get("smoothing_factor")
+                native = (
+                    algorithm.ema(symbol, declaration.period, resolution, selector)
+                    if smoothing is None
+                    else algorithm.ema(
+                        symbol, declaration.period, float(smoothing), resolution, selector
+                    )
+                )
+            elif declaration.kind == "rsi":
+                kind = str(params.get("moving_average_type", "wilders")).upper()
+                average = getattr(lean.MovingAverageType, kind)
+                native = algorithm.rsi(symbol, declaration.period, average, resolution, selector)
+            elif declaration.kind == "donchian":
+                native = algorithm.dch(symbol, declaration.period, resolution)
+            else:
+                raise CapabilityError(f"Unsupported native indicator kind {declaration.kind}")
         else:
-            raise CapabilityError(f"Unsupported native indicator kind {declaration.kind}")
+            if declaration.kind == "sma":
+                native = lean.SimpleMovingAverage(name, declaration.period)
+            elif declaration.kind == "ema":
+                smoothing = params.get("smoothing_factor")
+                native = (
+                    lean.ExponentialMovingAverage(name, declaration.period)
+                    if smoothing is None
+                    else lean.ExponentialMovingAverage(name, declaration.period, float(smoothing))
+                )
+            elif declaration.kind == "rsi":
+                kind = str(params.get("moving_average_type", "wilders")).upper()
+                native = lean.RelativeStrengthIndex(
+                    name, declaration.period, getattr(lean.MovingAverageType, kind)
+                )
+            elif declaration.kind == "donchian":
+                native = lean.DonchianChannel(name, declaration.period)
+            else:
+                raise CapabilityError(f"Unsupported native indicator kind {declaration.kind}")
+            consolidator = self._consolidator(declaration.bars, symbol, False, interval)
+            if selector is None:
+                algorithm.register_indicator(symbol, native, consolidator)
+            else:
+                algorithm.register_indicator(symbol, native, consolidator, selector)
+            if selector is None:
+                algorithm.warm_up_indicator(symbol, native, interval)
+            else:
+                algorithm.warm_up_indicator(symbol, native, interval, selector)
         native.window.size = declaration.window
         self.indicators[(declaration, instrument)] = native
 

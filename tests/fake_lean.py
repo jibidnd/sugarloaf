@@ -359,6 +359,8 @@ class FakeAlgorithm:
         self.adapter = None
         self.custom_data = []
         self.deregistered = []
+        self.registered = []
+        self.warmed = []
 
     # ---- QCAlgorithm surface ----
 
@@ -434,9 +436,23 @@ class FakeAlgorithm:
         return Manager()
 
     def _indicator(self, kind, symbol, period, cadence, field=None):
+        # LEAN's Python helpers bind only a Resolution here; a timedelta is refused.
+        if not isinstance(cadence, Enum):
+            raise TypeError("No method matches given arguments: resolution expected Resolution")
         indicator = Indicator(kind, period, cadence, field)
         self.indicators.append((symbol, indicator))
         return indicator
+
+    def register_indicator(self, symbol, indicator, consolidator, selector=None):
+        indicator.field = selector
+        consolidator.data_consolidated += lambda sender, bar: indicator.update(bar)
+        self.subscription_manager.add_consolidator(symbol, consolidator)
+        self.registered.append((symbol, indicator, consolidator))
+
+    def warm_up_indicator(self, symbol, indicator, period, selector=None):
+        if not isinstance(period, (timedelta, Enum)):
+            raise TypeError("warm_up_indicator takes a Resolution or a timedelta")
+        self.warmed.append((symbol, indicator, period))
 
     def sma(self, symbol, period, cadence, field=None):
         return self._indicator("sma", symbol, period, cadence, field)
@@ -551,6 +567,21 @@ class FakeAlgorithm:
         )
 
 
+def _manual(kind):
+    class Manual(Indicator):
+        def __init__(self, name, period, *rest):
+            super().__init__(kind, period, None)
+            self.name = name
+
+    return Manual
+
+
+SimpleMovingAverage = _manual("sma")
+ExponentialMovingAverage = _manual("ema")
+RelativeStrengthIndex = _manual("rsi")
+DonchianChannel = _manual("dch")
+
+
 class FundamentalUniverse:
     @staticmethod
     def usa(selector, settings):
@@ -584,6 +615,10 @@ LEAN = SimpleNamespace(
     Universe=SimpleNamespace(UNCHANGED="unchanged"),
     UniverseSettings=UniverseSettings,
     FundamentalUniverse=FundamentalUniverse,
+    SimpleMovingAverage=SimpleMovingAverage,
+    ExponentialMovingAverage=ExponentialMovingAverage,
+    RelativeStrengthIndex=RelativeStrengthIndex,
+    DonchianChannel=DonchianChannel,
     EODHDUpcomingEarnings="EODHDUpcomingEarnings",
 )
 

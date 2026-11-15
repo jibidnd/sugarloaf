@@ -132,9 +132,13 @@ def test_interval_bars_come_from_a_consolidator_and_indicators_from_helpers():
     source = Source(five, indicators=(ema,))
     algorithm, adapter, runner = build(source)
     spy = adapter.symbols[SPY]
-    assert len(algorithm.consolidators[spy]) == 1
-    (symbol, indicator), = algorithm.indicators
-    assert symbol == spy and indicator.kind == "ema" and indicator.cadence == timedelta(minutes=5)
+    # One consolidator for the window, one registered with the manual indicator.
+    assert len(algorithm.consolidators[spy]) == 2
+    assert algorithm.indicators == []
+    (symbol, indicator, consolidator), = algorithm.registered
+    assert symbol == spy and indicator.kind == "ema" and indicator.name.startswith("ema:ema:3")
+    assert consolidator.period == timedelta(minutes=5)
+    assert algorithm.warmed == [(spy, indicator, timedelta(minutes=5))]
     assert algorithm.settings.automatic_indicator_warm_up is True
     start = datetime(2025, 1, 6, 9, 30)
     for k in range(11):
@@ -146,6 +150,19 @@ def test_interval_bars_come_from_a_consolidator_and_indicators_from_helpers():
     ]
     assert source.slices[-1].bars[SPY].open == 105.0 and source.slices[-1].bars[SPY].volume == 500.0
     assert len(adapter.window(five, SPY)) == 2
+    # The fake warms nothing, so two consolidated bars leave a period-3 EMA unready; its
+    # time is the consolidated bar's end.
+    reading = source.reads["ema", SPY]
+    assert not reading.is_ready and reading.time == datetime(2025, 1, 6, 14, 40, tzinfo=UTC)
+
+
+def test_feed_resolution_indicators_use_the_helpers():
+    sma = Indicator("sma", "sma", 2, Selection((SPY,)), "daily")
+    source = Source(Bars(Selection((SPY,)), "daily"), indicators=(sma,))
+    algorithm, adapter, runner = build(source)
+    (symbol, indicator), = algorithm.indicators
+    assert indicator.kind == "sma" and indicator.cadence == LEAN.Resolution.DAILY
+    assert algorithm.registered == []
 
 
 def test_universe_members_get_windows_warmed_from_history_and_notify():
