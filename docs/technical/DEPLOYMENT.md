@@ -1,17 +1,15 @@
 # Deployment and retained evidence
 
-An explicit manifest selects a strategy for a QC run. The public run interface
-uploads, compiles, backtests and retains submitted source and retrieved results.
-Shared configuration, evidence and reporting live in `sugarloaf.deployment`.
-The shared `sugarloaf.cli` entrypoint selects `--adapter` and forwards all other
-arguments unchanged. It does not open a manifest or define provider run options.
-QC packaging, cloud operations and remote notebooks live
-in `sugarloaf.adapters.quantconnect.cloud`, separate from the adapter running
-inside LEAN. QC hosts callbacks, native data, clocks, indicators and order APIs;
-Sugarloaf owns graph decisions, trading sessions and execution reconciliation.
+An explicit TOML manifest selects a strategy for a QuantConnect run. The cloud tooling
+uploads, compiles, backtests and retains the submitted source and the retrieved results.
+Shared configuration, evidence and reporting live in `sugarloaf.deployment`. The shared
+`sugarloaf.cli` entry point selects `--adapter` and forwards every other argument unchanged.
+QuantConnect packaging, cloud operations and remote notebooks live in
+`sugarloaf.adapters.quantconnect.cloud`, separate from the adapter that runs inside LEAN.
 
 Source: [configuration](../../sugarloaf/deployment/config.py),
 [adapter dispatch](../../sugarloaf/cli.py),
+[launcher](../../sugarloaf/adapters/quantconnect/launcher.py),
 [bundles](../../sugarloaf/adapters/quantconnect/cloud/packaging.py),
 [cloud CLI](../../sugarloaf/adapters/quantconnect/cloud/backtests.py),
 [evidence](../../sugarloaf/deployment/evidence.py),
@@ -20,36 +18,58 @@ Source: [configuration](../../sugarloaf/deployment/config.py),
 
 ## Deployment and Environment
 
-A manifest's `module:function` factory receives a parameter lookup callable and
-returns `Deployment`. See the [public factory](../../deployments/quantconnect/config.py).
-The factory chooses which parameter names it consumes; the manifest and command
-line pass strings rather than configuring arbitrary node fields automatically.
+A manifest's `module:function` factory receives a parameter lookup callable and returns a
+`Deployment`. See the [public factories](../../deployments/quantconnect/config.py). The
+factory chooses which parameter names it reads; the manifest and command line pass strings.
 
-| Field | Responsibility |
+| Field | Meaning |
 | --- | --- |
-| `name` | Run identity in diagnostic reports |
-| `strategy` | Caller-supplied reportable settings |
-| `graph_factory` | Zero-argument factory building fresh compiled node state |
-| `tickers` | Initial stable-ID to platform-ticker bindings |
-| `environment` | Dates, currency, capital, timezone, benchmark, brokerage, leverage, slippage |
-| `execution` | Order policy, intent lifetime, target age and trade thresholds |
-| `constraints` | Execution safety limits |
-| `report` | Optional end-of-run callback receiving `ReportContext(runtime, record)`; returns summary diagnostics |
+| `name` | Run identity in the result file |
+| `strategy` | Caller-supplied settings, serialized into the result file |
+| `graph_factory` | Zero-argument function returning a fresh `CompiledGraph`; called once per run |
+| `tickers` | `{InstrumentId: ticker or Ticker}` for the instruments nodes name explicitly; universe members bind by security id |
+| `environment` | `Environment`: dates, cash, currency, time zone, benchmark, brokerage, account type, slippage, leverage, borrow data |
+| `execution` | `ExecutionPolicy`: order type, time in force, minimum trade value, rebalance band, cancellation of superseded orders |
+| `constraints` | `PortfolioConstraints` the runner checks every terminal target against |
+| `report` | Optional `report(context)` called at the end with `ReportContext(runner, record)`; its return value goes into the result file |
 
-`Environment` dates are inclusive platform dates in its timezone. Cash is in
-account currency; slippage is a proportional notional rate. Brokerage/account type
-names resolve to native enum members. The launcher applies native settings, builds
-the graph/host, emits `SUGARLOAF_RUN` at start and `SUGARLOAF_RESULT` at end.
+The graph's output port decides the run's mode: a port declaring exactly `PositionView` makes
+a trading run; any other port makes a forecast run, which archives views and sends no orders.
+[ema.toml](../../deployments/quantconnect/ema.toml) is a trading run;
+[ema_forecasts.toml](../../deployments/quantconnect/ema_forecasts.toml) and
+[index_check.toml](../../deployments/quantconnect/index_check.toml) are forecast runs.
 
-Node declarations determine subscriptions and schedules. Graph constraints are
-configured in the graph factory; deployment constraints independently protect
-execution. `main.py` forwards callbacks rather than containing strategy logic.
+`Environment` dates are inclusive platform dates in its time zone. Cash is in account
+currency; slippage is a proportional rate applied through LEAN's `ConstantSlippageModel`.
+`brokerage` and `account_type` name `BrokerageName` and `AccountType` members.
+`borrow_data="interactive_brokers"` installs Interactive Brokers' shortable provider, which
+also charges borrow fees on shorts.
 
-Factories select fixed instruments or updating universes through node requirements.
-Factory parameters affect selection only when the factory explicitly reads them.
-`Deployment.tickers` supplies initial symbol bindings; investable membership comes
-from the node's declared `Selection` and any `UniverseRequirement`. Native
-membership handling stays in the adapter.
+Node declarations determine subscriptions, universes, indicators and schedules; the
+deployment carries no data settings. Graph-level limits are nodes in the graph;
+`Deployment.constraints` is checked by the runner on every terminal target.
+
+## What a run does on QuantConnect
+
+`SugarloafAlgorithm.initialize` ([main.py](../../sugarloaf/adapters/quantconnect/main.py))
+calls `launcher.load`, which calls the factory with `algorithm.get_parameter` (and `stored` or
+`fetch` when the factory asks for them), then `launcher.start`, which applies the
+environment, builds `QuantConnectAdapter` and `GraphRunner`, calls `runner.start()` and logs
+one line:
+
+```text
+SUGARLOAF_RUN {"mode": "trading", "name": "ema", "numpy": "...", "python": "...", "scipy": "...", "sugarloaf": "0.1.0"}
+```
+
+At the end `launcher.finish` saves to the Object Store under
+`sugarloaf/results/<project_id>/<algorithm_id>/`:
+
+| Key | Content |
+| --- | --- |
+| `result.json` | `name`, `mode`, `environment`, `execution`, `run` (`runner.finish()`), universe `members`, the last 5,000 `orders` and `updates`, the `strategy` report, `records` from `ReportContext.record`, each node's `config` |
+| `forecasts.json` | Forecast runs only: `encode_archive(runner.archive)` |
+
+and logs `SUGARLOAF_RESULT {"diagnostics": ..., "forecasts": ..., "key": ..., "orders": ..., "steps": ...}`.
 
 ## Manifest and bundle
 
@@ -115,6 +135,7 @@ failure raises an error; retained selection and evidence support inspection.
 
 The same path is available to scripts:
 
+<!-- snippet: fragment (needs QuantConnect credentials and a selected project) -->
 ```python
 from sugarloaf.adapters.quantconnect.cloud.backtests import run_backtest
 
@@ -230,14 +251,15 @@ kernels: `connect`, `start_kernel`, `run_cell` (one cell; on timeout the kernel 
 interrupted, not deleted), `kernel_status`, `stop_kernel`, and `ResearchKernel`,
 which tracks idle time against an `idle_timeout` so its owner can stop it.
 
-This runner is distinct from `sugarloaf.research.run_node`: one operates a remote
-notebook; the other performs predictive-node replay inside a supplied provider.
-See [research](RESEARCH.md) for the latter.
+A notebook that scores a forecast run reads the run's `forecasts.json` from the Object Store
+of the same project; see [research](RESEARCH.md).
 
 ## Verification
 
-[Bundle tests](../../tests/test_deployment_bundle.py) cover explicit inclusion and
-import rewriting; [evidence tests](../../tests/test_deployment_evidence.py) cover
+[Bundle tests](../../tests/test_deployment_bundle.py) cover explicit inclusion,
+path containment and source shadowing; [example tests](../../tests/test_examples.py) build the public deployments;
+[adapter tests](../../tests/test_quantconnect_adapter.py) run `launcher.start` and
+`launcher.finish` against a stand-in for LEAN; [evidence tests](../../tests/test_deployment_evidence.py) cover
 snapshot checks, historical lookup, uncertain submissions and log pagination.
 [Validation](../VALIDATION.md) records completed platform checks and remaining limits.
 The public run orchestration and cloud-tool boundaries have local regression

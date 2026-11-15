@@ -1,25 +1,27 @@
 # Maintenance
 
-Start with the behavior you need to change, the owning component and its existing
-tests. Read [architecture](ARCHITECTURE.md) for the call chain, then the focused
-reference and [API docstrings](api/index.md). Preserve unrelated changes.
+Start from the behaviour to change, its owning module and its tests. [Architecture](ARCHITECTURE.md)
+gives the call chain; the component references and the [API pages](api/index.md) give the
+contracts.
 
 ## Choose the boundary
 
-| Change | Reference | Useful tests |
+| Change | Reference | Tests |
 | --- | --- | --- |
-| View semantics and graph wiring | [Core](technical/CORE.md) | `test_contracts.py`, graph cases in `tests/` |
-| Data/receipt timing and activation | [Runtime](technical/RUNTIME.md) | `test_data_clock.py`, `test_runtime.py` |
-| Services, indicators and QC callbacks | [Market](technical/MARKET.md), [adapters](technical/ADAPTERS.md) | `test_adapter_quantconnect.py` |
-| Allocation and exposure arithmetic | [Portfolio](technical/PORTFOLIO.md) | `test_simple_nodes.py`, `test_execution.py` |
-| Orders, fills and cancellation | [Execution](technical/EXECUTION.md) | `test_execution.py` |
-| Replay and outcome labels | [Research](technical/RESEARCH.md) | `test_research_runner.py`, `test_research_evaluation.py` |
-| Packaging and evidence | [Deployment](technical/DEPLOYMENT.md) | Deployment tests in `tests/` |
+| Declarations, records, slices | [Core](technical/CORE.md) | `tests/test_runner.py`, `tests/test_memory_adapter.py` |
+| Views, graph wiring | [Core](technical/CORE.md) | `tests/test_view_axes.py`, `tests/test_runner.py` |
+| Dispatch, view carriage, warm-up, terminal check | [Runtime](technical/RUNTIME.md) | `tests/test_runner.py` |
+| QuantConnect mapping | [Adapters](technical/ADAPTERS.md) | `tests/test_quantconnect_adapter.py` with `tests/fake_lean.py` |
+| Memory adapter | [Adapters](technical/ADAPTERS.md#memory) | `tests/test_memory_adapter.py` |
+| Built-in nodes, allocation, constraints | [Portfolio](technical/PORTFOLIO.md) | `tests/test_nodes.py` |
+| Order sizing and policy | [Execution](technical/EXECUTION.md) | `tests/test_memory_adapter.py`, `tests/test_quantconnect_adapter.py` |
+| Archive, outcomes, metrics | [Research](technical/RESEARCH.md) | `tests/test_research_evaluation.py`, `tests/test_research_inference.py` |
+| Examples and public deployments | [Examples](../examples/README.md) | `tests/test_examples.py` |
+| Packaging, cloud tooling, evidence | [Deployment](technical/DEPLOYMENT.md) | `tests/test_deployment_bundle.py`, `tests/test_deployment_evidence.py`, `tests/test_cloud_run.py`, `tests/test_qc_client.py`, `tests/test_qc_kernels.py`, `tests/test_cli.py` |
 
-Start with [contract regressions](../tests/test_contracts.py) and the relevant
-module tests above. Use a regression
-that distinguishes the intended behavior from the failure, rather than duplicating
-implementation internals.
+Write a regression that tells the intended behaviour from the failure: a numerical case for
+arithmetic, a sequence of `deliver`, `fire` and `set_members` calls on `MemoryAdapter` for
+dispatch, a fake LEAN call sequence for the QuantConnect adapter.
 
 ## Verify a change
 
@@ -30,86 +32,71 @@ uv run --cache-dir .uv-cache pytest
 uv run --cache-dir .uv-cache ruff check .
 ```
 
-Use controlled late/equal-time arrivals and expiry boundaries for runtime changes;
-numerical cases with defined units for arithmetic; partial-fill/cancel/unknown
-submit sequences for execution. Memory fixtures should state all prices, calendar
-intervals, fills and confirmations. They cannot establish native market behavior.
-
-Native QC changes require appropriate platform evidence in addition to local
-injected-boundary tests: Python.NET overloads and indicator behavior need a native
-kernel or backtest. Record actual source/configuration, completed errors and
-relevant outputs. A compile alone establishes only build/import success.
-[Validation](VALIDATION.md) records what has been verified.
+`tests/fake_lean.py` stands in for LEAN's Python surface. It establishes which calls the
+adapter makes and in what order, not LEAN's behaviour or Python.NET overload resolution. A
+change to a LEAN call needs a native backtest, recorded in [validation](VALIDATION.md) with
+the project, backtest id and source hash.
 
 ## Diagnose missing output
 
-Check the chain in order:
+Check in order:
 
-1. Did the provider admit the relevant observation at this receipt boundary?
-2. Did a trigger, changed input, resource update or expiry activate the node?
-3. Are declared histories, indicator windows and upstream input counts ready?
-4. Did `evaluate` return a complete valid snapshot with correct source and expiry?
-5. Did downstream allocation produce one terminal position View?
-6. Did execution accept the target and pass session, valuation and risk checks?
+1. Did the adapter deliver the record? On QuantConnect, a feed with an `interval` delivers a
+   bar only when its consolidator completes one; a bar's resolution must match the feed
+   (`MemoryAdapter.deliver` ignores bars of another duration).
+2. Did the node's selection include the instrument at that moment (`ctx.members` for a
+   universe)?
+3. Did the node run? It runs when its declared part of the slice is not empty, when a
+   producer's outputs changed in this callback, or when its schedule fired.
+4. Did it raise `NotReady`? Read `runner.diagnostics` (the last 2,000) and
+   `runner.diagnostic_count`; on QuantConnect the last 20 are in `result.json` under `run`.
+5. Did a consumer's port have fewer views than its `min_count`? That is a `NotReady`
+   diagnostic recorded against the consumer; views of the wrong class or too many views raise
+   `ContractError`. Expired views are removed before the count.
+6. Was the run warming up? Outputs during warm-up are discarded.
+7. In a trading run, did the terminal port hold exactly one `PositionView` that differed from
+   `runner.last_target`, had not expired and passed the constraints (`TARGET_REJECTED`)?
 
-Inspect `runtime.batch`, `runtime.store`, `runtime.diagnostics` and
-`diagnostic_count`. Diagnostic retention is bounded; the count includes discarded
-older entries. `NotReady` and `NumericalError` withdraw output and record a
-diagnostic. Unexpected failures propagate after withdrawing affected outputs;
-batch processing does not roll back all provider/node mutations.
+`ContractError` and `CapabilityError` propagate and stop the run; they mean invalid wiring,
+units, identities or an unsupported request.
 
 ## Diagnose orders
 
-Inspect broker holdings/open orders alongside the engine's target and intent
-ledger. Use signed cumulative fill quantities, not a sum of repeated callback
-deltas. A cancel request retains pending exposure until terminal confirmation.
-A failed or rejected cancellation remains visible and can be retried.
+`runner.orders` holds one `OrderRecord` per instrument the adapter handled (`submitted`,
+`filled`, `skipped` with reason `no mark`, `rejected` with the platform's reason);
+`runner.updates` holds the platform's `OrderUpdate`s with cumulative fills. Orders are tagged
+with the target's `view_id`, so a LEAN order list joins to targets by tag. An instrument with
+no order usually means `order_quantity` returned zero: check `min_trade_value`,
+`rebalance_band` and pending open orders against the [sizing rule](technical/EXECUTION.md#sizing).
 
-An exception during submission leaves an unknown local reservation. Resolve the
-actual broker outcome before any resubmission. The ledger supplements broker
-state; it never replaces authoritative holdings.
-
-For QC, inspect `SUGARLOAF_RUN`, `SUGARLOAF_RESULT`, completed errors, ticket
-feedback and the saved deployment snapshot. Keep source identity tied to the
-specific run instead of substituting the current working tree.
+For a QuantConnect run, read `SUGARLOAF_RUN`, `SUGARLOAF_RESULT`, the backtest's errors and
+`result.json`, and keep the source identity tied to the run.
 
 ## Maintain documentation
 
-- Docstrings describe a class/function contract: parameters, units, returns,
-  exceptions and concise usage where it helps.
-- Technical references describe interactions, timing and consequential assumptions.
-- Package READMEs introduce entry points and link to the detailed references.
-- The root README showcases capabilities; the guide gives the shortest useful path.
+- Docstrings (Google style: Args, Returns, Raises, Attributes) describe one object's
+  contract; the API pages render them.
+- Technical references describe interactions, timing and assumptions; READMEs introduce a
+  package and link to the references.
+- Each contract is written once and linked from elsewhere.
+- [Validation](VALIDATION.md) changes only with new evidence.
 
-Public docstrings use Google-style Args, Returns, Raises and Attributes sections
-where relevant. Type annotations supply types; describe meaning, units and
-consequential side effects without repeating signatures. Document expected
-contract/capability failures without enumerating every internal exception.
-
-Build or preview the documentation with the approved documentation dependency group:
+Build the site with the documentation dependency group:
 
 ```powershell
 uv sync --group docs --cache-dir .uv-cache
-uv run --group docs --cache-dir .uv-cache mkdocs serve
 uv run --group docs --cache-dir .uv-cache mkdocs build --strict
 ```
 
-Generated API pages read source/docstrings; architecture guides explain cross-module
-behavior. Edit the source docstrings rather than hand-maintaining API signatures.
-The build parses source without importing LEAN. `tools/docs.py` exposes existing
-repository pages and selected source files at their repository-relative paths so
-links work in both GitHub and the site; it creates no maintained copies. Mermaid
-diagrams use a public JavaScript CDN, which requires network access for its build
-availability check and browser rendering. CI builds the site strictly without
-publishing it.
-Keep each full contract in one place and cross-link it. Update validation claims
-only when supporting evidence changes. Documentation edits need link/consistency
-checks and executable checks for runnable examples.
+`tools/docs.py` publishes the repository's pages and selected source files at their
+repository paths, so links work on GitHub and in the site. The build reads source
+statically and imports no LEAN code. Mermaid diagrams load a JavaScript library from a CDN.
+After a documentation change, check links and anchors, run every snippet the docs present as
+runnable, and confirm that every name the docs mention exists in the source.
 
-## Current operational limits
+## Operational limits
 
-There is no live restart/recovery, durable runtime/intent checkpoint or transaction
-rollback after arbitrary failures. The forecast archive is unbounded within a
-run; the View identity ledger and intent ledger are bounded. Keep credentials and generated data outside
-source; ignored evidence requires backup. These constraints affect long-running
-operation and are not fixed by reconnecting a host.
+There is no restart or recovery of runner state: node state, current views, the archive and
+the last target live in memory for one run. The forecast archive is unbounded within a run;
+diagnostics, order records, updates and the view-identity memory are bounded. Credentials
+and generated data stay outside source control; ignored artifacts need their own backup.

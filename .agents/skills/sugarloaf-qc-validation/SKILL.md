@@ -12,7 +12,8 @@ paid searches, release, or live trading.
 
 ## Frame the check
 
-Read the affected implementation and [adapter contract](../../../docs/technical/ADAPTERS.md),
+Read the affected implementation and [adapter contract](../../../docs/technical/ADAPTERS.md)
+(its mapping table names each LEAN call),
 [existing validation](../../../docs/VALIDATION.md), and the relevant portion of
 [the guide](../../../docs/GUIDE.md). For bundling, use
 [external packages](../../../docs/EXTERNAL_STRATEGIES.md) and the actual manifest.
@@ -58,8 +59,8 @@ or run cannot validate it. Require successful compilation of the intended snapsh
 before a backtest; compilation alone does not establish runtime behavior.
 
 Inspect a completed run's status, errors, relevant logs, and the outputs that answer
-the integration question, such as native readiness, admitted batch timing, orders,
-fills, or cancellations. Use the completion/retrieval mechanism actually supported
+the integration question, such as native indicator readiness, slice and consolidated-bar
+timing, universe membership, orders, fills, or cancellations. Use the completion/retrieval mechanism actually supported
 by the tool/client; avoid redundant polling and do not assume a pending run passed.
 If a check fails, retain its evidence and make only corrections within scope. Stop
 when the question is resolved, the agreed budget is exhausted, or further progress

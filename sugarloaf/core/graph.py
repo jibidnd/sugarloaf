@@ -35,10 +35,9 @@ class CompiledGraph:
         Raises:
             ContractError: The output declaration is not exactly (PositionView,).
 
-        TradingSession separately checks actual output cardinality at runtime.
+        GraphRunner separately requires exactly one actual PositionView at runtime.
         """
-        # Predictive graphs may end in forecasts. TradingSession explicitly invokes
-        # this additional check because only position targets authorize execution.
+        # Predictive graphs may end in forecasts; only position targets authorize execution.
         node, port = self.output
         if declared(self.nodes[node], "outputs")[port].emits != (PositionView,):
             raise ContractError("Trading output must emit only PositionView")

@@ -1,110 +1,95 @@
 # Sugarloaf
 
-Build and backtest quantitative strategies on QuantConnect as graphs of Python nodes. A node publishes a
-forecast or desired position; other nodes combine those messages, allocate
-capital, or enforce portfolio constraints. Research and trading share node and
-runtime contracts. QC hosts callbacks, native data, clocks, indicators and order
-APIs; Sugarloaf owns graph decisions, trading sessions and execution reconciliation.
-
-## Design in one picture
+Sugarloaf runs quantitative strategies on QuantConnect as graphs of Python nodes. A node
+declares the data it needs (bars, quotes, datasets, universes, native indicators, schedules,
+warm-up) and implements callbacks in the shape of a QuantConnect alpha model. It publishes a
+forecast or a desired position; other nodes combine forecasts, allocate capital or check
+account limits. `GraphRunner` sets the declarations up on an adapter, dispatches the
+platform's callbacks to the nodes in dependency order and hands the final position target to
+the adapter, which orders through the platform's own API.
 
 ```mermaid
 flowchart LR
-    D[Platform data] --> A[Adapter services]
-    A --> R[Event-driven graph]
-    R --> F[Forecast archive and evaluation]
-    R --> P[Position target]
-    P --> E[Execution and risk]
-    E --> B[Broker gateway]
-    B -->|Order feedback| E
+    P[Platform: data, indicators, schedules, orders] -->|callbacks| A[Adapter]
+    A -->|Arrival| R[GraphRunner]
+    R -->|Slice and views| N[Nodes]
+    N -->|PositionView| R
+    R -->|constraint check, execute| A
+    A -->|orders| P
+    R -->|forecast views| F[ForecastArchive]
+    F -->|Object Store| K[Research kernel: evaluate]
 ```
 
-The graph defines the strategy. The adapter owns data, indicators, calendars and
-broker state. Execution compares the target with actual holdings and pending
-orders. Native platform APIs stay out of signal code.
+## What it provides
 
-## What you can build
-
-- **Composable signals and allocations.** Six predictive View families express
-  returns, relative returns, probabilities, distributions, rankings and scores.
-  Position Views express desired account weights or quantities.
-- **Causal event processing.** Declared requirements, receipt times, a monotonic
-  data clock and selective evaluation determine what each node can see.
-- **Predictive research without a trading account.** Replay a fresh node, archive
-  issued forecasts and resolve exact outcomes separately, including missing labels.
-- **Multiple portfolio branches.** Net explicitly budgeted contributions,
-  preserve attribution and reject infeasible account targets.
-- **Broker-aware execution.** Reconcile holdings and pending exposure, handle
-  cumulative partial fills, retain reservations through cancellation and uncertain
-  submission, and check risk before each order.
-- **Explicit deployment bundles.** Select a factory and source files in TOML;
-  preserve actual uploaded source and retrieved run evidence.
-
-Built-in [EMA, RSI and SMA nodes](sugarloaf/nodes/README.md), mean aggregation and
-positive-signal allocation provide transparent starting rules. Examples teach
-mechanics rather than establish predictive value.
+- **A node interface close to LEAN's.** `update(ctx, data, views)`,
+  `on_securities_changed(ctx, added, removed)`, `on_scheduled(ctx, name, views)`; the
+  platform keeps windows and indicators, read through `ctx.window` and `ctx.indicator`.
+- **Typed messages between nodes.** Predictive views state a target (instrument, horizon,
+  units) and a statement (estimate, probability, distribution, ordering or score); a
+  `PositionView` states desired account weights or quantities.
+- **Composition.** Graphs are compiled with port and semantic checks. Built-in nodes cover
+  native-indicator scores, mean aggregation, positive-signal allocation, branch netting and
+  account constraints.
+- **Forecast runs.** A graph ending in a predictive port runs as a backtest that archives
+  every view; a research notebook scores the archive against later prices.
+- **Explicit deployments.** A TOML manifest selects a factory and its source files; the
+  cloud tooling retains the uploaded source and the retrieved results.
 
 ## Start locally
 
-Python 3.11+ and [uv](https://docs.astral.sh/uv/) are required for these commands.
-From the repository root:
+Python 3.11+ and [uv](https://docs.astral.sh/uv/) are required. From the repository root:
 
 ```powershell
 uv sync --cache-dir .uv-cache
 uv run --cache-dir .uv-cache python -m examples.memory
 ```
 
-The example combines two position branches and applies explicit fixture fills.
-Expected output: `{'holdings': 50, 'orders': 1, 'diagnostics': 0}`.
-It needs no QC account or market data. Continue with the
-[10–15 minute getting-started guide](docs/GUIDE.md).
+Expected output: `{'holdings': 50.0, 'orders': 1, 'diagnostics': 1}`. Two scheduled branches
+are netted into one 50% target and filled on the memory adapter; the diagnostic is the
+netter waiting for its second branch. Continue with the [guide](docs/GUIDE.md).
 
-## Explore the implementation
+## Run on QuantConnect
 
-For a QC backtest, use the installed `sugarloaf` command in an authenticated
-LEAN environment. Select the manifest explicitly:
+With QuantConnect credentials and a selected project:
 
 ```powershell
 sugarloaf run --adapter quantconnect --manifest deployments/quantconnect/ema.toml
 ```
 
-The command uploads, compiles, waits for completion and saves results and logs in
-`artifacts/ema/`. It requires a project selected in the manifest or saved state.
-If neither selects a project, run `sugarloaf create --adapter quantconnect --manifest deployments/quantconnect/ema.toml`
-once. For offline source inspection, use `sugarloaf package --adapter quantconnect --manifest deployments/quantconnect/ema.toml`.
-The [deployment guide](docs/technical/DEPLOYMENT.md) covers parameter overrides,
-Python usage, individual actions and polling limits.
+The command uploads, compiles, backtests and saves results and logs under `artifacts/ema/`.
+`sugarloaf create` with the same arguments provisions a project once;
+`sugarloaf package` builds the bundle offline. [Deployment](docs/technical/DEPLOYMENT.md)
+covers parameters, individual actions and evidence.
 
-| Learn about | Start here |
+## Documentation
+
+| Topic | Page |
 | --- | --- |
-| End-to-end design and call chains | [Architecture](docs/ARCHITECTURE.md) |
-| Views, nodes and graph compilation | [Core](docs/technical/CORE.md) |
-| Data requirements, Context and readiness | [Market services](docs/technical/MARKET.md) |
-| Events, clocks, activation and expiry | [Runtime](docs/technical/RUNTIME.md) |
-| Allocation, netting and constraints | [Portfolio](docs/technical/PORTFOLIO.md) |
-| Reconciliation, risk and order feedback | [Execution](docs/technical/EXECUTION.md) |
-| Memory and QuantConnect services | [Adapters](docs/technical/ADAPTERS.md) |
-| Replay, forecast archives and metrics | [Research](docs/technical/RESEARCH.md) |
-| Factories, bundles and cloud tools | [Deployment](docs/technical/DEPLOYMENT.md) |
-| Classes, signatures and docstrings | [API reference](docs/api/index.md) |
-| Tests, diagnostics and safe changes | [Maintenance](docs/MAINTENANCE.md) |
+| Parts and call chains | [Architecture](docs/ARCHITECTURE.md) |
+| Declarations, slices, nodes, views, graphs | [Core](docs/technical/CORE.md) |
+| Dispatch, view carriage, terminal target | [Runtime](docs/technical/RUNTIME.md) |
+| QuantConnect mapping and the memory adapter | [Adapters](docs/technical/ADAPTERS.md) |
+| Allocation, netting, constraints | [Portfolio](docs/technical/PORTFOLIO.md) |
+| Order sizing and feedback | [Execution](docs/technical/EXECUTION.md) |
+| Forecast runs and scoring | [Research](docs/technical/RESEARCH.md) |
+| Factories, manifests, cloud runs | [Deployment](docs/technical/DEPLOYMENT.md) |
+| Signatures and docstrings | [API reference](docs/api/index.md) |
+| Tests and diagnosis | [Maintenance](docs/MAINTENANCE.md) |
+| Native evidence and limits | [Validation](docs/VALIDATION.md) |
 
-[Examples](examples/README.md) teach specific paths through the framework.
-An optional [separate strategy repository](docs/EXTERNAL_STRATEGIES.md) can keep
-models, notebooks and private configuration outside the reusable library.
-Sugarloaf does not import strategy packages by name.
+[Examples](examples/README.md) and [built-in nodes](sugarloaf/nodes/README.md) are
+starting points; private strategies live in an
+[external package](docs/EXTERNAL_STRATEGIES.md). Examples teach mechanics; their results
+are not evidence of an edge.
 
-## Current scope
+## Status
 
-QuantConnect is the first native platform adapter. Trading currently supports US
-equities with regular-session day or good-till-cancelled market, market-on-open
-and market-on-close orders. Native indicators depend on
-LEAN; memory services supply deterministic fixtures, not a market simulator.
-Live restart/recovery and durable runtime state are not implemented.
-
-Local tests establish framework behavior. Recorded cloud checks apply to their
-saved source snapshots, including the native EMA QuantBook notebook. See
-[validation and capability limits](docs/VALIDATION.md) before relying on a path.
+The current design (declarations, `GraphRunner`, adapters as mappings) has local test
+coverage only. The native QuantConnect checks it still needs are listed in
+[validation](docs/VALIDATION.md#redesign-of-14-november-2026). QuantConnect data covers US
+equities and indices; orders are market, market-on-open and market-on-close. There is no
+live restart or recovery of runner state.
 
 For development:
 

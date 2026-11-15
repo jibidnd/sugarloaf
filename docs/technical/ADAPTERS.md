@@ -1,427 +1,178 @@
 # Adapters
 
-Adapters supply declared data, instruments, calendars and optional account services
-to the graph. Nodes consume neutral contracts; LEAN objects stay inside the QC
-boundary. See [market](MARKET.md), [runtime](RUNTIME.md), [execution](EXECUTION.md) and
-[research](RESEARCH.md) for data, timing, reconciliation and archive contracts.
+An adapter maps each Sugarloaf declaration and read to one platform call. It owns the
+platform objects (subscriptions, consolidators, rolling windows, indicators, universes,
+scheduled events, orders) and the binding between `InstrumentId` values and platform
+symbols. It owns no graph logic: the runner decides which node runs, and the adapter
+forwards the platform's callbacks to the runner.
 
-## Components and lifecycle
+Source: [interface](../../sugarloaf/adapters/protocol.py),
+[QuantConnect adapter](../../sugarloaf/adapters/quantconnect/adapter.py),
+[launcher](../../sugarloaf/adapters/quantconnect/launcher.py),
+[algorithm entry point](../../sugarloaf/adapters/quantconnect/main.py),
+[memory adapter](../../sugarloaf/adapters/memory/adapter.py) and
+[memory indicators](../../sugarloaf/adapters/memory/indicators.py).
 
-| Component | Responsibility |
-| --- | --- |
-| `ProviderServices` | Declaration guards, lazy Contexts, shared cache, readiness, selection and ownership |
-| `MemoryServices` | Explicit market/account/calendar fixtures; no indicator formulas |
-| `QuantConnectDataServices` | Native subscriptions, consolidation windows, indicators and universes |
-| `QuantConnectServices` | QC data plus account, valuation, costs and trading capabilities |
-| `QuantConnectHost` / `QuantConnectGateway` | Serial callback admission, TradingSession, order submission and feedback |
-| `QuantBookServices` | Market-only historical replay using the QC data implementation |
-| `LeanAPI` | Delayed platform imports and Python.NET calls; injectable test boundary |
+## The adapter interface
 
-The runtime uses these provider methods:
+`Adapter` in `sugarloaf.adapters.protocol` is a protocol; an adapter implements these
+methods and calls the runner's callbacks (`adapter.runner`).
 
-1. `install(node_id, ResourceUpdate)` replaces one node's complete requirements
-   and triggers at a runtime boundary. Shared universe definitions must agree
-   across owners.
-2. `apply(EventBatch)` admits a boundary, refreshes membership/lifecycle facts and
-   ownership, and invalidates older Contexts. It returns the facts it discovered
-   (for example a changed universe) for the current runtime pass.
-3. `context(batch=None, node_id="")` binds lazy facades to a provider version and
-   batch. Empty node ID is reserved for execution account access.
-4. `ready(node_id, context)` checks history, freshness, membership, instruments
-   and indicators. A requirement declared with `require_all=False` is exempt
-   from the per-instrument check. Recorded states are `requested`, `warming`, `unsupported`
-   and `ready`.
-5. `schedule_due(schedule, after, through)` tests occurrences in `(after, through]`.
-   The runtime controls invocation and coalescing.
-
-Subclasses supply data/indicator readers, instrument metadata, calendars
-and optional account/cost/capability hooks. Contexts expose `market`, `instruments`
-and `constraints`; account providers also expose `portfolio`, `costs` and
-`valuation`. Context creation does not eagerly read the account or mirror the
-platform data store.
-
-## Admission, time and declarations
-
-`Context.now` is logical data time; `Context.available_at` is receipt time. Bar,
-quote and scalar reads require observation time ≤ `now` and availability time ≤
-`available_at`. QC also requires native input admission. Provider mutation makes
-existing Contexts fail with `SnapshotError`.
-
-Compatible reads share a provider-version cache, but each node first passes its
-own requirement and selection checks. Lookback and freshness are checked after
-time filtering. Disallowed fill-forward bars are excluded. An undeclared
-requirement or out-of-selection read raises `CapabilityError`.
-
-`InstrumentRequirement(Selection())` permits metadata for input/account-dependent
-instruments without subscribing to prices. Empty portfolio selection means the
-whole account. Restricted selection filters holdings, prices and open orders;
-NAV and cash remain account-wide.
-
-`market.anchor` reads an exact timestamp from declared convention-compatible bar
-history. Price-return anchors accept raw/split-adjusted bars; total-return anchors
-accept total-return/adjusted bars. Missing anchors are not fetched or approximated.
-
-## QC callback order
-
-Deployment forwards `OnData`, `OnSecuritiesChanged` and `OnOrderEvent` to the host.
-Consolidators queue completed native inputs and `bar_close` facts. External
-schedules can queue named facts with `host.schedule`. Neither runs nodes directly.
-
-`on_data` combines queued facts and lifecycle events. Actual bar/quote ends and
-timestamped facts establish the data cutoff; algorithm UTC time is receipt time.
-Empty callbacks do not advance the graph or sequence. Facts without new data use
-the existing graph clock. Before the first observation, lifecycle feedback
-invalidates execution immediately and waits for a data clock. Platform warmup
-admits provider batches without node decisions.
-
-`QuantConnectDataServices.apply` performs these operations in order:
-
-1. Collect eligible retired universe sources.
-2. Apply neutral membership/lifecycle changes, rebuild owners and invalidate
-   previous Contexts.
-3. After a split, remove that instrument's raw-price consolidation/indicator
-   state and return a `DataReset` naming the nodes that declared it (see
-   [corporate actions](#corporate-actions-and-data-resets)).
-4. Synchronize resources and warm new resources through the cutoff.
-5. Admit queued observations and update matching native indicators.
-6. Advance the provider version again after resource/data mutations, before node
-   evaluation.
-
-`TradingSession` processes the graph and terminal target. Order callbacks can
-arrive synchronously during submission. While busy, the host queues them. It
-drains **all** cumulative ticket updates before reconciling once, repeating if
-reconciliation creates more feedback. Reconciling between queued fills would count
-filled positions as both holdings and local outstanding quantities. Ticket fills
-are cumulative; event deltas are not summed again.
-
-## Resources, prefill and ownership
-
-Backing data identity comprises requirement kind, stable instrument, interval,
-session, normalization and fill-forward policy. Compatible owners share one
-consolidator and one bounded window sized to the largest lookback. Each native
-bar is converted to a neutral `Bar`/`Quote` once, when it is admitted, and the
-window stores those. Freshness is per reader. Enlarging a window rebuilds and
-warms it.
-
-Neutral IDs map to LEAN security IDs; ticker changes preserve identity.
-`register(instrument, binding)` supplies an initial mapping: a ticker for an
-equity, or an `Instrument` record for another asset class, for example
-`Instrument(vix, "VIX", asset_class="index")`. A deployment's `tickers` takes
-the same values. Every class subscribes through LEAN's generic `add_security`
-with a Symbol of that class; supported are US equities (ETFs included) and US
-indices. LEAN reports whether a security is tradable, and execution trades
-equities only. An index's session can differ from the equity session: the VIX's
-daily bar runs 09:30–16:15 New York, so at an equity close the latest VIX bar is
-the previous session's. An index has trade bars only, no quotes, and no splits
-or dividends, so request its bars with `normalization="raw"` everywhere. Metadata
-rejects other classes and non-USA securities. Concurrent requests for one security
-must agree on session, normalization and fill-forward semantics.
-
-### Feed periods
-
-Each security is subscribed at the coarsest native resolution that serves every
-requirement on it, and no finer. LEAN delivers minute, hourly and daily trade
-bars; `native_period(requirement)` is the largest of those that divides the
-requested interval:
-
-| Requirement | Native feed |
-| --- | --- |
-| Daily bars, regular session | Daily |
-| 1-, 2-, 3-hour bars, regular session | Hourly |
-| 5-minute, 90-minute bars | Minute |
-| Any quotes; any extended-session request | Minute |
-
-- **The finest reader decides.** A security read daily by one node and at five
-  minutes by another has one minute subscription; the daily window is then built
-  from minutes by LEAN's session-calendar consolidator.
-- **LEAN does the consolidation.** Every window is fed by a native consolidator
-  registered on the security, which LEAN updates. When the feed already has the
-  requested interval that consolidator is `IdentityDataConsolidator`, which
-  passes each bar through as it arrives; otherwise it is `TradeBarConsolidator`
-  or `QuoteBarConsolidator`. The adapter updates a consolidator by hand only to
-  warm a new window from history, and in QuantBook replay.
-- **A universe adds its members with its readers' settings.** The native universe
-  source is created with the feed period, session, normalization and fill-forward
-  of the requirements that select it, so a member carries one subscription. A
-  universe whose members nobody reads prices from adds them daily. When a reader
-  of a finer interval is installed the source is recreated.
-- **A schedule's calendar security has a minute feed.** A schedule is checked when
-  data arrives, so the security whose sessions it follows must tick each minute.
-  It owns that feed without granting nodes price-read permission.
-- **A security named by a node starts at the finest universe period.** LEAN feeds
-  a consolidator from the first subscription a security was given and ignores
-  resolution (observed natively, see [validation](../VALIDATION.md)). A named
-  security is subscribed before any universe can select it, so it takes the finer
-  of its own period and the finest universe period at once.
-- **A feed is not made finer in place.** If a security already carries a coarser
-  subscription than a new requirement needs, the adapter raises `CapabilityError`
-  instead of serving bars of the wrong interval. Declare the finer interval from
-  the start. A feed is not made coarser while anything still reads the security.
-
-The graph clock follows the feeds. A graph that reads only daily bars receives one
-data boundary per session, at the close; nothing in it can act at 10:30. A node
-that must act inside the session declares the data it acts on (minute bars for
-"at 15:50") or a session-calendar schedule. Daily bars end at the session close
-(`daily_precise_end_time`, set explicitly by the launcher).
-
-Prefill uses typed history ending at an explicit cutoff. Regular daily requests
-always use daily history, whatever the live feed; other requests use history at
-the feed's period and native consolidators. Daily consolidation from an intraday
-feed follows exchange sessions, including
-early closes. `Scan` flushes through the cutoff converted to exchange-local time.
-Prefill emits no strategy decisions. The finite history span is a warmup attempt;
-readiness still determines whether outputs are usable.
-
-Unused consolidators/windows are removed. Adapter-owned manual subscriptions are
-released through user-defined universe membership only when flat with no open
-orders; the adapter does not call liquidation-oriented `RemoveSecurity` here.
-Caller-supplied symbols retain caller ownership. Native universe membership and
-holding/order retention remain LEAN's responsibility. Selected neutral membership
-is distinct from retained resource ownership for residence, holdings or orders.
-
-## Native indicators and late data
-
-`IndicatorRequirement` declares a bars source with `lookback=1`, kind, immutable
-parameter pairs, output names and output-window size. It grants no raw-bar access.
-
-| Kind | Parameters | Outputs |
+| Kind | Method | Contract |
 | --- | --- | --- |
-| `sma` | Positive integer `period`; `field` defaults to close | `value` |
-| `ema` | Positive integer `period`; optional `smoothing_factor`; `field` defaults to close | `value` |
-| `rsi` | Positive integer `period`; native `moving_average_type` defaults to Wilder; `field` defaults to close | `value` |
-| `donchian` | Positive integer `period`; complete bars | `value`, `upper`, `lower` |
+| Setup | `subscribe(declaration, instruments)` | Subscribe a `Bars` or `Quotes` feed for explicit instruments, consolidate to its `interval`, keep its window |
+| Setup | `add_universe(definition, feeds)` | Create the membership rule; members get `feeds` when they join |
+| Setup | `add_custom(declaration)` | Register a `Custom` dataset |
+| Setup | `add_indicator(declaration, instruments)` | Create and warm the native indicator per instrument |
+| Setup | `schedule(declaration)` | Register a scheduled callback that calls `runner.on_scheduled(name)` |
+| Setup | `warm_up(declaration)` | Ask the platform to replay history before the start |
+| Read | `time` | The platform clock, aware UTC |
+| Read | `window(declaration, instrument)` | Newest-first window of completed bars |
+| Read | `indicator(declaration, instrument)` | An `IndicatorReading` |
+| Read | `members(universe)` | Current members |
+| Read | `history(request)` | Past bars ending at or before now, oldest first per instrument |
+| Read | `calendar(instrument)` | A `Calendar`: `next_close`, `next_open`, `is_open`, `session` |
+| Read | `portfolio()` | A `Portfolio` record |
+| Action | `execute(target, policy)` | Turn a `PositionView` into platform orders; return `OrderRecord`s |
+| Action | `save(key, text)` | Keep a result where the platform keeps files |
 
-Scalar fields are open/high/low/close/volume. Unknown kinds, parameters, fields or
-outputs fail. Current Donchian bands include the current bar; a node needing the
-preceding channel requests two points.
+`Arrival` is what an adapter hands `runner.on_data`: the callback's `time`, `bars` and
+`quotes` keyed by declaration key and then instrument, `custom` keyed by kind, the four
+lifecycle tuples, and `warming_up`. `IndicatorReading(is_ready, value, time, values,
+outputs)` is an indicator read now: `values` are `(time, value)` pairs newest first, at most
+the declared window; `outputs` carries named bands.
 
-Kind, parameters and backing source identify a shared native indicator. Its
-built-in windows use the largest owner request. One manual update path feeds it;
-it is not also auto-registered. A temporary native consolidator warms the indicator
-through initialization time. Warming raw windows does not feed it again. Enlarging
-the output window rebuilds and warms the resource.
+## QuantConnect
 
-Readiness requires both native readiness and enough valid post-warmup outputs.
-Snapshots contain chronological immutable points, readiness, native LEAN version,
-settings, actual initialization start, last input end and admitted sequence.
-Recursive indicator values can depend on the finite initialization range.
-Sugarloaf supplies no formula fallback.
+`QuantConnectAdapter(algorithm, tickers, *, slippage=0.0005, leverage=1.0,
+borrow_data=None, lean=None)` wraps a `QCAlgorithm`. `tickers` binds the instruments nodes
+name explicitly to a ticker string (an equity) or a `Ticker(ticker, asset_class)` record
+(`equity` or `index`); universe members are bound by LEAN's permanent security id
+(`bind(symbol)` creates `InstrumentId(str(symbol.id))`). `lean` is the `AlgorithmImports`
+namespace, injected by tests.
 
-Raw windows retain the latest admitted revision per timestamp and preserve newer
-requested observations when older data arrives. Exact duplicates do not change
-values. Native indicators skip older samples with bounded
-`NATIVE_INDICATOR_LATE_INPUT` diagnostics. Changed equal-time inputs follow native
-equal-time update behavior. There is no late-data indicator replay ledger.
+### Mapping
 
-## Universes and lifecycle
+Each row is read off `adapter.py`; `algorithm` is the `QCAlgorithm`.
 
-Liquidity selection requires price, volume and dollar volume, filters thresholds,
-then ranks descending dollar volume. ETF selection uses historical constituent
-weights and declared missing-weight policy. Stable IDs break ties. Missing required
-selection inputs leave membership unavailable. Unchanged and empty differ.
-
-QC uses synchronous daily fundamental/ETF callbacks. Only default
-`Trigger("universe")` refresh is supported; custom keyed, timed or interval refresh
-fails explicitly. Duplicate native callbacks at one selection time return
-`Universe.UNCHANGED`, as do callbacks inside a cadence period already selected
-(`cadence="monthly"`, for example): the universe then keeps its members and LEAN
-adds nothing. A new LEAN universe starts empty, so one replaced mid-period (a
-changed definition, or a reader asking for a different bar feed) selects again at
-its first callback; the memory adapter keeps its members in that case.
-
-A changed definition under one neutral name creates a new native source.
-Generation checks prevent obsolete callbacks publishing membership. Once the last
-owner/reference disappears, the source is disposed. Its manager entry is collected
-only after a later boundary and empty selected/member sets, preserving LEAN's
-held/open-order retention.
-
-A `FundamentalUniverse` uses the same daily fundamental callback as liquidity
-selection; its rule receives one record per security from the callback's objects
-(CIK from the company reference, market cap, price, dollar volume). Observed in a
-backtest (March 2024): the callback runs at 00:00 each day, Saturdays included, with
-records of the previous close; a security first selected at 00:00 has its
-fundamentals and daily history at the first bar after the open, while its own
-`price` stays 0 until its first bar arrives. QuantConnect documents live
-fundamental selection at 7–8 AM Eastern.
-
-Fundamental reads come from each subscribed security's `fundamentals` record, which
-LEAN keeps point-in-time; a security must be subscribed (a universe member or a bar
-reader) to have one. The sector is its `asset_classification.morningstar_sector_code`.
-
-Earnings reads come from QuantConnect's EODHD Upcoming Earnings dataset
-(`QuantConnect.DataSource.EODHDUpcomingEarnings`, added once as the custom symbol
-`earnings`). Each native record is stamped with the day it was published and lists one
-security's next report date and `report_time` (before or after market). The adapter
-reads it through history, month by month, from the earliest lookback any read asks
-for up to the read's cutoff (never later), and extends it as later reads come. A day can
-list a security more than once (the same report both before and after the market, or two
-dates): the adapter takes the earliest report date and, of several timings, the first
-listed. It keeps a listing per security only when it changes (the calendar repeats a listing every day
-until the report), dated the day it first appeared, which is known from the start of
-that day in New York. Records match a security by its permanent identifier (SID), so a
-renamed security keeps its listings. The memory adapter takes listings directly
-(`MemoryServices(earnings={instrument: [EarningsRecord, ...]})`). Borrow terms come from the security's shortable provider: `shortable_quantity`
-and `fee_rate` (Interactive Brokers data, for example). LEAN's default provider
-reports a zero fee and unlimited quantity for everything; the adapter treats that
-as no data and returns no record. The brokerage model does not attach Interactive
-Brokers' provider even under its own name: set `Environment(borrow_data=
-"interactive_brokers")` and the security initializer gives every security,
-including later universe members, that provider. The same setting gives each security
-LEAN's `ShortMarginInterestRateModel`, which charges the provider's fee rate on short
-holdings and credits its rebate; LEAN's default model charges nothing. Records are stamped with the time LEAN read them,
-so a read after the Context's cutoff is refused; their `max_age` therefore bounds
-read lag, not the vendor's own update date. A rule that raises `NotReady` leaves
-the universe unready and its members subscribed.
-
-Symbol changes preserve identity; delistings mark instruments untradable.
-
-## Corporate actions and data resets
-
-Whether a corporate action makes retained prices unusable depends on the vendor,
-so each adapter owns that rule. An adapter that discards and rebuilds data returns
-`Event("data_reset", payload=DataReset(instrument, nodes, effective_at))` from
-`apply`; `ProviderServices._data_reset` builds it from the rebuilt resource keys.
-The [runtime](RUNTIME.md#viewstore-and-lifecycle) withdraws and re-evaluates the
-named nodes. An adapter that rebuilds nothing returns nothing.
-
-The QuantConnect rule, for backtests and QuantBook research:
-
-| Fact | `adjusted`, `split_adjusted`, `total_return` | `raw` bars, quotes |
-| --- | --- | --- |
-| Dividend | Nothing rebuilt | Nothing rebuilt |
-| Split | Nothing rebuilt | Windows and indicators rebuilt; `DataReset` reported |
-
-LEAN adjusts those series with the whole factor file from the first bar, so they
-are continuous through an ex-date or a split and do not change on it. The level of
-an adjusted price is therefore not the price traded on its date: in a March 2024
-backtest, NVDA's adjusted close was about 85 against about 850 raw, because of the
-10-for-1 split of June 2024. Returns from adjusted bars are right; a price level
-(a price filter, a market value) needs raw bars or a fundamental record's price. A raw price
-that opens lower by a dividend is a real price move. Only a split puts raw prices
-on a different per-share scale. The rebuilt raw history is still as traded: a
-window spanning the split mixes both scales, so the rebuild restarts state but
-does not rescale old prices. A strategy that needs continuous prices should
-request an adjusted convention.
-
-Independently of any reset, the runtime withdraws Views stated in units of a
-split instrument (a quantity position, a price-level claim), under every
-convention. Weight positions, rankings and return claims stay unless their node's
-data was reset. LEAN's own holdings adjustment remains native.
-This rule does not describe live trading, which is unsupported.
-
-## Account, costs and execution
-
-The lazy QC account snapshot reads actual holdings, NAV, cash, positive prices
-and open orders with ticket-filled quantities. Instrument lot size, multiplier,
-currency and tradability come from the security. Valuation requires matching
-instrument/account currencies; unavailable FX valuation fails explicitly.
-
-Cost estimates equal absolute notional × configured proportional slippage plus
-the native order-fee estimate converted through account cash-book FX. Zero
-quantity costs zero. Missing/nonpositive fee FX conversion fails. Estimation does
-not charge the account; LEAN applies actual costs during execution. Deployment
-configures the same constant slippage and leverage through a security initializer.
-The initializer also gives a new security its last known price. Without it a
-security has no price until its first bar, which on a daily feed is the whole day
-it joins a universe, and LEAN refuses orders for it.
-
-Buying power uses LEAN's initial-margin model and available buying power. Borrow
-follows LEAN's `IShortableProvider` contract: a number is the shortable quantity
-and null means "shortable without restrictions". LEAN's default provider always
-returns null, so a default backtest never runs out of borrow and pays no borrow
-fee; `Environment(borrow_data="interactive_brokers")` makes borrow binding and charged.
-
-The gateway supports regular-session `day` or `gtc` orders of three types
-(`market`, `market_on_open`, `market_on_close`), tags orders with intent
-identity, and obtains feedback from platform tickets. The host hands each order
-event to the engine as it arrives and runs any further reconciliation after the
-current one ends. It chooses the native call and nothing
-else: when an order may be sent and how it fills are LEAN's rules, set by the
-backtest's brokerage and fill models
-([execution](EXECUTION.md#order-types-and-timing)). LEAN refuses some orders
-before creating them, returning an invalid ticket with no order and no order
-event; the gateway reads that from the ticket and raises `OrderRefused`.
-
-## QuantBook and memory providers
-
-`QuantBookServices(qb, tickers=None, api=None)` supports explicit instruments, bars
-and native indicators, with no account/execution services. Install requirements,
-then call `prepare(start, end)` with aware times and a fresh provider. Preparation
-silently warms through start and retrieves typed split/dividend history. Replay
-admits neutral lifecycle facts at their effective boundaries; a split resets
-raw-price data and native indicator resources before post-action observations
-are admitted, as [above](#corporate-actions-and-data-resets). Split warnings are
-not effective split facts. Future retrieved actions
-are not exposed before their boundary. This local causal contract does not establish
-native numerical parity or point-in-time adjustment-vintage correctness.
-
-`history_batches(start, end)` lazily merges native feeds by end timestamp,
-including calendar feeds. Each security is replayed at the
-[feed period](#feed-periods) a deployment would subscribe it at, so the replay
-ticks when the deployment does: a node that reads only daily bars is evaluated at
-each close. One batch of native inputs is staged; runtime `apply` must precede the
-next yield. Apply feeds and scans consolidators through that boundary, then admits
-completed inputs. Resource updates rebuild future history iterators without
-replaying admitted values. Retrieved future history is never visible to nodes.
-
-Historical arrival equals observation end by assumption, not measured vendor
-latency. `anchor_observation(instrument, at, convention, as_of)` separately queries
-an exact minute close for outcomes, returns `None` when missing or later than
-`as_of`, and leaves node inputs unchanged. Supported conventions are price
-return excluding distributions and total return. The `price_return` convention
-requests `split_adjusted` history so a mechanical split does not become a price
-loss; `total_return` requests total-return history. Matching native adjustment
-vintages across exact anchors and replay remains an acceptance check.
-
-`sugarloaf.research.ResearchProvider` describes the structural interface accepted
-by `run_node`: `resources`, installation, admission, Context creation, readiness,
-schedule evaluation, preparation, and historical batches. It requires no provider
-base class, QC objects, account service, or execution capability. Runtime installs
-declarations before preparation and applies each batch before requesting another.
-Provider metadata (`provenance`) is optional, and `apply` may return None when
-the provider discovers no facts of its own. `MemoryServices` supplies fixture runtime services; a caller-provided
-replay implementation adds preparation and historical-batch iteration. Outcome
-resolution remains separate. See [the runner](../../sugarloaf/research/runner.py).
-
-`MemoryServices` accepts explicit bars, quotes, selections, account
-and session calendars. Writes invalidate Contexts; timestamp rules determine later
-visibility. Native indicators are unsupported. Fixture buying power is a NAV bound
-with reducing-order allowance; costs are proportional. `MemoryGateway` records
-intents and cancellation requests; only explicit caller fills/cancel confirmations
-change orders. It is not a market simulator.
-
-## Failure semantics and limits
-
-| Failure | Meaning |
+| Sugarloaf construct | LEAN call made by the adapter |
 | --- | --- |
-| `ContractError` | Conflicting shared declarations or invalid replay lifecycle/staging |
-| `CapabilityError` | Unsupported service/settings, undeclared read, incompatible subscription or unavailable conversion |
-| `NotReady` | Incomplete/stale history, unavailable membership/anchor or unready indicator/window |
-| `SnapshotError` | Context used after provider mutation or indicator containing unadmitted future points |
+| Adapter construction | `algorithm.add_security_initializer(...)` setting `ConstantSlippageModel(slippage)` and `set_leverage(leverage)` per security, plus `set_shortable_provider(InteractiveBrokersShortableProvider())` and `ShortMarginInterestRateModel()` when `borrow_data="interactive_brokers"`; `settings.automatic_indicator_warm_up = True`, `settings.daily_precise_end_time = True`, `settings.seed_initial_prices = True` |
+| `subscribe(Bars or Quotes)` | `Symbol.create(ticker, SecurityType.EQUITY or INDEX, Market.USA)`, then `algorithm.add_security(symbol, resolution, fill_forward=..., extended_market_hours=..., data_normalization_mode=...)`; one `RollingWindow[TradeBar](window)` (or `RollingWindow[QuoteBar]`) per instrument |
+| `Bars.interval` / `Quotes.interval` | `TradeBarConsolidator(interval)` (or `QuoteBarConsolidator`), registered with `subscription_manager.add_consolidator(symbol, consolidator)`; its `data_consolidated` handler adds the bar to the window and marks it for the next slice. A one-day interval uses a calendar function returning `CalendarInfo(open, close - open)` from `exchange.hours.get_next_market_open` and `get_next_market_close`, so the bar is the exchange session |
+| `add_universe(LiquidityUniverse or FundamentalUniverse)` | `algorithm.add_universe(FundamentalUniverse.usa(selector, settings))` |
+| `add_universe(ETFConstituentsUniverse)` | `algorithm.add_universe(algorithm.universe.etf(ticker, settings, selector))` |
+| Universe settings | `UniverseSettings(algorithm.universe_settings)` with `asynchronous = False`, `minimum_time_in_universe`, the finest feed `resolution`, `fill_forward`, `extended_market_hours`, `data_normalization_mode`; `settings.schedule.on(date_rules.week_start() / month_start() / year_start())` for weekly, monthly and yearly cadence |
+| Universe selector | Converts each row to a `SelectionRow` (`price`, `volume`, `dollar_volume`, `has_fundamental_data`, or `weight`) or a `FundamentalRecord`, applies `select(...)`, returns the selected symbols; `NotReady` returns `Universe.UNCHANGED` |
+| `Custom("earnings")` | `algorithm.add_data(EODHDUpcomingEarnings, "earnings")`; per slice `data.get(EODHDUpcomingEarnings)` gives `report_date` and `report_time` |
+| `Custom("fundamentals")` | `algorithm.securities[symbol].fundamentals`, read once per day |
+| `Custom("borrow")` | `security.shortable_provider.fee_rate(symbol, time)` and `shortable_quantity(symbol, time)`, read once per day; no record under `NullShortableProvider` |
+| `add_indicator(Indicator)` | `algorithm.sma(symbol, period, cadence, field)`, `algorithm.ema(symbol, period[, smoothing_factor], cadence, field)`, `algorithm.rsi(symbol, period, MovingAverageType, cadence, field)` or `algorithm.dch(symbol, period, cadence)`, with `cadence` the `interval` or the `Resolution`; then `indicator.window.size = window` |
+| `schedule(Schedule)` | `algorithm.schedule.on(date_rule, time_rule, fn)` with `date_rules.every_day / week_start / month_start / month_end / year_start`, given the calendar symbol when the schedule names one, and `time_rules.after_market_open(symbol, minutes)`, `before_market_close(symbol, minutes)` or `at(hour, minute, DateTimeZoneProviders.tzdb[timezone])`; `fn` calls `runner.on_scheduled(name)` |
+| `warm_up(WarmUp)` | `algorithm.set_warm_up(count, resolution)` or `algorithm.set_warm_up(span)` |
+| `time` | `algorithm.utc_time` |
+| `window(declaration, instrument)` | The adapter's `RollingWindow`, read through `NativeWindow` (bars converted on access) |
+| `indicator(declaration, instrument)` | `indicator.is_ready`, `indicator.current.value`, `current.end_time`, `indicator.window[i]`; Donchian adds `upper_band.current.value` and `lower_band.current.value` |
+| `members(universe)` | Membership kept by the adapter from `on_securities_changed` |
+| `history(HistoryRequest)` | `algorithm.history[TradeBar](symbols, count, resolution, fill_forward=False, extended_market_hours=..., data_normalization_mode=...)`, or with `(start, end)` for a span; a request with an `interval` raises `CapabilityError` |
+| `calendar(instrument)` | `securities[symbol].exchange.hours`: `get_next_market_close`, `get_next_market_open`, `is_open`, `get_previous_market_open` (through `NativeCalendar`) |
+| `portfolio()` | `securities[symbol].holdings.quantity` and `.price`, `algorithm.portfolio` holdings, `portfolio.total_portfolio_value`, `portfolio.cash`, `transactions.get_open_orders()` with `get_order_ticket(id).quantity_filled`, `algorithm.account_currency` |
+| `execute(target, policy)` | Per instrument, sorted: `transactions.cancel_order(id, "superseded")` for open orders tagged with another target (when `policy.cancel_on_new_target`); lot size from `securities[symbol].symbol_properties.lot_size`; size with `desired_quantity` and `order_quantity`; send `market_order`, `market_on_open_order` or `market_on_close_order(symbol, quantity, asynchronous=True, tag=target_id, order_properties=OrderProperties())` with `time_in_force` `TimeInForce.DAY` or `GOOD_TIL_CANCELED`; an invalid ticket is recorded as `rejected` with `get_most_recent_order_response()` |
+| Order feedback | `on_order_event(event)`: `transactions.get_order_ticket(event.order_id).quantity_filled`, `get_order_by_id(...).tag`, status mapped to an `OrderUpdate`, forwarded to `runner.on_order_event` |
+| Slice | `on_data(slice)`: `slice.bars` or `slice.quote_bars` for feeds without an interval (each bar is also added to its window), consolidated bars for feeds with one; `slice.dividends`, `slice.splits` (split warnings skipped), `slice.delistings`, `slice.symbol_changed_events`; `warming_up = algorithm.is_warming_up`; forwarded to `runner.on_data` |
+| Membership change | `on_securities_changed(changes)`: `changes.added_securities` and `removed_securities`; windows and consolidators created or removed (`subscription_manager.remove_consolidator`), indicators created or `algorithm.deregister_indicator(...)`, new members' windows filled from `history[TradeBar]` through their consolidators; forwarded to `runner.on_securities_changed` |
+| `save(key, text)` | `algorithm.object_store.save(key, text)` |
+| Run start | `set_start_date`, `set_end_date`, `set_time_zone`, `set_account_currency`, `set_cash`, `set_brokerage_model(BrokerageName, AccountType)`, `set_benchmark` (in `launcher.start`); one `algorithm.debug("SUGARLOAF_RUN ...")` line |
+| Run end | `on_end_of_algorithm` calls `launcher.finish`: `object_store.save` of `result.json` (and `forecasts.json` in a forecast run) under `sugarloaf/results/<project_id>/<algorithm_id>/`; one `algorithm.debug("SUGARLOAF_RESULT ...")` line with the key |
 
-QuantBook rejects universe, quote
-and portfolio declarations. Memory schedules need explicit calendar fixtures;
-named timezone availability depends on local zone data, while UTC is built in.
-QC uses native timezone and exchange databases. No timer creates synthetic market
-observations to make schedules fire.
+### Callbacks
 
-Injected-boundary tests establish integration/order behavior, not numerical parity
-with LEAN or actual QuantBook kernel execution. Evidence and remaining checks are
-in [Validation](../VALIDATION.md).
+`SugarloafAlgorithm` in [main.py](../../sugarloaf/adapters/quantconnect/main.py) forwards
+LEAN's callbacks: `initialize` loads the deployment (`launcher.load`) and calls
+`launcher.start`, which builds the adapter and the runner, sets `adapter.runner` and calls
+`runner.start()`; `on_data`, `on_securities_changed` and `on_order_event` call the adapter
+method of the same name; `on_end_of_algorithm` calls `launcher.finish`. Scheduled functions
+and consolidator handlers are registered by the adapter itself.
 
+`launcher.load(factory, algorithm)` calls the deployment factory with
+`algorithm.get_parameter`, plus `stored` (read-only Object Store reads) and `fetch`
+(`algorithm.download`) when the factory's signature asks for them.
 
-## Cloud tooling boundary
+### Time
 
-`sugarloaf.adapters.quantconnect.cloud` owns local packaging, project operations,
-backtest requests and remote notebooks. These tools are separate from the adapter
-inside LEAN. `sugarloaf.deployment` owns shared configuration, evidence and reporting.
-The shared CLI selects `--adapter` and forwards remaining arguments unchanged;
-QC tooling owns manifest parsing, options and the Python `run_backtest` interface.
-The installed `sugarloaf run --adapter quantconnect --manifest PATH` command selects
-that implementation. LEAN owns authentication, network
-requests and retries. Local polling limits do not cancel jobs or time out requests.
-[Deployment](DEPLOYMENT.md) documents factories, manifests, import rewriting,
-source snapshots, historical lookup and log retrieval.
-[External strategies](../EXTERNAL_STRATEGIES.md) explains optional package organization.
+LEAN timestamps bars in exchange-local time. The adapter converts each with the security's
+exchange time zone (`securities[symbol].exchange.time_zone`), looked up once per security.
+`daily_precise_end_time` stamps a daily equity bar at 16:00 New York. `ctx.time` is
+`algorithm.utc_time`. There is one clock, the platform's; a backtest and a live run use it
+alike.
 
-Adapter signatures are listed in the [API reference](../api/index.md).
+### Universe members
+
+When LEAN reports securities added or removed, the adapter compares them with the last
+selection of each universe, creates windows, consolidators and indicators for members that
+joined, removes them for members that left, fills the joined members' `Bars` windows with
+`history[TradeBar]` when the feed keeps more than one bar or has an interval
+(`window × interval / resolution` feed bars, passed through the consolidator when the feed
+has an interval), records the membership and calls
+`runner.on_securities_changed(name, joined, left)`. Consolidated history bars are not
+delivered as news in the next slice.
+
+### Corporate actions
+
+LEAN adjusts holdings and, for `adjusted` normalization, prices. The adapter forwards
+dividends, splits, delistings and symbol changes as records in the slice, and changes no
+window, indicator or view because of them. A node that needs to react to them reads
+`data.splits` and the other lifecycle tuples.
+
+### Scope
+
+Data: US equities (ETFs included) and US indices. Orders: market, market-on-open and
+market-on-close, day or good-till-cancelled. Indicators: `sma`, `ema`, `rsi`, `donchian`.
+The adapter refuses other asset classes and indicator kinds with `CapabilityError`. The
+[validation record](../VALIDATION.md#redesign-of-14-november-2026) lists which rows of the
+mapping table have native evidence.
+
+[Adapter tests](../../tests/test_quantconnect_adapter.py) run the adapter against
+[a stand-in for LEAN's Python surface](../../tests/fake_lean.py). They establish the calls the
+adapter makes, not LEAN's behaviour or Python.NET overload resolution.
+
+## Memory
+
+`MemoryAdapter(start, *, account=100_000.0, calendars=None, histories=None, lot_sizes=None,
+fills=True)` implements the same interface over fixtures for tests and examples. The caller
+drives it:
+
+| Method | Effect |
+| --- | --- |
+| `attach(runner)` | Binds the runner and calls `runner.start()` |
+| `deliver(time, bars=(), quotes=(), custom=None, dividends=(), splits=(), delistings=(), symbol_changes=(), warming_up=False)` | Advances the clock (never backwards), routes each bar to every subscribed feed whose resolution period equals the bar's duration, consolidates, updates windows and indicators, builds an `Arrival` and calls `runner.on_data` |
+| `fire(name, time=None)` | Calls `runner.on_scheduled(name)` for a declared schedule |
+| `set_members(universe, members)` | Replaces membership, creates windows and indicators for new members, calls `runner.on_securities_changed` |
+| `refresh(universe, rows, at=None)` | Applies the universe rule (`select`) to `SelectionRow`s, then `set_members` |
+| `set_price(instrument, price)` | Sets a mark (bars set marks too) |
+| `fill(order_id)` | Fills an open order at the current mark, for adapters built with `fills=False` |
+
+Fixtures: `calendars` maps instruments to `Sessions(regular, extended=())`, tuples of
+`(open, close)`; `histories` maps instruments to bars served by `history`; `lot_sizes`
+defaults to one. With `fills=True`, `execute` fills each order immediately at the current
+mark and reports it through `runner.on_order_event`; `cancel_on_new_target` cancels every
+open order in the target's instruments first, whatever its tag. Sizing uses the account read
+before those cancellations, so within that call a cancelled order still counts as pending. `saved` holds what `save` was given.
+
+Indicators come from [memory/indicators.py](../../sugarloaf/adapters/memory/indicators.py):
+SMA, an EMA seeded by its first value, Wilder's RSI and a Donchian channel. An indicator
+updates on completed bars of a subscribed feed with the same key as `Indicator.bars`, so a
+node declares the matching `Bars` input. These formulas serve tests of node logic; they are
+not a parity claim with LEAN.
+
+The memory adapter has no slippage, fees, session calendar unless one is supplied, or data
+it was not handed. [Memory adapter tests](../../tests/test_memory_adapter.py) and
+[runner tests](../../tests/test_runner.py) use it.
+
+## Writing another adapter
+
+Implement the methods in the interface table over the platform's API, keep the platform's
+objects keyed by declaration key and instrument, convert platform records to the records in
+`sugarloaf.core.data` field by field, and forward each platform callback to the runner. Size
+orders with `desired_quantity` and `order_quantity` from `sugarloaf.execution` so that every
+adapter applies the same thresholds.

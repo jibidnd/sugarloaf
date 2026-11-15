@@ -1,151 +1,135 @@
-# Runtime, events and clocks
+# Runtime: the graph runner
 
-[GraphRuntime](../../sugarloaf/runtime/runtime.py) turns serialized arrivals into
-selective graph evaluations. It owns active outputs and immutable View identities;
-it does not submit orders. [TradingSession](EXECUTION.md#target-construction)
-composes execution around it.
+Source: [runner](../../sugarloaf/runtime/runner.py). Tests: [runner tests](../../tests/test_runner.py).
 
-## Events and batches
+`GraphRunner(graph, adapter, *, constraints=None, policy=None, identity_limit=100_000)` runs
+one compiled graph over one adapter. It reads every node's declarations, sets them up on the
+adapter, dispatches the adapter's callbacks to the nodes in topological order, carries views
+along the graph edges and, in a trading run, hands a changed terminal position target to the
+adapter for execution. It has no clock of its own: every callback carries the platform's
+time (`adapter.time`, or `Arrival.time` for a slice).
 
-`Event(kind, instrument=None, interval=None, key=None, payload=None, end=None)`
-describes a fact with optional matching filters and observation end.
-`EventBatch(sequence, cutoff, events=(), received_at=None)` supplies a nonnegative
-sequence, data cutoff and receipt boundary; receipt defaults to cutoff.
-Data ends, cutoff and lifecycle effective times cannot follow receipt.
-Payloads use neutral immutable values, including `LifecycleEvent`.
-
-An identical last arrival is ignored. Other nonincreasing sequences or regressed
-receipt times fail with `ContractError`. Equal event-time arrivals can still be
-distinct batches. Hosts must serialize processing; reentrant calls are rejected.
-
-## Clock, arrival and activation
-
-For each arrival:
-
-```text
-data boundary = latest event.end, or declared cutoff if none
-graph time = max(previous graph time, data boundary)
-```
-
-A 10:01 observation received 10:03 advances the graph to 10:01 if it is the newest
-data. A later-arriving 10:00 observation cannot rewind it. Provider reads still
-check receipt/availability separately. There is no global barrier waiting for
-unrelated instruments.
-
-A `Trigger` matches its kind and any specified instrument, interval and key.
-A scheduled trigger instead uses a wall time/timezone/calendar or session open/close
-plus offset. Providers check occurrences crossed in `(previous tick, current tick]`.
-Missed occurrences coalesce once. Startup checks the first tick's local day.
-Replaced schedules check from the previous completed graph tick, not all history.
-
-**Schedules require arriving data.** No independent timer creates graph ticks.
-A callback may queue a scheduled fact, but the host still evaluates at a data
-boundary. Expiry also takes effect when processing reaches its boundary.
-
-## Processing algorithm
-
-`GraphRuntime(graph, services, on_output=None).process(batch) -> ViewStore`:
-
-1. Validate arrival identity/order and normalize the monotonic clock.
-2. Install pending resource replacements; call `services.apply(batch)`; append
-   the facts it returns (for example a changed universe).
-3. Expire Views with expiry ≤ now. Activate their downstream consumers/descendants,
-   resource-changed owners, matching triggers and changed-universe readers/owners.
-4. On a provider's `DataReset` or a unit-changing lifecycle fact, withdraw and
-   re-activate only the affected nodes and their descendants, retire their View
-   identities, and advance their information watermarks
-   (see [ViewStore and lifecycle](#viewstore-and-lifecycle)).
-5. Visit activated nodes once in topological order. Assemble input ports, create
-   Context, validate input cardinality/semantics and readiness, then evaluate.
-6. Validate output source, cutoff, expiry and port semantics; atomically replace
-   the node's complete snapshot. Changed content activates direct consumers.
-7. Call `on_output(node_id, outputs, batch)` for every successful emission, even
-   unchanged content; queue any resource replacement for the next batch.
-8. Record the original successful arrival for replay identity and normalized
-   `runtime.batch`; close evaluation Contexts.
-
-Within a batch, consumers see replacements from upstream nodes already visited.
-Multiple activation causes do not produce multiple evaluations of the same node.
-A failed batch is not recorded as completed, but processing does not roll back
-arbitrary provider or node state.
-
-## ViewStore and lifecycle
-
-`ViewStore.get(node_id, port=None)` returns a node snapshot or port tuple.
-`replace` validates identity before replacing the whole snapshot; `withdraw`
-replaces it with empty output; `expire` removes expired Views and reports changed
-owners. Omitted output ports are withdrawn, not retained.
-
-The store keeps a ledger of the most recently issued identities (100,000 by
-default). Reusing a remembered ID with different content, or duplicating an ID
-within a snapshot, fails. The bound keeps a long minute-level run from retaining
-every View it ever issued. Unactivated nodes retain active
-outputs subject to expiry/invalidation. The ledger is not a forecast archive:
-[ForecastArchive](RESEARCH.md#issued-forecasts) separately retains issued predictions.
-
-Two facts invalidate a node's output. The runtime holds no rule about dividends,
-price conventions or any vendor:
-
-- **The provider reports a `DataReset(instrument, nodes, effective_at)`.** It
-  discarded and rebuilt data those nodes had declared. Whether a corporate
-  action requires that depends on the vendor's data, so the adapter decides and
-  the runtime only reacts. A provider that rebuilt nothing reports nothing.
-- **A lifecycle fact ends the instrument or changes what one unit of it is,**
-  whatever data a node read. This is true of the instrument, not of a vendor.
-  - `delisting`, `expiry`, `exercise` or `assignment`: every node with an active
-    View naming the instrument (as a target subject or a position) is affected.
-  - `split`: only nodes with a View stated in units of the instrument are
-    affected. That is a position in `quantity` units, or a claim about anything
-    other than a return (a price level, a volume). "Hold 10 shares" is a
-    different position after a 10-for-1 split; "hold 2% of NAV", a ranking and
-    "expect a 1% return" are not, and they stay.
-
-A `dividend` or `symbol_change` fact alone invalidates nothing. It is still
-delivered as an event, so a node may trigger on it.
-
-Affected nodes and all their descendants are withdrawn, their View IDs retired,
-and they are re-evaluated in the same batch. Everything else is untouched: an
-action on one stock of a 500-name universe does not withdraw the other 499
-forecasts or cancel every order.
-
-A new View concerning the instrument must have an information cutoff at or after
-the fact's effective time. After a `DataReset` that holds for the named nodes and
-their descendants; after a lifecycle fact, for every node, and after a split only
-for Views stated in units of the instrument. Even a late older
-fact cannot lower that watermark. A node re-evaluated in the fact's own batch
-has usually seen no newer data, so it publishes again on its next bar.
-Broker holdings adjustments remain native. The runtime neither transforms old
-Views nor liquidates holdings.
-
-## Concrete trace
-
-Suppose `signal → allocation` is the graph and the signal triggers on a completed
-bar:
-
-- Batch 1 admits the bar; signal emits a new score; allocation sees it and emits
-  a position target.
-- Batch 2 contains unrelated data. Neither node runs if no other activation occurs;
-  their outputs remain active.
-- Batch 3 crosses the score's expiry. The score is removed; allocation is activated.
-  If its required input is now missing, its output is withdrawn.
-- Execution loses target authority and requests cancellation. Filled holdings remain
-  until a later explicit target changes them.
-- A replay of batch 3 is a no-op.
-
-## Failures and verification
-
-| Failure | Result |
+| Argument | Meaning |
 | --- | --- |
-| `NotReady`, `NumericalError` during evaluation | Withdraw node output, record diagnostic, propagate effective input change |
-| Other node exception | Withdraw node and descendants, propagate to host |
-| `ContractError` | Invalid arrival, wiring/message or operation; do not reinterpret as a hold |
-| `CapabilityError` | Unsupported service or operation |
-| `SnapshotError` | Context no longer represents readable provider state |
+| `graph` | A `CompiledGraph` with fresh node instances |
+| `adapter` | An object implementing the [adapter interface](ADAPTERS.md#the-adapter-interface) |
+| `constraints` | `PortfolioConstraints` the terminal target must satisfy; default long-only, unlevered |
+| `policy` | `ExecutionPolicy` passed to `adapter.execute`; see [execution](EXECUTION.md) |
+| `identity_limit` | How many recent view identities the runner remembers for the one-identity-one-content check |
 
-Diagnostics use bounded retention; `diagnostic_count` counts all readiness/numerical
-failures. The identity ledger is bounded. Durable restart is unsupported.
+`runner.trading` is `graph.emits_positions()`. A trading run executes targets; any other
+graph is a forecast run and archives views.
 
-[Clock tests](../../tests/test_data_clock.py),
-[runtime tests](../../tests/test_runtime.py) and
-[contract tests](../../tests/test_contracts.py) cover late/equal-time data, replay,
-schedules, expiry, lifecycle, replacement and invalid identities.
+## Construction and start
+
+The constructor gathers declarations (`_gather`) and checks them: universe names declared
+twice with different definitions, two feed declarations of one node with the same `name`,
+repeated indicator names in a node, schedule names repeated anywhere in the graph, and a
+selection naming a universe no node declares all raise `ContractError`.
+
+`start()` is called once, before the platform's clock starts. On QuantConnect the launcher
+calls it; on the memory adapter `MemoryAdapter.attach(runner)` does. It calls the adapter's
+setup methods in this order:
+
+1. `adapter.subscribe(declaration, instruments)` once per feed key, for the union of the
+   explicit instruments of every node declaring that key, with the declaration of the
+   largest `window`.
+2. `adapter.add_universe(definition, feeds)` per universe, with the feeds (largest window
+   per key) of the declarations that select it.
+3. `adapter.add_custom(declaration)` per distinct `Custom` declaration.
+4. `adapter.add_indicator(declaration, instruments)` per indicator, with its explicit
+   instruments; universe members get theirs from the adapter when they join.
+5. `adapter.schedule(declaration)` per schedule.
+6. `adapter.warm_up(declaration)` once, with the longest `WarmUp` in the graph: the
+   coarsest resolution with the largest count when every request is a count, the longest
+   span when every request is a span, and otherwise a span covering both.
+
+## Callbacks
+
+| Method | Called by the adapter when | What runs |
+| --- | --- | --- |
+| `on_data(arrival)` | The platform delivers a slice | Every node whose declared part of the slice is not empty, then every node with a producer whose outputs changed, in topological order; then the terminal check |
+| `on_securities_changed(universe, added, removed)` | A universe's membership changed | `on_securities_changed` of every node that declares or selects that universe |
+| `on_scheduled(name)` | A declared schedule fired | `on_scheduled` of the owning node, then `update` (with an empty slice) of every node downstream whose producer changed; then the terminal check |
+| `on_order_event(update)` | The platform reports order feedback | Appends the `OrderUpdate` to `runner.updates` (last 10,000) |
+| `finish()` | The run ends | Returns a summary for the result file |
+
+`on_data` and `on_scheduled` each increment `runner.steps`, the value nodes read as
+`ctx.sequence`.
+
+### The slice a node receives
+
+`_slice_for(node_id, arrival)` builds a node's `Slice` from the adapter's `Arrival`: for
+each `Bars` or `Quotes` declaration, the delivered bars of its key for the instruments its
+selection resolves to now (universe selections resolve through `adapter.members`); for each
+`Custom` declaration, the records of its kind filtered to its selection; and the lifecycle
+records (dividends, splits, delistings, symbol changes) of every instrument the node
+selects. Named declarations go to `data.series(name)`.
+
+### Running one node
+
+`_run` builds the node's context, collects its upstream views, validates every port
+against its `InputSpec`, calls the callback and validates the returned outputs against the
+node's `OutputSpec`s and these rules (`_check`):
+
+- each `view_id` appears once in an emission;
+- `metadata.source` is the node id and `metadata.cutoff` is at most the callback time;
+- `metadata.expires_at` is after the callback time;
+- a `view_id` seen earlier in the run carries the same contents.
+
+`NotReady` and `NumericalError` from a callback or from port validation replace the node's
+outputs with nothing and append a `Diagnostic(code, node, time, message)` to
+`runner.diagnostics` (last 2,000; `runner.diagnostic_count` counts all). Any other exception
+propagates to the adapter and from there to the platform.
+
+The returned outputs replace the node's previous outputs entirely. The node's consumers run
+in the same callback when the new outputs differ from the old.
+
+### Views along edges
+
+A consumer receives, per port, the current views of every edge into it, concatenated in edge
+order, with views whose `expires_at` is at or before the callback time removed. Views stay
+current until their producer replaces them; an upstream node that does not run keeps its
+outputs.
+
+### Warm-up
+
+An arrival with `warming_up=True` (LEAN's `is_warming_up`) runs the nodes as usual, so node
+state, windows and indicators fill, but their outputs are discarded, nothing is archived and
+no target is executed.
+
+## Terminal target
+
+After `on_data` (outside warm-up) and after `on_scheduled`, a trading run takes the terminal
+port's views. When there is exactly one `PositionView`, it differs from `runner.last_target`
+and it has not expired, the runner checks it against `constraints`:
+
+- weight targets are taken as weights; quantity targets are converted at the adapter's marks
+  and NAV, and instruments without a mark are left out;
+- the target is merged over current holdings (instruments the target omits stay held) and
+  passed to `violations(effective, constraints, current)`, which checks gross, net, position
+  bounds and turnover;
+- a violation appends a `TARGET_REJECTED` diagnostic and sends nothing.
+
+A target that passes becomes `runner.last_target` and goes to
+`adapter.execute(target, policy)`; the returned `OrderRecord`s are appended to
+`runner.orders` (last 10,000). A restated identical target sends nothing.
+
+## Forecast runs
+
+When the output port does not declare exactly `(PositionView,)`, every view any node emits
+outside warm-up is recorded in `runner.archive`, a `ForecastArchive`, with the node id, port
+and callback time. Position views are ignored by the archive. The QuantConnect launcher saves
+the archive as JSON at the end of the run; see [research](RESEARCH.md).
+
+## Reads
+
+| Member | Content |
+| --- | --- |
+| `runner.outputs(node_id, port=None)` | A node's current views, by port or for one port |
+| `runner.terminal()` | The output port's current views |
+| `runner.last_target` | The last executed `PositionView` |
+| `runner.orders`, `runner.updates` | `OrderRecord`s returned by `execute`; `OrderUpdate`s from the platform |
+| `runner.archive` | The `ForecastArchive` of a forecast run |
+| `runner.diagnostics`, `runner.diagnostic_count` | Recent diagnostics and their total count |
+| `runner.finish()` | `steps`, `diagnostic_count`, the last 20 diagnostics, order and forecast counts, the last target's id |

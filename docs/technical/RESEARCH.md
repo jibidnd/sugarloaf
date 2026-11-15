@@ -1,176 +1,124 @@
-# Predictive-node research
+# Research
 
-Research runs the actual node with fresh state, archives its predictive Views,
-then resolves outcomes separately. It requires no trading graph, allocation rule
-or brokerage account. The notebook entry point is
-[examples/ema_research.ipynb](../../examples/ema_research.ipynb); general authoring
-belongs in [GUIDE.md](../GUIDE.md), runtime semantics in [RUNTIME.md](RUNTIME.md), and
-QuantBook capabilities in [ADAPTERS.md](ADAPTERS.md).
+Research on prices happens in the QuantConnect research kernel with `QuantBook` directly: a
+study reads `qb.history` DataFrames and works on them with ordinary Python. A Sugarloaf node
+is replayed only by a backtest. A graph whose output port emits predictive views runs as a
+forecast run: the runner archives every view the nodes issue, and the launcher saves the
+archive to the Object Store. A notebook in the same project reads the archive back, reads
+the prices it needs with one `qb.history` call, and scores the forecasts with
+`sugarloaf.research.evaluate`.
 
-## Replay and provenance
+Source: [archive](../../sugarloaf/research/archive.py),
+[serialization](../../sugarloaf/research/serialization.py),
+[anchors](../../sugarloaf/research/anchors.py),
+[evaluation](../../sugarloaf/research/evaluation.py),
+[inference](../../sugarloaf/research/inference.py).
+Example: [EMA notebook](../../examples/ema_research.ipynb) and its
+[walkthrough](../../examples/EMA_RESEARCH.md).
 
-Public imports come from `sugarloaf.research`:
+## From node to scores
 
+1. Build a forecast graph: the node alone, with its view port as the graph output
+   (`build_forecast_graph` in [examples/ema.py](../../examples/ema.py)).
+2. Run it as a backtest from a manifest
+   ([ema_forecasts.toml](../../deployments/quantconnect/ema_forecasts.toml)):
+   `sugarloaf run --adapter quantconnect --manifest deployments/quantconnect/ema_forecasts.toml`.
+   The run log's `SUGARLOAF_RESULT` line names the key
+   `sugarloaf/results/<project_id>/<backtest_id>`; the archive is `forecasts.json` under it
+   and the run summary `result.json`.
+3. In the project's research kernel:
+
+<!-- snippet: fragment (needs the QuantConnect research kernel and a saved archive) -->
 ```python
-from sugarloaf.adapters.quantconnect import QuantBookServices
-from sugarloaf.research import ReturnOutcomeResolver, evaluate, run_node
-
-services = QuantBookServices(qb, tickers=instrument_tickers)
-run = run_node(
-    node_factory, services, start=start, end=end,
-    node_id="signal", configuration=experiment_parameters,
-)
-resolver = ReturnOutcomeResolver(exact_anchor, provenance={"dataset": "version-1"})
-report = evaluate(run.archive, resolver, as_of=evaluation_time)
+archive = decode_archive(json.loads(qb.object_store.read(KEY)))
+frame = qb.history([symbol], start, end, Resolution.DAILY)
+closes = closes_from_frame(frame, instrument_of=..., time_of=...)
+resolver = ReturnOutcomeResolver(anchor_from_closes(closes), provenance={"source": "qb.history"})
+report = evaluate(archive, resolver, as_of=evaluation_time)
+report.coverage, report.summary(pool_horizons=True)
 ```
 
-[`run_node`](../../sugarloaf/research/runner.py) constructs one node from the
-factory and a one-node GraphRuntime with no execution. Its optional `output`
-selects the designated port when the node exposes several; all predictive ports
-are archived. Nodes with required upstream inputs need an explicit graph. Use a
-fresh node and provider per experiment.
+The notebook has the complete code with imports.
 
-Runtime construction installs declarations. The runner calls
-`services.prepare(start,end)`, then processes each `history_batches(start,end)`
-batch. Loading/prefilling history establishes readiness without issuing past
-decisions. Only admitted data with observation end <= graph time and availability
-<= receipt time can enter node Context. Late arrivals do not rewind graph time.
-QC owns native indicator state/windows; provider initialization and forward-only
-update conventions are part of the experiment.
+## Forecast archive
 
-`ResearchRun` exposes `archive`, `runtime` and `provenance`. Provenance contains
-node/provider classes, start/end, supplied configuration, provider details and
-the historical-availability assumption. Runtime retains readiness/failure
-diagnostics. Configuration is supplied by the caller, not automatically recovered
-from arbitrary node state. Preserve data/configuration/model/provider versions
-alongside exported results; historical receipt assumptions do not measure live
-vendor latency.
+`ForecastArchive.record(node_id, port, views, received_at)` is called by the runner for every
+emission of a forecast run outside warm-up. Each `ForecastRecord` holds the original `view`,
+`node_id`, `port` and `received_at`, the platform time of its first emission.
 
-## Issued forecasts
+The archive keys on `view.metadata.view_id`. A repeated unchanged identity adds nothing; a
+changed one raises `ContractError`. Replacement, withdrawal and expiry erase nothing.
+Position views are actions and are skipped. Iterate the archive, take `len(archive)`, or
+call `archive.get(view_id)`. It lives in memory for the length of the run.
 
-[`ForecastArchive.record(node_id, outputs, batch)`](../../sugarloaf/research/archive.py)
-is the `GraphRuntime.on_output` callback, called after validated emissions. Each
-`ForecastRecord` contains the original View, `node_id`, `port`, `batch_sequence`,
-`graph_time` and `received_at` from its first emission.
+`encode_archive(archive)` and `decode_archive(records)` convert it to and from JSON-ready
+lists. `Estimate`, `Probability`, `Score`, `Ordering` and `QuantileDistribution` encode field
+by field; any other statement is pickled and base64-encoded, so decoding it needs its class
+importable in the kernel.
 
-The archive keys on `view.metadata.view_id`. Unchanged repeated identities add no
-observation; changed contents under an existing identity raise ContractError.
-Replacement, withdrawal and expiry never erase issued forecasts. PositionViews
-are actions and are excluded. Iterate the archive, call `len(archive)`, or retrieve
-`archive.get(view_id)`. Original target intervals and Metadata.cutoff remain
-unchanged; receipt provenance is stored beside them. Storage is in-memory and
-unbounded, not durable deployment recovery.
+## Outcome anchors
 
-## Outcomes and extensions
+`ReturnOutcomeResolver` asks an anchor for the price of an instrument at an exact time.
+`anchor_from_closes({instrument: {bar end: close}})` builds one from a table of closes; a
+time with no close is unavailable, never replaced by a neighbouring price.
+`closes_from_frame(frame, instrument_of, time_of)` builds that table from a `qb.history`
+DataFrame indexed by (symbol, time) with a `close` column: `instrument_of` maps the
+frame's symbol to the archive's `InstrumentId` and `time_of` maps its time index to an aware
+bar end. One price table carries one adjustment convention; the caller chooses it to match
+the forecasts' targets.
 
-[`evaluate`](../../sugarloaf/research/evaluation.py) accepts an archive/record
-iterable, a resolver, explicit aware `as_of`, and optional `metric_fn`. It returns
-an `EvaluationReport` with row-level forecast/outcome/metrics/status/reason,
-`coverage`, and `summary()`. Evaluation data never become strategy inputs.
+## Outcomes and evaluation
 
-`OutcomeResolver.resolve(target, *, as_of) -> Outcome` is the extension contract.
-A resolved Outcome preserves the exact Target, a finite scalar or tuple value,
-availability at/after target end, and optional provenance. Its availability must
-not exceed evaluation `as_of`. The other statuses are `pending`, `unavailable`
-and `unsupported`; each requires a reason and has no invented label. A target's
-label is resolved once per evaluation, shared by forecasts of that exact target.
-Forecasts not yet issued at `as_of` remain pending.
+`evaluate(archive, resolver, *, as_of, metric_fn=default_metrics)` returns an
+`EvaluationReport` with one `EvaluationRow` per forecast (`forecast`, `outcome`, `metrics`,
+`status`, `reason`), `coverage` and `summary(pool_horizons=False)`. Outcome data stay in
+evaluation; they never reach a node.
 
-`ReturnOutcomeResolver(anchor, provenance=None)` supports decimal simple
-price/total returns, joint coordinates, and aligned scalar return differences.
-Its callback `anchor(instrument, at, convention, as_of)` supplies an `Observation`
-stamped with the requested time `at`, or None. Joint labels preserve
-subject/interval order. It computes end/start minus one, requiring positive start
-and nonnegative end values, and retains the latest endpoint availability. An
-unmatured horizon stays pending; missing or not-yet-available anchors stay
-unavailable. The resolver itself substitutes nothing and invents no
-corporate-action adjustments; the source owns the convention, point-in-time
-availability, and which price stands for `at`.
+`OutcomeResolver.resolve(target, *, as_of) -> Outcome` is the extension point. A resolved
+`Outcome` carries the exact target, a finite value or tuple, an availability time at or
+after the target end and at most `as_of`, and provenance. The other statuses are `pending`,
+`unavailable` and `unsupported`, each with a reason and no value. One label is resolved per
+exact target and shared by its revisions. A forecast first received after `as_of` is pending.
 
-The QuantConnect research source (`QuantBookServices.anchor_observation`) reads
-minute history and applies the same rule as `ctx.market.anchor` (see
-[MARKET](MARKET.md#units-and-exact-anchors)): the price at the first clock tick
-the replay admitted at or after `at`, treated by the instrument's session; its
-availability is when that price became known. A time the replay's clock never
-reached, a session with no trade, and a price known only after `as_of` are
-unavailable. Issue horizons in trading sessions (`session_close`, or
-`session_open` for intervals measured from an open) so they end where the
-instrument trades.
+`ReturnOutcomeResolver(anchor, *, provenance=None)` resolves decimal simple price or total
+returns, joint coordinates and aligned return differences. Its anchor
+`anchor(instrument, at, convention, as_of)` returns an `Observation` stamped at `at`, or
+None. It computes end over start minus one with positive start and nonnegative end values.
+An unmatured horizon is pending; a missing or later-available anchor is unavailable.
 
-Custom `metric_fn(view, outcome)` returns named floats or None and can merge
-`default_metrics(view, outcome)`. Unsupported metrics raise CapabilityError and
-retain an unscored row. Wrong targets, future labels and malformed metrics fail
-explicitly. Undefined metrics use None; NaN is rejected and infinities retained.
+`metric_fn(view, outcome)` returns named floats or None and may extend
+`default_metrics(view, outcome)`. Unsupported metrics leave an unscored row; NaN is
+rejected.
 
-## Default diagnostics
+## Default metrics
 
 | View | Metrics and baseline |
 | --- | --- |
-| Return / relative return | Predicted-minus-realized error, absolute/squared error, error divided by stated forecast-error scale; zero-return squared-error baseline |
-| Probability | Separate events: mean binary Brier/log loss with 0.5 baseline. Exhaustive partition: summed categorical Brier/log loss with uniform baseline |
-| Ranking | Kendall tau-b, concordance across strict predicted pairs, top-minus-bottom realized return and within-predicted-tie spread; random-order concordance baseline |
-| Distribution | Negative scalar/joint log density, or exhaustive event-mass Brier/log loss; scalar PIT when the law exposes a CDF |
-| Score | Raw score and outcome; cohort Pearson/Spearman association with at least three finite, nonconstant paired observations |
+| Return / relative return | Predicted minus realized error, absolute and squared error, error over the stated error scale; zero-return squared-error baseline |
+| Probability | Separate events: binary Brier and log loss with 0.5 baseline. Exhaustive partition: categorical Brier and log loss with uniform baseline |
+| Ranking | Kendall tau-b, concordance of strict predicted pairs, top-minus-bottom realized return, within-tie spread; random-order baseline |
+| Distribution | Negative log density (scalar or joint), or exhaustive event-mass Brier and log loss; scalar PIT when the law has a CDF |
+| Score | Raw score and outcome; cohort Pearson and Spearman association with at least three finite, nonconstant pairs |
 
-Events are lower-open and upper-closed. Realized ties give strict ranking pairs
-half credit. Impossible observed events retain infinite log loss. Joint densities
-retain dependence; a declared dimension must match the outcome. Continuous log
-scores can be negative and depend on units/dimension. No KL to an empirical point
-mass is used. Raw scores are not silently calibrated into returns. Model-specific
-forecast losses and calibration belong to the external node implementing them.
+Events are lower-open and upper-closed. Realized ties give strict ranking pairs half
+credit. Impossible observed events keep infinite log loss.
 
-## Comparisons and evidence limits
+## Cohorts and inference
 
-Summary cohorts preserve View family, node/model identity, target meaning and
-units/convention, full horizon, and actual receipt-to-target lead time. They also
-retain score calibration identity, event definitions or distribution class as
-applicable. Ranking cohorts identify the universe independently of forecast order.
-Different lead times remain separate; calendar dates with matching semantics can
-pool. Session-count horizons vary in calendar length (one day mid-week, three
-over a weekend), so pass `summary(pool_horizons=True)` to keep one daily signal
-in one cohort. Each cohort reports metric means, count, distinct targets and infinite-score
-count. Probability/event-mass cohorts provide ten reliability bins, with 1 in the
-final bin. Undefined means remain None; infinities are not silently dropped.
+Summary cohorts keep apart forecasts that differ in view family, node and model, target
+meaning, units and convention, horizon, and lead time from receipt to target end; they also
+keep score calibration ids, event definitions and distribution classes apart.
+Session-count horizons vary in calendar length, so `summary(pool_horizons=True)` keeps one
+daily signal in one cohort. Forecasts received at or after their target end are flagged as
+retrospective.
 
-Forecasts received at/after target end remain visible and are flagged as
-retrospective, including in coverage and summaries. They are not prospective
-evidence. Overlapping horizons and forecast revisions are dependent observations;
-these descriptive summaries supply no independent-sample p-values. The experiment
-owns chronological training/validation splits, calibration and baseline selection.
+`block_bootstrap_interval(values, block=..., seed=...)` gives a confidence interval for a
+statistic of a time-ordered series by resampling blocks of consecutive observations; pass a
+`(T, k)` array to resample several series on the same dates. `cross_sectional_ic(rows)`
+computes one Spearman rank correlation per decision time across instruments. Overlapping
+horizons and revisions are dependent observations: the summaries carry no independent-sample
+p-values, and both inference tools describe predictive association before costs.
 
-[`sugarloaf.research.inference`](../../sugarloaf/research/inference.py) adds two
-tools for judging a result:
-
-- `block_bootstrap_interval(values, block=..., seed=...)` returns a confidence
-  interval for a statistic of a time-ordered series. It resamples whole blocks
-  of consecutive observations so serial dependence is preserved; choose a block
-  at least as long as the forecast horizon in periods. Pass a `(T, k)` array to
-  resample several series on the same dates, for example to compare two signals.
-- `cross_sectional_ic(report.rows)` computes one Spearman rank correlation per
-  decision time across instruments (the information coefficient), from forecasts
-  that may come from one node per instrument. Feed its `ic` series to the
-  bootstrap for an interval around the mean IC.
-
-Both describe predictive association before costs; neither is a trading result. Unsupported target forms need an explicit resolver or
-metric, rather than an implicit reinterpretation.
-
-[Research tests](../../tests/test_research_evaluation.py) cover identity retention,
-exact labels, causal availability, all six families, ties and joint density
-dependence; [runner tests](../../tests/test_research_runner.py) exercise public
-replay. Completed platform checks and unverified capabilities belong in
-[VALIDATION.md](../VALIDATION.md). Keep each node's idea/source, adaptations,
-experiments, unsuccessful findings and tests beside its implementation. Numerical
-correctness and successful replay do not establish predictive skill or alpha.
-
-
-## Implementation map
-
-| Module | Entry points |
-| --- | --- |
-| [runner.py](../../sugarloaf/research/runner.py) | ResearchProvider, ResearchRun, run_node |
-| [archive.py](../../sugarloaf/research/archive.py) | ForecastRecord, ForecastArchive.record/get |
-| [evaluation.py](../../sugarloaf/research/evaluation.py) | Outcome, ReturnOutcomeResolver, evaluate, default_metrics, EvaluationReport |
-| [QC research provider](../../sugarloaf/adapters/quantconnect/research.py) | prepare, history_batches, anchor_observation |
-
-Follow runner → runtime → archive for issuance, then resolver → evaluation for labels
-and metrics. The [API reference](../api/index.md) supplies current signatures.
+Tests: [evaluation](../../tests/test_research_evaluation.py),
+[inference](../../tests/test_research_inference.py),
+[archive round trip through the launcher](../../tests/test_quantconnect_adapter.py).

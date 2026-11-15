@@ -1,6 +1,68 @@
 # Validation and limits
 
-## Local verification
+## Redesign of 14 November 2026
+
+The current code (declarations in `sugarloaf.core.inputs`, `GraphRunner`, `QuantConnectAdapter`
+and `MemoryAdapter` as mappings, forecast runs saved to the Object Store) has **local test
+coverage only**. On 15 November 2026, on branch `redesign/push-model-2026-11-14`,
+`uv run --cache-dir .uv-cache pytest` passes 135 tests and `ruff check .` passes. No backtest
+or research-kernel run of the current code has been made. The native evidence further down
+this page was recorded on the earlier design and applies to the source snapshots named there.
+
+`tests/test_quantconnect_adapter.py` runs the adapter against `tests/fake_lean.py`, a
+stand-in for LEAN's Python surface written for these tests. It establishes which calls the
+adapter makes. It does not establish that LEAN accepts them (Python.NET overload resolution,
+keyword names, generic types), when LEAN calls back, or what LEAN returns.
+
+### Native checks to run
+
+| Check | Manifest | Expected | Status |
+| --- | --- | --- | --- |
+| EMA example, trading | [ema.toml](../deployments/quantconnect/ema.toml), January 6–10, 2025, USD 100,000 | No runtime errors; orders and end equity compared with the record of the earlier design (6 orders, USD 6.00 fees, end equity USD 99,652.57) | Not run |
+| EMA forecast run | [ema_forecasts.toml](../deployments/quantconnect/ema_forecasts.toml) | No runtime errors; `forecasts.json` saved under the key in `SUGARLOAF_RESULT`; the [notebook](../examples/ema_research.ipynb) decodes and scores it in the research kernel | Not run |
+| Index check | [index_check.toml](../deployments/quantconnect/index_check.toml), March 24 to April 17, 2025 | One evaluation per session; VIX daily bars read through the generic `add_security` subscription; the report compared with the run of 11 November 2026 below | Not run |
+| QuantConnect mapping | Every row of the [mapping table](technical/ADAPTERS.md#mapping) | Each LEAN call accepted with the arguments the adapter passes and producing the documented effect | Unverified natively, every row |
+
+Calls whose acceptance the stand-in cannot establish include: `RollingWindow[TradeBar]` and
+`RollingWindow[QuoteBar]`; `add_security` with `fill_forward`, `extended_market_hours` and
+`data_normalization_mode` keywords; `TradeBarConsolidator` with a calendar function returning
+`CalendarInfo`; `UniverseSettings(algorithm.universe_settings)` and
+`settings.schedule.on(date_rules.month_start())`; `FundamentalUniverse.usa(selector, settings)`
+and `universe.etf(ticker, settings, selector)`; `add_data(EODHDUpcomingEarnings, "earnings")`;
+`algorithm.ema(symbol, period, cadence, None)` and the `sma`, `rsi` and `dch` helpers with a
+`timedelta` cadence; `time_rules.at(hour, minute, zone)`; `history[TradeBar](...)` with
+keyword arguments; `market_order(..., asynchronous=True, tag=..., order_properties=...)`;
+`deregister_indicator`; `subscription_manager.remove_consolidator`.
+
+The Lab's native checks named in the redesign (the short-reversal replay against its
+plain-LEAN twin, the momentum view check and the first-callback timing probe) run in the
+Lab's QuantConnect project and are recorded there.
+
+### Capability limits
+
+- QuantConnect data: US equities (ETFs included) and US indices. Other asset classes raise
+  `CapabilityError`.
+- Orders: market, market-on-open and market-on-close, day or good-till-cancelled, sized by
+  `order_quantity`. Holdings, fills, partial fills and cancellations are LEAN's; the runner
+  keeps the adapter's order records and LEAN's order feedback for the result file.
+- Native indicators: `sma`, `ema`, `rsi`, `donchian`. The memory adapter's formulas are
+  fixtures, not a parity claim.
+- A node runs when its declared data arrives, when an upstream output changes or when its
+  schedule fires.
+- `ctx.history` reads at the feed resolution; a request with an `interval` raises
+  `CapabilityError` on QuantConnect.
+- No restart or recovery of runner state; no live-trading evidence.
+- Memory fixtures are not a market simulator.
+- Overlapping forecast revisions are dependent observations; evaluation reports no
+  independent-sample inference.
+
+## Record of the design before 14 November 2026
+
+The sections below record checks of the design that preceded the redesign. Class, method and
+setting names in them refer to the code of that date; each run applies to the source
+snapshot it names.
+
+### Local verification
 
 Local regression coverage includes immutable View identities, graph
 wiring, late/equal-time data, expiry/lifecycle invalidation, schedules, resource
@@ -22,7 +84,7 @@ The EMA QuantBook replay runs in the native research kernel. Local adapter tests
 use injected API boundaries; capabilities outside the observed native paths still
 need platform acceptance.
 
-## Cloud evidence
+### Cloud evidence
 
 Project `37377184`, January 6-10, 2025, starting equity USD100,000. The EMA run
 completed without runtime errors. LEAN 2.5.0.0.18155; Python 3.11.14; NumPy 1.26.4;
@@ -51,7 +113,7 @@ Public runs use ignored per-manifest artifact directories; each result retains
 its exact source/parameter/compile identity.
 See [the guide](GUIDE.md#4-deploy-and-inspect) for retrieval and inspection.
 
-## Native acceptance, 9 October 2026
+### Native acceptance, 9 October 2026
 
 Run on LEAN 2.5.0.0.18178 after the audit changes. Each row answers one
 integration question; none says anything about profitability. All runs completed
@@ -92,9 +154,8 @@ What these runs found, beyond confirming the changes:
   window was identical before and after its ex-dividend date: LEAN applies the
   whole factor file, including later dividends, from the start. The rule these
   runs exercised rebuilt that window and withdrew its reader anyway. It has since
-  moved into the QuantConnect adapter, which now rebuilds nothing on a dividend
-  (see [corporate actions](technical/ADAPTERS.md#corporate-actions-and-data-resets)
-  and the parity section below).
+  moved into the QuantConnect adapter, which then rebuilt nothing on a dividend
+  (see the parity section below).
 - **A node re-evaluated by a lifecycle event emits nothing until its next bar.**
   The event arrives before the open while the graph clock is still at the prior
   close, so the new View's information cutoff predates the event and is rejected.
@@ -113,7 +174,7 @@ quotes; ETF-constituent universes; delistings and symbol changes; live data.
 The session, band and lifecycle runs predate the host fix; only comments changed
 in the engine after the final session run.
 
-## Native feeds, order types and feedback order, 11–12 October 2026
+### Native feeds, order types and feedback order, 11–12 October 2026
 
 Run on LEAN 2.5.0.0.18178 against the working tree on `403edf9`, after the
 adapter began subscribing each security at the coarsest native resolution its
@@ -193,7 +254,7 @@ a graph, and a platform refusal reaching the engine from a live ticket. The
 refusal path, the feed planning and the order-type translation have local tests
 only.
 
-## Parity with plain QuantConnect algorithms
+### Parity with plain QuantConnect algorithms
 
 Five simple rules are each run twice in QC Cloud: once as a native `QCAlgorithm`
 with no Sugarloaf code, once as a Sugarloaf graph. All five pairs produce
@@ -249,7 +310,7 @@ algorithm. Each is intended behaviour that a strategy author needs to know:
 The pairs do not cover partial fills, cancellations, shorting, universes or
 market-on-close orders.
 
-## Index data, 11 November 2026
+### Index data, 11 November 2026
 
 Question: does a deployment that declares the VIX as an index, with
 `Instrument(vix, "VIX", asset_class="index")`, deliver its daily
@@ -276,7 +337,7 @@ Observed:
 - Evidence: the run's report is in the backtest's logs on QuantConnect and in the
   local, git-ignored `artifacts/index_check/` folder.
 
-## Capability limits
+### Capability limits recorded before the redesign
 
 - QC data: US equities (ETFs included) and US indices. Other asset classes are
   refused.

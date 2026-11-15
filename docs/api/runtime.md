@@ -1,5 +1,5 @@
 # Runtime
 
-## `runtime.runtime`
+## `runtime.runner`
 
-::: sugarloaf.runtime.runtime
+::: sugarloaf.runtime.runner

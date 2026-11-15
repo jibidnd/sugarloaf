@@ -1,20 +1,18 @@
 # API reference
 
-These pages are generated from the Python source and Google-style docstrings.
-Use the [component guides](../ARCHITECTURE.md) to understand interactions and this
-reference for signatures, parameters, return values and failure contracts.
+These pages are generated from the Python source and its Google-style docstrings. The
+[architecture](../ARCHITECTURE.md) and the component references explain how the modules
+interact; these pages give signatures, parameters, return values and failures.
 
-| Component | Reference |
-| --- | --- |
-| Views, graph wiring, events and context | [Core](core.md) |
-| Requirements, schedules and instrument selection | [Market data](market.md) |
-| Clock, activation and View storage | [Runtime](runtime.md) |
-| Built-in nodes and allocation constraints | [Nodes and portfolio](portfolio.md) |
-| Broker snapshots, intents and reconciliation | [Execution](execution.md) |
-| Provider services, memory fixtures, QC boundary and cloud tools | [Adapters](adapters.md) |
-| Replay, issued forecasts and outcome evaluation | [Research](research.md) |
-| Shared configuration, adapter dispatch, reporting and evidence | [Deployment](deployment.md) |
+| Component | Modules | Page |
+| --- | --- | --- |
+| Declarations, records and slices, node protocol, views, graphs, universe rules, errors | `sugarloaf.core.*` | [Core](core.md) |
+| Graph runner and node context | `sugarloaf.runtime.runner` | [Runtime](runtime.md) |
+| Built-in nodes and constraint arithmetic | `sugarloaf.nodes.*`, `sugarloaf.portfolio.constraints` | [Nodes and portfolio](portfolio.md) |
+| Execution policy, account records, sizing | `sugarloaf.execution.contracts` | [Execution](execution.md) |
+| Adapter interface, memory and QuantConnect adapters, launcher, cloud tooling | `sugarloaf.adapters.*` | [Adapters](adapters.md) |
+| Forecast archive, serialization, anchors, evaluation, inference | `sugarloaf.research.*` | [Research](research.md) |
+| Deployment configuration, evidence, reporting, command dispatch | `sugarloaf.deployment.*`, `sugarloaf.cli` | [Deployment](deployment.md) |
 
-The build reads source statically; it does not import LEAN or run strategies.
-Generated signatures and source listings track the checked-out version. Native
-platform behavior still needs the evidence described in [validation](../VALIDATION.md).
+The build reads source statically; it imports no LEAN code and runs no strategy. Native
+platform behaviour needs the evidence described in [validation](../VALIDATION.md).

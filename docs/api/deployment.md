@@ -12,6 +12,6 @@
 
 ::: sugarloaf.deployment.reporting
 
-## Adapter command dispatch
+## `cli`
 
 ::: sugarloaf.cli

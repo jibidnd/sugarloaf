@@ -45,7 +45,6 @@ nav:
   - Architecture: docs/ARCHITECTURE.md
   - Components:
       - Core: docs/technical/CORE.md
-      - Market data: docs/technical/MARKET.md
       - Runtime: docs/technical/RUNTIME.md
       - Portfolio: docs/technical/PORTFOLIO.md
       - Execution: docs/technical/EXECUTION.md
@@ -55,7 +54,6 @@ nav:
   - API reference:
       - Overview: docs/api/index.md
       - Core: docs/api/core.md
-      - Market data: docs/api/market.md
       - Runtime: docs/api/runtime.md
       - Nodes and portfolio: docs/api/portfolio.md
       - Execution: docs/api/execution.md
@@ -65,8 +63,7 @@ nav:
   - Examples:
       - Overview: examples/README.md
       - EMA research: examples/EMA_RESEARCH.md
-      - Technical indicators: examples/technical/README.md
-  - Providers:
+  - Adapters:
       - Memory: sugarloaf/adapters/memory/README.md
       - QuantConnect: sugarloaf/adapters/quantconnect/README.md
   - Built-in nodes: sugarloaf/nodes/README.md

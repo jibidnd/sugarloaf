@@ -32,7 +32,8 @@ or required reading outside the conversation.
   named companion projects or use their implementations as teaching examples.
 - Use the current checkout. The repository root is three directories above this
   skill folder. Read [the guide](../../../docs/GUIDE.md) and
-  [validation](../../../docs/VALIDATION.md) for orientation, then read only the
+  [validation](../../../docs/VALIDATION.md) for orientation (its first section states
+  which parts of the current design have native evidence), then read only the
   current subsection's relevant contracts, implementation, callers, and tests.
 - The syllabus is a teaching map, not a frozen API specification. Verify current
   class names, methods, callback order, and capabilities before explaining them.
@@ -89,14 +90,15 @@ section unless requested. The existing conversation's pacing and scope persist.
 
 ## Preserve the important distinctions
 
-- Node calculations publish Views; execution turns a final PositionView into
-  broker orders. Predictive research uses GraphRuntime without execution.
-- Observation/graph time and availability/receipt time have different meanings.
-  Late arrivals cannot rewind graph time; schedules depend on incoming batches.
-- Outputs replace whole node snapshots. Missing input or withdrawn authority is
-  different from an explicit zero position, which requests an exit.
-- Read fresh broker state for reconciliation. Pending exposure remains reserved
-  through partial fills, unconfirmed cancellation, and uncertain submissions.
+- Nodes declare what they need and publish Views from alpha-model callbacks;
+  `GraphRunner` hands a changed final PositionView to `adapter.execute`. A graph ending
+  in a predictive port is a forecast run: archived, not traded.
+- One clock, the platform's. A node runs when its declared data arrives, when an
+  upstream output changes, or when its schedule fires.
+- Outputs replace a node's whole previous output. Missing input or withdrawn authority
+  is different from an explicit zero position, which requests an exit.
+- Holdings, open orders, fills and cancellations are the platform's; the adapter sizes
+  each target against them with the shared `order_quantity` rule.
 - Explain current supported capabilities from validation and relevant source.
   Memory fixtures are supplied observations and fills, not a market simulator;
   local boundary tests do not establish native API or numerical parity.

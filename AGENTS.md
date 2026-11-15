@@ -48,17 +48,19 @@ failure behavior. Keep comments accurate as code evolves; avoid merely restating
 
 - Core and nodes do not import QC. Platform data, indicators, account state, and
   order APIs belong behind adapters. Reuse platform mechanics where appropriate.
-- Preserve causal data admission and distinguish observation/graph time from
-  availability/receipt time. Late arrivals cannot rewind the graph clock.
+- One clock: the platform's. A node sees what the platform has delivered by its
+  callback (the slice, `ctx.window`, `ctx.indicator`, `ctx.history`) at `ctx.time`;
+  outcome labels stay in research evaluation and never reach a node.
 - Views have immutable identity and explicit target, horizon, units, and
   provenance. Raw scores are not calibrated returns or probabilities.
 - Research and trading use fresh node/run state. Predictive evaluation and
   portfolio P&L answer different questions. Memory fixtures are not a simulator.
 - A trading graph ends in one explicit PositionView. Withdrawal and missing input
   do not imply liquidation; explicit zero positions express exits.
-- Preserve partial-fill accounting, pending exposure until confirmed cancellation,
-  and reservations for uncertain submissions. Do not promise restart/live support
-  beyond the documented capabilities.
+- Holdings, open orders, fills and cancellations are the platform's. The adapter
+  sizes each target against them with the shared `order_quantity` rule, counts open
+  orders as pending, tags orders with the target id and forwards order feedback.
+  Do not promise restart/live support beyond the documented capabilities.
 
 ## Read what the task needs
 

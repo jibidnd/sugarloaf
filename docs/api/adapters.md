@@ -1,32 +1,20 @@
 # Adapters
 
-## `adapters.base`
+## `adapters.protocol`
 
-::: sugarloaf.adapters.base
+::: sugarloaf.adapters.protocol
 
-## `adapters.memory.services`
+## `adapters.memory.adapter`
 
-::: sugarloaf.adapters.memory.services
+::: sugarloaf.adapters.memory.adapter
 
-## `adapters.memory.gateway`
+## `adapters.memory.indicators`
 
-::: sugarloaf.adapters.memory.gateway
+::: sugarloaf.adapters.memory.indicators
 
-## `adapters.quantconnect.lean`
+## `adapters.quantconnect.adapter`
 
-::: sugarloaf.adapters.quantconnect.lean
-
-## `adapters.quantconnect.services`
-
-::: sugarloaf.adapters.quantconnect.services
-
-## `adapters.quantconnect.host`
-
-::: sugarloaf.adapters.quantconnect.host
-
-## `adapters.quantconnect.research`
-
-::: sugarloaf.adapters.quantconnect.research
+::: sugarloaf.adapters.quantconnect.adapter
 
 ## `adapters.quantconnect.launcher`
 

@@ -14,14 +14,16 @@ implementation or cloud execution.
 
 Read the affected source, callers, tests, and only the relevant specification:
 
-- [Core/runtime](../../../docs/technical/CORE.md): Node/View interfaces, identity,
-  graph composition, admission clocks, triggers, expiry, and invalidation.
-- [Execution](../../../docs/technical/EXECUTION.md): target meaning, holdings and
-  pending exposure, intent reconciliation, risk, and order feedback.
-- [Adapters](../../../docs/technical/ADAPTERS.md): neutral services, native resource
-  ownership, callback ordering, and platform capability boundaries.
-- [Research](../../../docs/technical/RESEARCH.md): causal replay, issued forecasts,
-  exact outcome anchors, scoring, coverage, and inference limitations.
+- [Core](../../../docs/technical/CORE.md) and [runtime](../../../docs/technical/RUNTIME.md):
+  declarations, slices, the node protocol and context, View identity and expiry, graph
+  composition, `GraphRunner` dispatch, warm-up and the terminal target check.
+- [Execution](../../../docs/technical/EXECUTION.md) and [portfolio](../../../docs/technical/PORTFOLIO.md):
+  target meaning, constraint checks, `ExecutionPolicy` and the `order_quantity` sizing rule,
+  order feedback.
+- [Adapters](../../../docs/technical/ADAPTERS.md): the adapter interface, the QuantConnect
+  mapping table, callback forwarding, universe membership and the memory adapter.
+- [Research](../../../docs/technical/RESEARCH.md): forecast runs, the archive and its JSON
+  form, outcome anchors, scoring, coverage and inference limits.
 - [External packages](../../../docs/EXTERNAL_STRATEGIES.md): fresh graph factories,
   explicit dependencies, and source/configuration identity.
 
@@ -33,19 +35,20 @@ implemented capabilities.
 
 ## Trace concrete behavior
 
-Trace one realistic input through affected data admission, Context, node/graph
-evaluation, View lifecycle, and execution or research outcome. Inspect only the
+Trace one realistic platform callback through the adapter (`Arrival`), `GraphRunner`
+(per-node slice, callbacks in topological order, view carriage), the terminal target check
+and `adapter.execute`, or through the forecast archive and evaluation. Inspect only the
 failure cases that can change the conclusion:
 
-- Observation versus receipt time, late/equal-time arrivals, exact anchors,
-  readiness, freshness, expiry, and lifecycle invalidation.
-- Immutable identity, duplicate/revised evidence, declared inputs, target units,
-  horizons, score calibration, and fresh per-run state.
-- Withdrawal versus an explicit exit, overlapping position branches, holdings
-  versus pending orders, partial fills, out-of-order feedback, cancellation
-  confirmation, and unknown submission outcome.
-- Adapter resource ownership, native indicator readiness, unsupported capabilities,
-  and private-package isolation in a selected deployment bundle.
+- Which declarations a node makes, what its slice contains at that moment (universe
+  membership, consolidated bars completing), indicator and window readiness, warm-up,
+  expiry, and lifecycle records.
+- Immutable view identity, duplicate or revised evidence, port specs, target units,
+  horizons, score calibration, and fresh per-run node state.
+- Withdrawal versus an explicit exit, overlapping position branches, holdings versus open
+  orders counted as pending, superseded orders, platform refusals, order feedback.
+- Adapter ownership of platform objects, unsupported capabilities, and private-package
+  isolation in a selected deployment bundle.
 
 Prefer explicit, readable behavior and the simplest design that satisfies the
 contract. Avoid adding an abstraction solely to accommodate hypothetical reuse.

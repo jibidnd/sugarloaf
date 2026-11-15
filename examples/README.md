@@ -1,9 +1,8 @@
 # Examples
 
-Start with the local memory example, then choose a predictive or native trading
-path. Examples demonstrate declared mechanics; none establishes profitable alpha.
+The examples teach mechanics; none establishes an edge.
 
-## Run a complete local path
+## Run the local example
 
 From the repository root:
 
@@ -11,42 +10,41 @@ From the repository root:
 uv run --cache-dir .uv-cache python -m examples.memory
 ```
 
-[`memory.py`](memory.py) constructs two fixed-position branches, nets them and
-checks constraints, then attaches execution. An explicit account/calendar/price
-fixture supports a 50-share target. The caller supplies a 20-share partial fill,
-replays the batch and supplies the remaining 30 shares. Expected output:
-`{'holdings': 50, 'orders': 1, 'diagnostics': 0}`.
+Expected output: `{'holdings': 50.0, 'orders': 1, 'diagnostics': 1}`.
 
-Read `FixedContribution.evaluate`, `build_graph` and `run` in that order.
-This shows the full wiring without QC or historical data.
+[`memory.py`](memory.py) builds two `FixedContribution` nodes, each with a `Schedule`, nets
+them with `PositionNetter`, checks the target with `PortfolioConstraintNode` and runs the
+graph on `MemoryAdapter`. `run()` fires the first schedule (the netter raises `NotReady`
+because the second branch is missing: the one diagnostic), fires the second (one order for
+50 shares, filled at the USD 100 mark) and fires the second again (a new target with the same
+weights; no order). Read `FixedContribution.on_scheduled`, `build_graph` and `run` in that
+order.
 
-## Choose an example
+## Implementations
 
-| Implementation | What it teaches | Assumptions and limits |
+| Implementation | What it shows | Assumptions and limits |
 | --- | --- | --- |
-| [`ema.EMAScore`](ema.py) | Native fast/slow EMA ratio minus one as an uncalibrated ScoreView | QC indicators, initialization and horizon are explicit experiment assumptions |
-| [`ema.LongWhenPositive`](ema.py) | Score-to-long/cash conversion | Fixed account-NAV weight; no expected-return calibration or cost optimization |
-| [`memory.FixedContribution`](memory.py) | Overlapping branches, replay and partial/full fills | Synthetic prices, sessions and fills are supplied explicitly |
-| [Technical examples](technical/README.md) | EMA crossover, RSI mean reversion and Donchian direct-position rules | Batch reference calculations, distinct from QC-native indicator resources |
+| [`ema.EMAScore`](ema.py) | One `Bars` input and two native EMAs; `update` reads them and emits a `ScoreView` of fast / slow − 1 | Raw prices; the score is uncalibrated; the horizon is a parameter |
+| [`ema.LongWhenPositive`](ema.py) | Score to long/cash target | Fixed account-NAV weight |
+| [`ema.build_graph`](ema.py) / [`ema.build_forecast_graph`](ema.py) | The same node in a trading graph and in a forecast graph | |
+| [`memory.FixedContribution`](memory.py) | A schedule-driven node with no data inputs; branch netting | Synthetic mark and fills |
 
-The [built-in node package](../sugarloaf/nodes/README.md) contains reusable baseline
-indicator, aggregation, allocation and position-composition rules.
+The [built-in nodes](../sugarloaf/nodes/README.md) hold reusable baseline rules.
 
-## Native research and deployment
+## On QuantConnect
 
-The [EMA walkthrough](EMA_RESEARCH.md) and [notebook](ema_research.ipynb) run the
-same predictive node in QuantBook, archive issued scores and resolve outcomes
-separately. The bundled notebook passed in the native QuantBook kernel for
-January 6–18, 2025; see [validation](../docs/VALIDATION.md) for its scope and
-retained output. The authored notebook keeps its output cells empty.
+The [public factories](../deployments/quantconnect/config.py) run `EMAScore` on SPY with a
+five-minute consolidation of the minute feed and a one-day horizon:
+[ema.toml](../deployments/quantconnect/ema.toml) trades it,
+[ema_forecasts.toml](../deployments/quantconnect/ema_forecasts.toml) archives its scores.
+The [EMA walkthrough](EMA_RESEARCH.md) and [notebook](ema_research.ipynb) score a saved
+archive in the research kernel.
 
-The [public factory](../deployments/quantconnect/config.py) and
-[manifest](../deployments/quantconnect/ema.toml) launch its trading graph.
-[Deployment tools](../docs/technical/DEPLOYMENT.md) package selected sources and
-retain run identity. The offline `package` action requires no cloud account.
-Use `sugarloaf package --adapter quantconnect --manifest deployments/quantconnect/ema.toml` to inspect the
-bundle, then `sugarloaf run --adapter quantconnect --manifest deployments/quantconnect/ema.toml` in an
-authenticated LEAN environment with a selected QC project to backtest it.
+```powershell
+sugarloaf package --adapter quantconnect --manifest deployments/quantconnect/ema.toml
+sugarloaf run --adapter quantconnect --manifest deployments/quantconnect/ema.toml
+```
 
-Follow [getting started](../docs/GUIDE.md), [research](../docs/technical/RESEARCH.md)
-and [validation](../docs/VALIDATION.md) for contracts and evidence limits.
+`package` is offline. `run` needs QuantConnect credentials and a selected project; see
+[deployment](../docs/technical/DEPLOYMENT.md). The native status of these runs under the
+current design is in [validation](../docs/VALIDATION.md#redesign-of-14-november-2026).

@@ -85,10 +85,10 @@ class ReturnOutcomeResolver:
 
     ``anchor(instrument, at, convention, as_of)`` returns an Observation for the
     requested time, or None. Its availability must be <= as_of. The source owns
-    adjustment conventions and which price stands for that time (Sugarloaf's
-    QuantConnect source reads it at the first clock tick at or after it; see
-    ``sugarloaf.research.prices.price_at_tick``). The resolver itself performs no
-    substitution. Positive start values and nonnegative end values are required.
+    adjustment conventions and which price stands for that time;
+    ``sugarloaf.research.anchors.anchor_from_closes`` builds one from exact bar-end
+    closes. The resolver itself performs no substitution. Positive start values and
+    nonnegative end values are required.
     """
 
     def __init__(self, anchor: Anchor, *, provenance: Mapping[str, str] | None = None) -> None:

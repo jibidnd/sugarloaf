@@ -1,4 +1,4 @@
-# Core contracts
+# Core
 
 ## `core.primitives`
 
@@ -8,13 +8,17 @@
 
 ::: sugarloaf.core.views
 
-## `core.events`
-
-::: sugarloaf.core.events
-
 ## `core.errors`
 
 ::: sugarloaf.core.errors
+
+## `core.inputs`
+
+::: sugarloaf.core.inputs
+
+## `core.data`
+
+::: sugarloaf.core.data
 
 ## `core.node`
 
@@ -24,6 +28,6 @@
 
 ::: sugarloaf.core.graph
 
-## `core.services`
+## `core.universes`
 
-::: sugarloaf.core.services
+::: sugarloaf.core.universes

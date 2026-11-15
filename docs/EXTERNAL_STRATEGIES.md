@@ -7,19 +7,22 @@ should pin a library revision/wheel and retain hashes of the actual source bundl
 
 ## Graph and deployment
 
-Nodes use the ordinary `inputs`, `outputs`, `requirements`, `triggers`, `evaluate`
-interface. Compose them with `Graph`; finish with one PositionView output. For a
-naive baseline, connect compatible forecasts to `MeanViewAggregator`, then
-`PositiveSignalPositions`. Combine independently budgeted position branches through
-`PositionNetter`; validate the final target with `PortfolioConstraintNode`.
+Nodes implement the ordinary interface: declarations (`inputs`, `indicators`, `schedules`,
+`warm_up`), view ports (`ports`, `outputs`), `config`, and the callbacks `update`,
+`on_scheduled` and `on_securities_changed` ([core](technical/CORE.md#node-interface)).
+Compose them with `Graph`. A trading graph ends in one `PositionView` port; a graph ending in
+a predictive port is a forecast run. For a naive baseline, connect compatible forecasts to
+`MeanViewAggregator`, then `PositiveSignalPositions`. Combine independently budgeted
+position branches with `PositionNetter`; check the final target with
+`PortfolioConstraintNode`.
 
 Your strategy module exports a factory `deployment(parameter) -> Deployment`:
 
+<!-- snippet: fragment (build_graph, config and ticker_bindings belong to your package) -->
 ```python
 from sugarloaf.deployment import Deployment, Environment
 from sugarloaf.execution import ExecutionPolicy
 
-# build_graph, config and ticker_bindings belong to your strategy package.
 def deployment(parameter):
     return Deployment(
         name="my-strategy",
@@ -49,10 +52,10 @@ missing: the same code then serves a backtest, which finds everything recorded, 
 a live session, which fetches. A factory without these keywords is called with
 `parameter` only.
 
-An optional `report(context)` callback inspects `context.runtime.graph` and returns
-summary diagnostics. Use `context.record(label, value)` for individual diagnostic
-records; the adapter owns their serialization and output. The shared `ReportContext`
-contains no native algorithm or provider client.
+An optional `report(context)` callback inspects `context.runner` (its `graph`, `orders`,
+`archive`, `diagnostics`) and returns summary diagnostics for the result file. Use
+`context.record(label, value)` for individual records; the launcher serializes them into
+`result.json`. `ReportContext` carries no native algorithm object.
 
 ## Source manifest
 
@@ -149,7 +152,7 @@ for a completed backtest and retrieves results/logs. Every action requires a
 manifest. Python callers use `from sugarloaf.adapters.quantconnect.cloud.backtests import run_backtest`
 and pass the manifest path plus optional `parameters` and `name`. See the
 [deployment reference](technical/DEPLOYMENT.md) for individual actions and polling
-limits; LEAN owns network/authentication/retries, and timeout does not cancel a job.
+limits; the client retries an HTTP 5xx reply once, and a timeout does not cancel a job.
 
 Skip `create` if a project is already selected. Each manifest writes separate,
 ignored `artifacts/<manifest-name>/` state. Upload applies manifest parameters and

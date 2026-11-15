@@ -64,8 +64,9 @@ class Deployment:
             explicitly. A value is a ticker (an equity) or a ``Ticker`` record
             declaring another asset class, such as an index.
         environment: Platform dates, account, brokerage, and execution-model settings.
-        execution: Supported order settings and staleness limits.
-        constraints: Execution safety limits, configured separately from graph limits.
+        execution: Order type, time in force and trade thresholds for execution.
+        constraints: Limits the runner checks every terminal target against,
+            configured separately from constraint nodes inside the graph.
         report: Optional end-of-run callback receiving a portable ReportContext.
             Inspect its runner or emit labeled records; return summary diagnostics.
     """
