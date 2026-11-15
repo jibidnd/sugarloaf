@@ -3,40 +3,56 @@
 ## Redesign of 14 November 2026
 
 The current code (declarations in `sugarloaf.core.inputs`, `GraphRunner`, `QuantConnectAdapter`
-and `MemoryAdapter` as mappings, forecast runs saved to the Object Store) has **local test
-coverage only**. On 15 November 2026, on branch `redesign/push-model-2026-11-14`,
-`uv run --cache-dir .uv-cache pytest` passes 135 tests and `ruff check .` passes. No backtest
-or research-kernel run of the current code has been made. The native evidence further down
-this page was recorded on the earlier design and applies to the source snapshots named there.
+and `MemoryAdapter` as mappings, forecast runs saved to the Object Store) has local test
+coverage and the native checks below. On branch `redesign/push-model-2026-11-14`,
+`uv run --cache-dir .uv-cache pytest` passes 139 tests and `ruff check .` passes. The native
+evidence further down this page was recorded on the earlier design and applies to the source
+snapshots named there.
 
 `tests/test_quantconnect_adapter.py` runs the adapter against `tests/fake_lean.py`, a
 stand-in for LEAN's Python surface written for these tests. It establishes which calls the
-adapter makes. It does not establish that LEAN accepts them (Python.NET overload resolution,
-keyword names, generic types), when LEAN calls back, or what LEAN returns.
+adapter makes. It does not establish that LEAN accepts them; the runs below do, for the calls
+they exercise.
 
-### Native checks to run
+### Native checks, 15 November 2026
 
-| Check | Manifest | Expected | Status |
-| --- | --- | --- | --- |
-| EMA example, trading | [ema.toml](../deployments/quantconnect/ema.toml), January 6–10, 2025, USD 100,000 | No runtime errors; orders and end equity compared with the record of the earlier design (6 orders, USD 6.00 fees, end equity USD 99,652.57) | Not run |
-| EMA forecast run | [ema_forecasts.toml](../deployments/quantconnect/ema_forecasts.toml) | No runtime errors; `forecasts.json` saved under the key in `SUGARLOAF_RESULT`; the [notebook](../examples/ema_research.ipynb) decodes and scores it in the research kernel | Not run |
-| Index check | [index_check.toml](../deployments/quantconnect/index_check.toml), March 24 to April 17, 2025 | One evaluation per session; VIX daily bars read through the generic `add_security` subscription; the report compared with the run of 11 November 2026 below | Not run |
-| QuantConnect mapping | Every row of the [mapping table](technical/ADAPTERS.md#mapping) | Each LEAN call accepted with the arguments the adapter passes and producing the documented effect | Unverified natively, every row |
+Project `37377184`, LEAN as deployed by QuantConnect on that day, source at commit `7105f38`
+(the indicator change below) plus the manifests' parameters. Result records are in the Object
+Store under `sugarloaf/results/37377184/<backtest id>/result.json`; the forecast run also
+saved `forecasts.json` (202,138 bytes, 313 views). Local evidence (bundles, status, logs) is in
+the git-ignored `artifacts/<manifest>/` folders.
 
-Calls whose acceptance the stand-in cannot establish include: `RollingWindow[TradeBar]` and
-`RollingWindow[QuoteBar]`; `add_security` with `fill_forward`, `extended_market_hours` and
-`data_normalization_mode` keywords; `TradeBarConsolidator` with a calendar function returning
-`CalendarInfo`; `UniverseSettings(algorithm.universe_settings)` and
-`settings.schedule.on(date_rules.month_start())`; `FundamentalUniverse.usa(selector, settings)`
-and `universe.etf(ticker, settings, selector)`; `add_data(EODHDUpcomingEarnings, "earnings")`;
-`algorithm.ema(symbol, period, cadence, None)` and the `sma`, `rsi` and `dch` helpers with a
-`timedelta` cadence; `time_rules.at(hour, minute, zone)`; `history[TradeBar](...)` with
-keyword arguments; `market_order(..., asynchronous=True, tag=..., order_properties=...)`;
-`deregister_indicator`; `subscription_manager.remove_consolidator`.
+| Check | Backtest | Observed |
+| --- | --- | --- |
+| EMA example, trading ([ema.toml](../deployments/quantconnect/ema.toml), January 6–10, 2025, USD 100,000, 5-minute bars) | `df71573d7e9f939d128ca43f74b2cefd` | No runtime errors, no diagnostics, 1,560 steps (four sessions of minute slices; the market was closed on 9 January). 6 orders of 33 or 34 shares, USD 6.00 fees, end equity USD 99,665.11. The record of the earlier design was 6 orders, USD 6.00 fees, USD 99,652.57; its orders are no longer retrievable from QuantConnect, so the USD 12.54 difference is not attributed. The sizing rule is the same; the EMA warm-up is now LEAN's `warm_up_indicator`. |
+| EMA forecast run ([ema_forecasts.toml](../deployments/quantconnect/ema_forecasts.toml), same window) | `382dd5c2cf7db09c0bdc4ea3d47371a2` | No orders, no diagnostics; 313 views archived (one per completed 5-minute bar, from 14:31 UTC on 6 January to 21:00 UTC on 10 January), decoded locally with `decode_archive` as `ScoreView` values with calibration `ema-spread:20:50:300.0:raw:v1` and one-day horizons. |
+| Index check ([index_check.toml](../deployments/quantconnect/index_check.toml), March 24 to April 17, 2025) | `4b9f5a3d9a149d06ef95df2d7ac6def1` | 19 evaluations, 38 steps (one SPY slice and one VIX slice per session), no diagnostics. VIX daily bars run 13:30–20:15 UTC and arrive in their own slice after SPY's 20:00 close, so at the SPY close the VIX window holds the previous session's bar: 0 of 19 same-session, the same as the record of 11 November below. Highest VIX close 52.24 on 8 April 2025, as recorded. |
 
-The Lab's native checks named in the redesign (the short-reversal replay against its
-plain-LEAN twin, the momentum view check and the first-callback timing probe) run in the
-Lab's QuantConnect project and are recorded there.
+What the first attempt found: every run stopped in `initialize` because LEAN's Python
+indicator helpers (`ema`, `sma`, `rsi`, `dch`) bind only a `Resolution` for their cadence and
+refuse a `timedelta`. Indicators on a consolidated interval are now built by class,
+registered with `register_indicator(symbol, indicator, consolidator)` and warmed with
+`warm_up_indicator(symbol, indicator, interval)`; the EMA runs above exercise that path.
+
+Calls these runs exercised and LEAN accepted: `add_security_initializer`,
+`settings.automatic_indicator_warm_up`, `settings.daily_precise_end_time`,
+`settings.seed_initial_prices`, `Symbol.create` for an equity and an index, `add_security`
+with the `fill_forward`, `extended_market_hours` and `data_normalization_mode` keywords,
+`RollingWindow[TradeBar]`, `TradeBarConsolidator(timedelta)` with
+`subscription_manager.add_consolidator`, `ExponentialMovingAverage(name, period)` with
+`register_indicator` and `warm_up_indicator`, `history[TradeBar](symbols, count, resolution,
+...)` in `initialize`, `exchange.hours.get_next_market_close`, `market_order(...,
+asynchronous=True, tag=..., order_properties=...)`, `transactions.get_open_orders` and
+`get_order_ticket`, `object_store.save`, and the `on_data`, `on_order_event` and
+`on_end_of_algorithm` callbacks.
+
+Not yet exercised natively: universes (`FundamentalUniverse.usa`, `universe.etf`,
+`UniverseSettings.schedule.on`, `on_securities_changed` with member warming),
+`add_data(EODHDUpcomingEarnings)`, `security.fundamentals` and the shortable provider,
+`schedule.on` with `date_rules`/`time_rules`, `set_warm_up`, quote bars, `rsi`/`sma`/`dch`,
+`deregister_indicator`, `remove_consolidator`, `cancel_order`, and a refused ticket. The
+Lab's momentum-view forecast run and short-reversal strategy exercise the universe,
+schedule and warming calls and are recorded in the Lab.
 
 ### Capability limits
 
