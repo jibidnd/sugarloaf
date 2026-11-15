@@ -75,7 +75,7 @@ def archive_views(*views, received_at=START):
 
 
 def anchors(instrument, at, convention, as_of):
-    assert convention in {"price_return", "total_return"}
+    assert convention in {"price_return", "total_return", "abs_log_close_return"}
     value = 100 if at == START else {A: 110, B: 105, C: 90}[instrument]
     return Observation(at, value)
 
@@ -143,6 +143,13 @@ def test_exact_outcomes_keep_conventions_joint_order_and_relative_difference():
     assert metrics["standardized_error"] == pytest.approx(-3)
     mismatched = replace(relative.target, convention="total_return")
     assert resolver.resolve(mismatched, as_of=END).status == "unsupported"
+    move = Target(A, "move_size", INTERVAL, convention="abs_log_close_return")
+    requests.clear()
+    outcome = resolver.resolve(move, as_of=END)
+    assert outcome.value == pytest.approx(abs(log(1.1)))
+    assert all(call[2] == "abs_log_close_return" for call in requests)
+    other = replace(move, convention="price_return")
+    assert resolver.resolve(other, as_of=END).status == "unsupported"
 
 
 def test_pending_missing_delayed_and_wrong_time_anchors_never_become_zero_labels():

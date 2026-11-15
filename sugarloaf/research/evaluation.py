@@ -80,8 +80,22 @@ class OutcomeResolver(Protocol):
 Anchor = Callable[[InstrumentId, datetime, str, datetime], Observation | None]
 
 
+# Outcomes computed from a start and an end price anchor, by (quantity, convention): the
+# simple return of a price or total-return series, and the absolute log close-to-close return
+# that a move-size view forecasts.
+PRICE_OUTCOMES: dict[tuple[str, str], Callable[[float, float], float]] = {
+    ("return", "price_return"): lambda start, end: end / start - 1,
+    ("return", "total_return"): lambda start, end: end / start - 1,
+    ("move_size", "abs_log_close_return"): lambda start, end: abs(log(end / start)),
+}
+
+
 class ReturnOutcomeResolver:
-    """Resolve exact simple returns using a separate, availability-aware label source.
+    """Resolve exact price outcomes using a separate, availability-aware label source.
+
+    The outcomes are those of ``PRICE_OUTCOMES``: a decimal simple return, a decimal
+    absolute log close-to-close return (quantity ``move_size``), and the difference of two
+    aligned simple returns.
 
     ``anchor(instrument, at, convention, as_of)`` returns an Observation for the
     requested time, or None. Its availability must be <= as_of. The source owns
@@ -135,11 +149,12 @@ class ReturnOutcomeResolver:
     def _resolve(
         self, target: Target, as_of: datetime
     ) -> tuple[float | tuple[float, ...], datetime]:
-        # This resolver implements simple decimal returns only. Do not silently
-        # reinterpret a score, price level, log return or another unit as a return.
-        if target.units != "decimal" or target.convention not in {"price_return", "total_return"}:
-            raise CapabilityError("Default outcomes require decimal price/total returns")
+        # Do not silently reinterpret a score, price level or another unit as a return.
+        if target.units != "decimal":
+            raise CapabilityError("Default outcomes require decimal units")
         if target.quantity == "difference":
+            if target.convention not in {"price_return", "total_return"}:
+                raise CapabilityError("Default difference outcomes need price/total returns")
             if len(target.components) != 2:
                 raise CapabilityError("A difference outcome needs two return targets")
             if any(
@@ -156,8 +171,12 @@ class ReturnOutcomeResolver:
             if isinstance(left[0], tuple) or isinstance(right[0], tuple):
                 raise CapabilityError("Default difference outcomes require scalar components")
             return left[0] - right[0], max(left[1], right[1])
-        if target.quantity != "return":
-            raise CapabilityError(f"No default outcome for quantity {target.quantity}")
+        outcome = PRICE_OUTCOMES.get((target.quantity, target.convention))
+        if outcome is None:
+            raise CapabilityError(
+                f"No default outcome for quantity {target.quantity} with convention "
+                f"{target.convention}"
+            )
         # Preserve subject/interval coordinate order. A joint density or ranking
         # must receive its outcomes in the same order as the immutable target.
         joint = isinstance(target.subject, tuple)
@@ -193,11 +212,12 @@ class ReturnOutcomeResolver:
                     raise NotReady(f"Outcome anchor not yet available: {instrument.value} {at}")
                 observations.append(observation)
             start, end = observations
-            if start.value <= 0 or end.value < 0:
+            zero_end_allowed = target.quantity == "return"
+            if start.value <= 0 or end.value < 0 or (end.value == 0 and not zero_end_allowed):
                 raise ContractError("Return anchors require positive start and nonnegative end")
             # Simple return includes a zero end value as a complete loss; the start
             # must be positive. Availability must cover both endpoint observations.
-            results.append(end.value / start.value - 1)
+            results.append(outcome(start.value, end.value))
             availability.extend(observation.available_at for observation in observations)
         return (tuple(results) if joint else results[0]), max(availability)
 

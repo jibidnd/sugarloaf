@@ -49,7 +49,8 @@ SUMMARY_BUDGET = 10_000
 METRICS_BUDGET = 32_000
 # The price series an outcome reads: a price return from split-adjusted closes, a total
 # return from closes adjusted for splits and dividends.
-CONVENTION_NORMALIZATION = {"price_return": "split_adjusted", "total_return": "adjusted"}
+CONVENTION_NORMALIZATION = {"price_return": "split_adjusted", "total_return": "adjusted",
+                            "abs_log_close_return": "split_adjusted"}
 RESOLUTION_NAMES = {period: name for name, period in RESOLUTION_PERIODS.items()}
 # Instruments per history call when reading outcome prices.
 HISTORY_CHUNK = 50

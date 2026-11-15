@@ -47,8 +47,10 @@ The notebook has the complete code with imports.
 In a backtest `as_of` is the clock in `on_end_of_algorithm`, past every horizon it scores, and
 the closes come from `adapter.history` at each instrument's subscription resolution:
 split-adjusted for a `price_return` target, adjusted for splits and dividends for a
-`total_return` target. The outcome is the exact simple return between the closes of the bars
-ending at the target interval's start and end; no other price stands in for a missing one.
+`total_return` target, split-adjusted for an `abs_log_close_return` target. The outcome is
+computed from the closes of the bars ending at the target interval's start and end
+(`evaluation.PRICE_OUTCOMES`): the exact simple return for quantity `return`, the absolute
+log return for quantity `move_size`; no other price stands in for a missing one.
 
 `counts` accounts for every issued view: `scored`, `horizon_after_end` (the target ends after
 `as_of`), `no_bar` (no bar ends at a start or end time; `no_bar_at_start` and `no_bar_at_end`
