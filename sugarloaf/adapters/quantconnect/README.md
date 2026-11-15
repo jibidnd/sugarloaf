@@ -56,7 +56,10 @@ hand, or before the clock for a path without a bar (`fill_before`, `touch_window
 bar follows the history in order; `warm_up_indicator` reads history ending at the clock, and
 `update_in_order` drops a later bar for a period it read. A consolidated window is filled
 through its live consolidator while that holds no data, and otherwise through a consolidator
-of its own, which passes only completed periods. A member's window and indicators are filled
+of its own, which passes only completed periods. The live consolidator emits the period
+it holds from history after the fill, when the next bar or LEAN's scan closes it; a bar
+ending no later than the fill's cutoff (`from_history`) primes the window and is not carried
+in the next arrival. A member's window and indicators are filled
 in `on_securities_changed` when it joins, at that callback's clock. The replay then delivers
 the bars from the fill's end up to the start date, in order.
 
@@ -75,13 +78,17 @@ only when it ends after `indicator.current.end_time`. LEAN's indicators drop an 
 before the previous one but accept a different bar object ending at the same time; the rule
 leaves such a bar out. The window keeps the warmed values, up to its size.
 
-`add_in_order`, `fill_before`, `touch_window`, `PendingFills` and `update_in_order` are
-module-level, tested without LEAN in
+`add_in_order`, `fill_before`, `from_history`, `touch_window`, `PendingFills` and
+`update_in_order` are module-level, tested without LEAN in
 [tests/test_qc_window_order.py](../../../tests/test_qc_window_order.py), including a handler
-that fires before the fill. The native
+that fires ahead of the fill; `listed_tickers`, the earnings rule in `add_custom`, is tested in
+[tests/test_qc_earnings.py](../../../tests/test_qc_earnings.py). The native
 [warm-up check](../../../deployments/quantconnect/warm_up_check.py) counts each window's and
 indicator's values beside their distinct end times and the evaluations at which either holds
-a value ending after `ctx.time`, and records the callback that performed each fill.
+a value ending after `ctx.time`, and records the callback that performed each fill. The native
+[coverage check](../../../deployments/quantconnect/coverage_check.py) declares the earnings,
+ETF and monthly fundamental universe, wall-clock schedule, quote and SMA, RSI and Donchian
+paths together and counts each declaration's arrivals.
 
 ## Scope
 

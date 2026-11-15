@@ -30,10 +30,10 @@ uv run --cache-dir .uv-cache python tools/native_checks.py deployments/quantconn
 service. `--only NAME` (repeatable) runs the named checks. `--out` names the output file; the
 default is `artifacts/native_checks/<UTC time>.json`, and an existing file is refused so that
 earlier results are kept. Each run is a backtest on the account's backtest node, billed as
-any other; the four checks below take a few minutes in total.
+any other; the five checks below take a few minutes in total.
 
 The script runs each manifest through `run_backtest` (upload, compile, backtest, status and
-logs, with evidence under `artifacts/<manifest stem>/`), one backtest after another; the four
+logs, with evidence under `artifacts/<manifest stem>/`), one backtest after another; the five
 manifests share project `37377184`, and each upload replaces the project's files. A run needs
 a selected QuantConnect project: the manifest's `project_id`, or the `project_id` that
 `sugarloaf create --adapter quantconnect --manifest <manifest>` saved in
@@ -83,17 +83,29 @@ file are the results of the 15 November runs below, with a tolerance of USD 50 o
 
 ### Native checks, 15 November 2026
 
-Project `37377184`, LEAN as deployed by QuantConnect on that day, source at commit `7105f38`
-(the indicator change below) plus the manifests' parameters; the Lab runs below used `2ee2c5d`. Result records are in the Object
-Store under `sugarloaf/results/37377184/<backtest id>/result.json`; the forecast run also
-saved `forecasts.json` (202,138 bytes, 313 views). Local evidence (bundles, status, logs) is in
-the git-ignored `artifacts/<manifest>/` folders.
+Project `37377184`, LEAN as deployed by QuantConnect on that day, the adapter with
+`from_history` and `listed_tickers` (branch `check/adapter-coverage-2026-11-15`) plus the
+manifests' parameters; the Lab runs below used `2ee2c5d`. Each run's source hash is in
+`artifacts/native_checks/` and `artifacts/<manifest stem>/` (git-ignored). Result records are
+in the Object Store under `sugarloaf/results/37377184/<backtest id>/result.json`; the forecast
+run also saves `forecasts.json`.
 
 | Check | Backtest | Observed |
 | --- | --- | --- |
-| EMA example, trading ([ema.toml](../deployments/quantconnect/ema.toml), January 6–10, 2025, USD 100,000, 5-minute bars) | `df71573d7e9f939d128ca43f74b2cefd` | No runtime errors, no diagnostics, 1,560 steps (four sessions of minute slices; the market was closed on 9 January). 6 orders of 33 or 34 shares, USD 6.00 fees, end equity USD 99,665.11. The record of the earlier design was 6 orders, USD 6.00 fees, USD 99,652.57; its orders are no longer retrievable from QuantConnect, so the USD 12.54 difference is not attributed. The sizing rule is the same; the EMA warm-up is now LEAN's `warm_up_indicator`. |
-| EMA forecast run ([ema_forecasts.toml](../deployments/quantconnect/ema_forecasts.toml), same window) | `382dd5c2cf7db09c0bdc4ea3d47371a2` | No orders, no diagnostics; 313 views archived (one per completed 5-minute bar, from 14:31 UTC on 6 January to 21:00 UTC on 10 January), decoded locally with `decode_archive` as `ScoreView` values with calibration `ema-spread:20:50:300.0:raw:v1` and one-day horizons. |
-| Index check ([index_check.toml](../deployments/quantconnect/index_check.toml), March 24 to April 17, 2025) | `4b9f5a3d9a149d06ef95df2d7ac6def1` | 19 evaluations, 38 steps (one SPY slice and one VIX slice per session), no diagnostics. VIX daily bars run 13:30–20:15 UTC and arrive in their own slice after SPY's 20:00 close, so at the SPY close the VIX window holds the previous session's bar: 0 of 19 same-session, the same as the record of 11 November below. Highest VIX close 52.24 on 8 April 2025, as recorded. |
+| EMA example, trading ([ema.toml](../deployments/quantconnect/ema.toml), January 6–10, 2025, USD 100,000, 5-minute bars) | `d76245fc607a7ba88e6c3893aa9c6fa6` | No runtime errors, no diagnostics, 1,560 steps (four sessions of minute slices; the market is closed on 9 January). 6 orders, USD 6.00 fees, end equity USD 99,652.57, net profit -0.347%. |
+| EMA forecast run ([ema_forecasts.toml](../deployments/quantconnect/ema_forecasts.toml), same window) | `9cccde8becf73ebf3a180a82a20358c1` | No orders, no diagnostics, 1,560 steps; 312 views archived (`SUGARLOAF_RESULT`), one per 5-minute bar of the four sessions (4 × 78). |
+| Index check ([index_check.toml](../deployments/quantconnect/index_check.toml), March 24 to April 17, 2025) | `0fb8d6c2b1c930c4f2dca0d3fb4513a8` | No orders, no diagnostics, 38 steps (one SPY slice and one VIX slice per session, 19 sessions). The check reads daily feeds without consolidation, which `from_history` does not touch. VIX daily bars run 13:30–20:15 UTC and arrive in their own slice after SPY's 20:00 close, so at the SPY close the VIX window holds the previous session's bar: 0 of 19 same-session; highest VIX close 52.24 on 8 April 2025 (result record of `4b9f5a3d9a149d06ef95df2d7ac6def1`, same feeds and adapter path). |
+
+`from_history` keeps a consolidated bar built from history bars alone out of the next
+arrival (`QuantConnectAdapter._track`, handler `completed`; [adapter
+README](../sugarloaf/adapters/quantconnect/README.md#windows-and-warm-up)). The history fill in
+`_fill_group` feeds the window's live consolidator the bars ending earlier than the fill's cutoff;
+LEAN emits the last period it holds from them at the next bar or scan, outside the fill. A bar
+ending no later than the cutoff primes the window only. Without the rule, the forecast run
+archives 313 views and the trading run ends at USD 99,665.11 (source at `7105f38`, backtests
+`382dd5c2cf7db09c0bdc4ea3d47371a2` and `df71573d7e9f939d128ca43f74b2cefd`): one 5-minute bar
+more, which the coverage check below identifies as a period ending earlier than the start of the
+warm-up replay.
 
 What the first attempt found: every run stopped in `initialize` because LEAN's Python
 indicator helpers (`ema`, `sma`, `rsi`, `dch`) bind only a `Resolution` for their cadence and
@@ -132,11 +144,8 @@ January 2 to March 28, 2024: 26,414 views over 61 sessions, 153 steps, no diagno
 through `Custom("fundamentals")` and `Custom("borrow")`, and `schedule.on(date_rules.every_day(symbol),
 time_rules.after_market_open(symbol, 1), fn)` firing `on_scheduled` once a session.
 
-Not yet exercised natively: `universe.etf`, `UniverseSettings.schedule.on` (every Lab universe
-refreshes daily), `add_data(EODHDUpcomingEarnings)` and `slice.get` for it (no Lab node declares
-`Custom("earnings")`), `time_rules.at` with a NodaTime zone, quote bars,
-`SimpleMovingAverage`/`RelativeStrengthIndex`/`DonchianChannel`, removal of a member's indicator
-consolidator, and a refused ticket.
+Not yet exercised natively: a refused ticket. The [coverage check](#coverage-check) exercises
+the other paths no check above reaches.
 
 ### Windows and indicators under warm-up
 
@@ -166,7 +175,7 @@ result record (`sugarloaf/results/37377184/<backtest id>/result.json`, record
 | Source | Backtest | SPY window: bars / distinct | SPY indicator: values / distinct | QQQ window | QQQ indicator | Evaluations with a value after `ctx.time` |
 | --- | --- | --- | --- | --- | --- | --- |
 | Adapter at `54a25e2` | `9663916e6460a28d772f9281f1dd88f0` | 60 / 32 | 7 / 6 | 60 / 60 | 6 / 6 | not counted |
-| Adapter with the rules (source hash `967c7e44…dee40`) | `67b1cf1cea103a4bb24a49610ea3b48e` | 60 / 60 | 43 / 43 | 60 / 60 | 43 / 43 | 0 of 35, for each window and indicator |
+| Adapter with the rules and `from_history` (source hash `736832f4…b61c7`) | `fbb5498a55efd76c5c82a6a7dca276f9` | 60 / 60 | 43 / 43 | 60 / 60 | 43 / 43 | 0 of 34, for each window and indicator |
 
 At `54a25e2` the history fill in `initialize` ends at the start date, the warm-up replay
 delivers 28 SPY sessions the window already holds, and the window holds each of them twice;
@@ -176,9 +185,11 @@ object with the same end time, and updates twice on it.
 
 With the rules, `on_securities_changed` performs all four setup fills (the SPY and QQQ
 windows and their EMAs) at 05:00 UTC on 22 November 2024, the start date minus 45 days, with
-the cutoff at that clock. No evaluation, of 31 during warm-up and 4 after
+the cutoff at that clock. No evaluation, of 30 during warm-up and 4 after
 it, sees a repeated end time or a window or indicator value ending after `ctx.time`. The
-replay delivers 28 SPY and 29 QQQ bars to the node in `data.bars` with `ctx.warming_up` set,
+replay delivers 28 SPY and 28 QQQ bars to the node in `data.bars` with `ctx.warming_up` set:
+the QQQ session the live consolidator holds from history at the fill ends earlier than the
+fill's cutoff, primes the window and stays out of the arrival (`from_history`),
 and the first bar after warm-up (the session ending 21:00 UTC on 6 January 2025, for SPY and
 QQQ) heads its window. Each EMA's window holds 43 values at the end of the run: the values
 from `warm_up_indicator`, which reads the indicator's own warm-up period of history, and one
@@ -191,16 +202,76 @@ both called from `on_securities_changed` during warm-up. The paths in which a co
 handler, `on_data`, a read or a scheduled function performs a fill are covered by the unit
 tests, not by this run.
 
-The other native checks on the adapter with the rules match their expectations, with no
-runtime errors and no diagnostics:
-
-| Check | Backtest | Observed |
-| --- | --- | --- |
-| EMA example, trading | `d44dfa73f0de02e3cc259d05051e341d` | pass: 6 orders, USD 6.00 fees, end equity USD 99,665.11, 1,560 steps, as recorded |
-| EMA forecast run | `676d83e4d4662ea6e0a6843221af3b44` | pass: no orders, 313 views archived, 1,560 steps, as recorded |
-| Index check | `c0daed0d9e5cf46c07bcbbe374208fae` | pass: no orders, 38 steps, as recorded |
+The other native checks on the same adapter are in the table of [15 November](#native-checks-15-november-2026).
 
 Local evidence is in `artifacts/native_checks/` and `artifacts/<manifest stem>/` (git-ignored).
+
+### Coverage check
+
+The native check is [coverage_check.py](../deployments/quantconnect/coverage_check.py)
+([coverage_check.toml](../deployments/quantconnect/coverage_check.toml), listed in
+`native_checks.json`): project `37377184`, July 21 to August 1, 2025, a `WarmUp(span=10 days)`
+whose replay starts at 04:00 UTC on 11 July. One node declares every path below. At each
+callback it counts, per declaration, the arrivals (records delivered to it) and the distinct
+bar end times or record times among them, and per indicator the distinct value end times it
+reads and whether it becomes ready. `_report`, which `launcher.finish` calls, saves the counts
+in the result record (`sugarloaf/results/37377184/<backtest id>/result.json`, record
+`coverage_check`), writes them to the backtest log as one `COVERAGE_CHECK` line, and raises
+`AssertionError` naming each declaration with no arrival; the assertion message carries the
+same line, because LEAN keeps no log message of the final step when `on_end_of_algorithm`
+raises.
+
+Backtest `16e45840de6ff95b3972c566c4450e14` (source hash `22ab5b3e…d578b1`): no runtime
+errors, no diagnostics, no orders, 6,284 steps, 2,340 evaluations during warm-up and 3,908
+after it. Counts from the `COVERAGE_CHECK` line:
+
+| Declaration | LEAN calls | Arrivals | Distinct times | During warm-up | Observed |
+| --- | --- | --- | --- | --- | --- |
+| `Bars` SPY minute, window 30 | `add_security`, `RollingWindow[TradeBar]`, `slice.bars` | 6,240 | 6,240 | 2,340 | 16 sessions × 390; first bar ends 13:31 UTC on 11 July |
+| `Bars` SPY, 5-minute interval, window 12 | `TradeBarConsolidator(timedelta)` | 1,248 | 1,248 | 468 | 16 sessions × 78; first bar ends 13:35 UTC on 11 July |
+| `Quotes` SPY minute, window 5 | `RollingWindow[QuoteBar]`, `slice.quote_bars` | 6,240 | 6,240 | 2,340 | every entry has a bid and an ask |
+| `Custom("earnings")` on SPY and AAPL | `add_data(EODHDUpcomingEarnings, "earnings")`, `slice.get` | 8 | 8 | 0 | all AAPL, report date 31 July 2025, `after_close`, first at 04:00 UTC on 24 July; SPY, an ETF, none. AAPL has no other declaration. |
+| `ETFConstituentsUniverse` on SPY, count 2, daily | `universe.etf(ticker, settings, selector)` | 2 | 1 | 2 | NVDA and MSFT join at 04:00 UTC on 11 July, in the replay; none leaves |
+| `Bars` daily of its members, window 5 | `on_securities_changed`, `history[TradeBar]` | 32 | 16 | 12 | 2 members × 16 sessions |
+| `FundamentalUniverse`, monthly cadence (three energy stocks by dollar volume) | `FundamentalUniverse.usa(selector, settings)`, `settings.schedule.on(date_rules.month_start())` | 5 | 2 | 3 | three members join at 04:00 UTC on 11 July, in the replay; at 04:00 UTC on 1 August one joins and one leaves; no change between |
+| `Bars` daily of its members, window 5 | as above | 48 | 16 | 18 | 3 members × 16 sessions |
+| `Schedule` at 10:02, `America/Chicago`, every day | `time_rules.at(10, 2, DateTimeZoneProviders.Tzdb["America/Chicago"])`, `date_rules.every_day()` | 22 | 22 | 10 | every call at 10:02 in Chicago (15:02 UTC); one per calendar day from 11 July to 1 August, weekends included, since the declaration names no calendar |
+
+| Indicator on SPY (window 5) or on members | LEAN class and consolidator | Value updates read | Distinct end times | Ready |
+| --- | --- | --- | --- | --- |
+| `sma` 10, `rsi` 14, `donchian` 20 at minute | `SimpleMovingAverage`, `RelativeStrengthIndex` (Wilders), `DonchianChannel`; `IdentityDataConsolidator[TradeBar]` | 6,240 each | 6,240 each | yes |
+| `sma` 10, `rsi` 14, `donchian` 20 at 5 minutes | the same classes; `TradeBarConsolidator(timedelta)` | 1,249 each | 1,249 each | yes |
+| `sma` 3 daily on each `FundamentalUniverse` member | `SimpleMovingAverage`; `IdentityDataConsolidator[TradeBar]`, removed with `remove_consolidator` when the member leaves on 1 August | 52 | 17 | yes |
+
+The 5-minute indicators read one value more than the 5-minute bars: the value
+`warm_up_indicator` sets at the fill, which the node reads at the first slice, ahead of the
+first completed 5-minute bar; the minute indicators update from that slice's bar ahead of
+the node's read. `on_securities_changed` performs every fill: the SPY windows and indicators
+and the first members' windows and indicators at 04:00 UTC on 11 July, the joining member's
+at 04:00 UTC on 1 August; each fill's clock and callback are in the line.
+
+Two adapter rules come from this check. `listed_tickers` gives `add_custom` the ticker of each
+equity a `Custom("earnings")` selection names, and `add_custom` registers its security id, so
+`_custom` maps the listing to the declared instrument; without it the instrument maps only
+when another declaration subscribes it, and backtest `eb1e14ee388387b1e23e423160388c20`
+(source hash `f10d1592…5d180`) delivers no listing and fails the assertion
+(`tests/test_qc_earnings.py`). `from_history` keeps the period the live consolidator holds
+from a history fill out of the next arrival; without it backtest
+`38e1126593aa66106b3182bfc9413758` (source hash `646339e0…3d067b`) delivers 1,249 5-minute
+bars, one ending earlier than the start of the replay (`tests/test_qc_window_order.py`).
+
+`GraphRunner.on_scheduled` and `GraphRunner.on_securities_changed` give the node a context
+with `warming_up` False during the replay: 10 of the 22 scheduled calls and the membership
+changes of 11 July fall in the replay, and the node tells them apart only by `ctx.time`.
+`on_scheduled` also calls `_terminal`, which hands a changed `PositionView` to
+`adapter.execute`; this forecast run places no order, so the check does not show what LEAN
+does with an order during warm-up.
+
+Not exercised by this check: a fill performed by a consolidator handler, `on_data`, a read or
+a scheduled function (every first touch here is `on_securities_changed` at 04:00 UTC, outside
+any session; `tests/test_qc_window_order.py` covers those paths), a fill of a `Quotes` window
+from history (`_fill` fills `Bars` windows only; the replay fills the quote window), a member
+leaving the ETF universe, and listings of a universe member under `Custom("earnings")`.
 
 ### Capability limits
 

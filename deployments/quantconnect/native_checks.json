@@ -5,12 +5,12 @@
       "name": "ema",
       "manifest": "ema.toml",
       "description": "EMA example, trading: January 6-10, 2025, USD 100,000, 5-minute bars.",
-      "recorded_backtest": "df71573d7e9f939d128ca43f74b2cefd",
+      "recorded_backtest": "d76245fc607a7ba88e6c3893aa9c6fa6",
       "backtest_timeout": 1800,
       "expected": {
         "Total Orders": 6,
         "Total Fees": "$6.00",
-        "End Equity": "99665.11"
+        "End Equity": "99652.57"
       },
       "tolerance": {
         "End Equity": 50
@@ -20,7 +20,7 @@
       "name": "ema_forecasts",
       "manifest": "ema_forecasts.toml",
       "description": "EMA forecast run over the same window: views archived, no orders.",
-      "recorded_backtest": "382dd5c2cf7db09c0bdc4ea3d47371a2",
+      "recorded_backtest": "9cccde8becf73ebf3a180a82a20358c1",
       "backtest_timeout": 1800,
       "expected": {
         "Total Orders": 0
@@ -30,7 +30,7 @@
       "name": "index_check",
       "manifest": "index_check.toml",
       "description": "Index data check (the VIX beside SPY), March 24 to April 17, 2025: no orders.",
-      "recorded_backtest": "4b9f5a3d9a149d06ef95df2d7ac6def1",
+      "recorded_backtest": "0fb8d6c2b1c930c4f2dca0d3fb4513a8",
       "backtest_timeout": 1800,
       "expected": {
         "Total Orders": 0
@@ -40,8 +40,18 @@
       "name": "warm_up_check",
       "manifest": "warm_up_check.toml",
       "description": "Windows and indicators under a 45-day WarmUp, January 6-10, 2025: no orders; the WARM_UP_CHECK log line and the result record hold each window's and indicator's count beside its distinct end times.",
-      "recorded_backtest": "67b1cf1cea103a4bb24a49610ea3b48e",
+      "recorded_backtest": "fbb5498a55efd76c5c82a6a7dca276f9",
       "backtest_timeout": 1800,
+      "expected": {
+        "Total Orders": 0
+      }
+    },
+    {
+      "name": "coverage_check",
+      "manifest": "coverage_check.toml",
+      "description": "Adapter paths the other checks leave out, declared together, July 21 to August 1, 2025, with a 10-day WarmUp: no orders; the COVERAGE_CHECK log line and the result record hold each declaration's arrivals and distinct times, and the report asserts every declaration delivered at least one arrival.",
+      "recorded_backtest": "16e45840de6ff95b3972c566c4450e14",
+      "backtest_timeout": 3600,
       "expected": {
         "Total Orders": 0
       }

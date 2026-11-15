@@ -1,0 +1,11 @@
+# Native check of the adapter paths the other native checks leave out; see coverage_check.py.
+name = "Sugarloaf coverage check"
+root = "../.."
+factory = "deployments.quantconnect.coverage_check:deployment"
+include = ["deployments/quantconnect/coverage_check.py"]
+# The project the other native checks use.
+project_id = 37377184
+
+[parameters]
+start_date = "2025-07-21"
+end_date = "2025-08-01"

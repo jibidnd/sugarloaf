@@ -13,6 +13,7 @@ from sugarloaf.adapters.quantconnect.adapter import (
     PendingFills,
     add_in_order,
     fill_before,
+    from_history,
     touch_window,
     update_in_order,
 )
@@ -165,3 +166,14 @@ def test_run_all_performs_every_pending_fill_once():
     pending.run_all(session(9).end_time, "on_data")
     assert performed == ["on_securities_changed"]
     assert ends(window) == [session(k).end_time for k in (2, 1, 0)]
+
+
+def test_a_period_consolidated_from_history_alone_is_not_news():
+    # A fill at 11:02 feeds minute bars ending up to 11:02 to the live five-minute
+    # consolidator. The 10:55-11:00 period it emits afterwards is history; the 11:00-11:05
+    # period also holds bars LEAN delivers after the fill, so it is news.
+    cutoff = datetime(2025, 7, 11, 15, 2)
+    assert from_history(datetime(2025, 7, 11, 15, 0), cutoff)
+    assert from_history(cutoff, cutoff)
+    assert not from_history(datetime(2025, 7, 11, 15, 5), cutoff)
+    assert not from_history(datetime(2025, 7, 11, 15, 0), None)  # no fill fed it

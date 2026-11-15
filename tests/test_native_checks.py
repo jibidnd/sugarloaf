@@ -5,6 +5,7 @@ test lists, so no test contacts QuantConnect.
 """
 
 import json
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
 
@@ -15,7 +16,7 @@ from tools.native_checks import compare, main, parse_number
 
 REPO = Path(__file__).resolve().parents[1]
 
-# Statistics as QuantConnect returned them for backtest df71573d7e9f939d128ca43f74b2cefd.
+# Statistics as QuantConnect returned them for backtest d76245fc607a7ba88e6c3893aa9c6fa6.
 EMA_STATISTICS = {"Total Orders": "6", "Total Fees": "$6.00", "End Equity": "99665.11",
                   "Net Profit": "-0.335%", "Lowest Capacity Asset": "SPY R735QTJ8XC9X"}
 NO_ORDERS = {"Total Orders": "0", "Total Fees": "$0.00", "End Equity": "100000",
@@ -258,13 +259,50 @@ def test_the_repository_check_file_matches_the_recorded_backtests(monkeypatch):
     monkeypatch.setattr(native_checks, "_project", lambda manifest: "selected")
     checks = native_checks.load_checks(REPO / "deployments/quantconnect/native_checks.json")
     assert [(c.name, c.manifest.name, c.recorded_backtest) for c in checks] == [
-        ("ema", "ema.toml", "df71573d7e9f939d128ca43f74b2cefd"),
-        ("ema_forecasts", "ema_forecasts.toml", "382dd5c2cf7db09c0bdc4ea3d47371a2"),
-        ("index_check", "index_check.toml", "4b9f5a3d9a149d06ef95df2d7ac6def1"),
-        ("warm_up_check", "warm_up_check.toml", "67b1cf1cea103a4bb24a49610ea3b48e"),
+        ("ema", "ema.toml", "d76245fc607a7ba88e6c3893aa9c6fa6"),
+        ("ema_forecasts", "ema_forecasts.toml", "9cccde8becf73ebf3a180a82a20358c1"),
+        ("index_check", "index_check.toml", "0fb8d6c2b1c930c4f2dca0d3fb4513a8"),
+        ("warm_up_check", "warm_up_check.toml", "fbb5498a55efd76c5c82a6a7dca276f9"),
+        ("coverage_check", "coverage_check.toml", "16e45840de6ff95b3972c566c4450e14"),
     ]
     assert native_checks.evaluate(checks[0], EMA_STATISTICS)[0] == "pass"
     assert native_checks.evaluate(checks[1], NO_ORDERS)[0] == "pass"
     assert native_checks.evaluate(checks[2], NO_ORDERS)[0] == "pass"
     assert native_checks.evaluate(checks[0], {**EMA_STATISTICS, "End Equity": "99600"})[0] \
         == "fail"
+
+
+def _coverage_probe():
+    from deployments.quantconnect.coverage_check import CoverageProbe
+
+    return CoverageProbe(date(2025, 7, 21))
+
+
+def test_the_coverage_report_names_every_declaration_without_an_arrival():
+    from deployments.quantconnect.coverage_check import missing, summarize
+
+    probe = _coverage_probe()
+    live = datetime(2025, 7, 21, 14, 31, tzinfo=UTC)
+    for name, tally in probe.tallies.items():
+        if name != "spy_quotes":
+            tally.add(live, warming_up=False)
+    for tally in probe.indicator_tallies.values():
+        tally.add(live, warming_up=False)
+    # Per-instrument earnings tallies are not declarations: SPY has no listings.
+    probe.tallies["earnings:USA:SPY"] = type(probe.tallies["earnings"])()
+    assert missing(summarize(probe)) == ["spy_quotes"]
+
+
+def test_the_coverage_log_line_is_one_json_line_of_bounded_length():
+    from deployments.quantconnect.coverage_check import LOGGED_FILLS, log_line, summarize
+
+    probe = _coverage_probe()
+    fills = [{"what": f"window daily member{i}", "clock": "2025-07-11T04:00:00+00:00",
+              "callback": "on_securities_changed"} for i in range(500)]
+    line = log_line(summarize(probe), fills)
+    assert "\n" not in line and line.startswith("COVERAGE_CHECK {")
+    decoded = json.loads(line.removeprefix("COVERAGE_CHECK "))
+    assert set(decoded["inputs"]) == set(probe.tallies)
+    assert set(decoded["indicators"]) == set(probe.indicator_tallies)
+    assert decoded["fill_count"] == 500 and len(decoded["fills"]) == LOGGED_FILLS
+    assert len(line) < 8000

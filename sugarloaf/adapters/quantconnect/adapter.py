@@ -176,6 +176,39 @@ def update_in_order(indicator, bar, field: str | None = None) -> bool:
     return True
 
 
+def listed_tickers(declaration: Custom, tickers: Mapping[InstrumentId, "Ticker"]) -> dict:
+    """Instrument -> ticker for each equity an earnings declaration names explicitly.
+
+    An earnings listing reaches a node when the listed symbol's security id maps to an
+    instrument. A security another declaration subscribes maps by ``_add_security``, a
+    universe member by ``bind``; an instrument named only in the earnings selection maps
+    through the ticker returned here (``add_custom`` registers its security id). An
+    instrument without a ticker binding, or bound to a class other than equity, has no
+    listings and raises ``CapabilityError`` at setup.
+    """
+    result = {}
+    for instrument in declaration.selection.instruments:
+        ticker = tickers.get(instrument)
+        if ticker is None:
+            raise CapabilityError(f"No ticker binding for {instrument.value}")
+        if ticker.asset_class != "equity":
+            raise CapabilityError(f"Earnings listings cover equities, not {instrument.value}")
+        result[instrument] = ticker.ticker
+    return result
+
+
+def from_history(end_utc: datetime, filled_until: datetime | None) -> bool:
+    """Whether a consolidated bar consists of history bars only.
+
+    A history fill feeds the window's live consolidator the bars ending earlier than
+    ``filled_until`` (the fill's cutoff, in UTC). The consolidator emits the last period it
+    holds from them later, when the next bar or LEAN's scan closes it. A bar ending no later
+    than ``filled_until`` is such a period: it primes the window and is not news for the
+    next slice. A bar ending later contains at least one bar LEAN delivered, and is news.
+    """
+    return filled_until is not None and end_utc <= filled_until
+
+
 def _name(value) -> str:
     """The member name of a LEAN enum value, as Python.NET prints it."""
     return str(value).split(".")[-1].lower().replace("_", "")
@@ -311,6 +344,9 @@ class QuantConnectAdapter:
         # True while a history fill feeds a live consolidator: its bars prime the window
         # and are not this slice's news (see _fill_group).
         self._filling = False
+        # (feed key, instrument) -> cutoff of the history fill that fed the live
+        # consolidator; its bars ending no later than it are history (from_history).
+        self._filled_until: dict[tuple, datetime] = {}
         algorithm.settings.daily_precise_end_time = True
 
         def initialize_security(security):
@@ -431,9 +467,9 @@ class QuantConnectAdapter:
         consolidator = self._consolidator(feed, symbol, quotes, interval)
 
         def completed(sender, bar, key=key, instrument=instrument, window=window):
-            touch_window(self.pending, key, window, bar, self._utc(symbol, bar.end_time),
-                         "consolidator")
-            if self._filling:
+            end = self._utc(symbol, bar.end_time)
+            touch_window(self.pending, key, window, bar, end, "consolidator")
+            if self._filling or from_history(end, self._filled_until.get((key, instrument))):
                 return  # a bar consolidated from history primes the window only
             # The arrival carries the bar either way, as LEAN delivered it (see on_data).
             self._completed.setdefault(key, {})[instrument] = bar
@@ -550,12 +586,21 @@ class QuantConnectAdapter:
 
     def add_custom(self, declaration: Custom) -> None:
         self.customs[declaration.kind] = declaration
-        if declaration.kind == "earnings" and self._earnings_symbol is None:
+        if declaration.kind != "earnings":
+            return
+        if self._earnings_symbol is None:
             kind = getattr(self.lean, "EODHDUpcomingEarnings", None)
             if kind is None:
                 from QuantConnect.DataSource import EODHDUpcomingEarnings as kind
             self._earnings_type = kind
             self._earnings_symbol = self.algorithm.add_data(kind, "earnings").symbol
+        # _custom maps each listing by its symbol's security id. Register the id of every
+        # named equity, so one with no other declaration maps to its instrument; nothing
+        # is subscribed for it.
+        for instrument, ticker in listed_tickers(declaration, self.tickers).items():
+            symbol = self.lean.Symbol.create(ticker, self.lean.SecurityType.EQUITY,
+                                             self.lean.Market.USA)
+            self.instruments.setdefault(str(symbol.id), instrument)
 
     def add_indicator(self, declaration: Indicator, instruments) -> None:
         if declaration not in self._indicator_declarations:
@@ -1017,6 +1062,7 @@ class QuantConnectAdapter:
                             self.symbols[instrument], consolidator
                         )
                     self.windows.get(feed.key, {}).pop(instrument, None)
+                    self._filled_until.pop((feed.key, instrument), None)
             for declaration in self._indicator_declarations:
                 if declaration.selection.universe != name:
                     continue
@@ -1085,6 +1131,9 @@ class QuantConnectAdapter:
                 targets[instrument] = lambda bar, window=window: add_in_order(window, bar)
             elif source != "consolidator" and getattr(live, "working_data", None) is None:
                 targets[instrument] = live.update
+                # The period in progress at the cutoff stays in the consolidator and is
+                # emitted after the fill; completed() keeps it out of the next slice.
+                self._filled_until[(feed.key, instrument)] = cutoff
             else:
                 own = self._consolidator(
                     feed, self.symbols[instrument], False, self._effective_interval(
