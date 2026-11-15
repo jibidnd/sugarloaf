@@ -49,7 +49,8 @@ class Adapter:
         self.memberships = {"top": (SPY,)}
         self.history_error = history_error
         self.requests = []
-        self.bars = [SimpleNamespace(end=T0 + k * MINUTE, close=100 + 0.1 * k)
+        self.bars = [SimpleNamespace(start=T0 + (k - 1) * MINUTE, end=T0 + k * MINUTE,
+                                     open=100 + 0.1 * (k - 1), close=100 + 0.1 * k)
                      for k in range(minutes + 1)]
         nodes = {node: SimpleNamespace(config={"node": node})
                  for node in {r.node_id for r in archive}}

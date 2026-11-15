@@ -166,6 +166,7 @@ def outcome_prices(adapter, records, errors: list[str]) -> PriceTable:
             continue
         groups[(convention, resolution)][instrument] = start
     bars: dict = {}
+    opens: dict = {}
     for (convention, resolution), starts in groups.items():
         items = sorted(starts.items(), key=lambda item: item[0].value)
         for offset in range(0, len(items), HISTORY_CHUNK):
@@ -184,7 +185,8 @@ def outcome_prices(adapter, records, errors: list[str]) -> PriceTable:
                 continue
             for instrument, series in history.items():
                 bars.setdefault(convention, {})[instrument] = [(b.end, b.close) for b in series]
-    return PriceTable(bars)
+                opens.setdefault(convention, {})[instrument] = [(b.start, b.open) for b in series]
+    return PriceTable(bars, opens)
 
 
 def run_view_metrics(adapter, runner, errors: list[str]) -> dict:

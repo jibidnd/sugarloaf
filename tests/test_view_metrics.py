@@ -121,6 +121,28 @@ def test_every_issued_view_is_counted_and_no_later_price_scores_an_open_horizon(
     assert len(first["path"]) == 10 and first["path"][-1] == first["mean"]
 
 
+def test_a_view_from_a_bar_start_is_scored_from_that_bars_open():
+    # Daily bars from 09:30 to 16:00; a view issued at the open ends at the close.
+    day = 24 * 60 * MINUTE
+    bars = [(T0 + k * day, T0 + k * day + 390 * MINUTE, 100.0 + k, 101.0 + k) for k in range(5)]
+    closes = {SPY: [(end, close) for _, end, _, close in bars]}
+    opens = {SPY: [(start, open_) for start, _, open_, _ in bars]}
+    archive = ForecastArchive()
+    start, end = bars[1][0], bars[1][1]
+    view = ScoreView(return_target(SPY, Interval(start, end)), Score(1.0, "test:v1"),
+                     Metadata("open:1", "signal", start, end))
+    archive.record("signal", "views", (view,), start)
+    without = view_metrics(archive, PriceTable({"price_return": closes}), bars[-1][1])
+    assert (without["counts"]["no_bar"], without["counts"]["no_bar_at_start"]) == (1, 1)
+    table = PriceTable({"price_return": closes}, {"price_return": opens})
+    assert table.has("price_return", SPY, start) and table.has("price_return", SPY, end)
+    scored = view_metrics(archive, table, bars[-1][1])
+    assert scored["counts"]["scored"] == 1
+    # Open 101 to close 102: the realized return is 102 / 101 - 1.
+    decile = [d for d in scored["kinds"]["score"]["pooled"]["deciles"] if d["count"]][0]
+    assert decile["mean"] == pytest.approx(102 / 101 - 1)
+
+
 def test_distribution_views_get_pinball_pit_coverage_and_quintiles():
     archive = ForecastArchive()
     for k in range(10):

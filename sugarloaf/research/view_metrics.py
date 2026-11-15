@@ -55,14 +55,21 @@ KINDS = ("distribution", "score", "ranking", "probability", "other")
 
 
 class PriceTable:
-    """Closes keyed by target convention, instrument and exact bar end (aware UTC).
+    """Prices keyed by target convention, instrument and exact bar boundary (aware UTC).
 
-    ``bars[convention][instrument]`` is a sequence of ``(end, close)`` pairs. One table per
-    convention, because one price series carries one adjustment: a price return reads
-    split-adjusted closes, a total return closes adjusted for splits and dividends.
+    ``bars[convention][instrument]`` is a sequence of ``(end, close)`` pairs; ``opens``, of
+    the same shape, holds ``(start, open)`` pairs. A target time at a bar end reads that
+    bar's close; a time at a bar start with no close there reads the bar's open, which is
+    how a view issued at the session open is scored. One table per convention, because one
+    price series carries one adjustment: a price return reads split-adjusted prices, a
+    total return prices adjusted for splits and dividends.
     """
 
-    def __init__(self, bars: Mapping[str, Mapping[InstrumentId, Sequence[tuple[datetime, float]]]]):
+    def __init__(
+        self,
+        bars: Mapping[str, Mapping[InstrumentId, Sequence[tuple[datetime, float]]]],
+        opens: Mapping[str, Mapping[InstrumentId, Sequence[tuple[datetime, float]]]] | None = None,
+    ):
         self._ends: dict[tuple[str, InstrumentId], list[datetime]] = {}
         self._closes: dict[tuple[str, InstrumentId], list[float]] = {}
         exact: dict[str, dict[InstrumentId, dict[datetime, float]]] = {}
@@ -72,6 +79,14 @@ class PriceTable:
                 self._ends[(convention, instrument)] = [end for end, _ in ordered]
                 self._closes[(convention, instrument)] = [close for _, close in ordered]
                 exact.setdefault(convention, {})[instrument] = dict(ordered)
+        self._starts: set[tuple[str, InstrumentId, datetime]] = set()
+        for convention, by_instrument in (opens or {}).items():
+            for instrument, pairs in by_instrument.items():
+                table = exact.setdefault(convention, {}).setdefault(instrument, {})
+                for start, price in pairs:
+                    if start not in table:
+                        table[start] = price
+                        self._starts.add((convention, instrument, start))
         anchors = {convention: anchor_from_closes(table) for convention, table in exact.items()}
 
         def anchor(instrument, at, convention, as_of):
@@ -82,10 +97,10 @@ class PriceTable:
         self.anchor = anchor
 
     def has(self, convention: str, instrument: InstrumentId, at: datetime) -> bool:
-        """Whether a bar of ``instrument`` ends exactly at ``at``."""
+        """Whether a bar of ``instrument`` ends, or with an open recorded starts, at ``at``."""
         ends = self._ends.get((convention, instrument), [])
         index = bisect_right(ends, at)
-        return index > 0 and ends[index - 1] == at
+        return (index > 0 and ends[index - 1] == at) or (convention, instrument, at) in self._starts
 
     def last(self, convention: str, instrument: InstrumentId, at: datetime) -> float | None:
         """The close of the last bar ending at or before ``at``; None when there is none."""
