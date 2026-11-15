@@ -1007,25 +1007,23 @@ class QuantConnectAdapter:
                 if records:
                     custom["fundamentals"] = tuple(records)
             if "borrow" in wanted:
-                records = []
-                for instrument in instruments:
-                    if self.symbols[instrument] not in self.algorithm.securities:
-                        continue
-                    security = self.algorithm.securities[self.symbols[instrument]]
-                    provider = security.shortable_provider
-                    if provider is None or type(provider).__name__ == "NullShortableProvider":
-                        continue
-                    local = self.algorithm.time
-                    records.append(
-                        BorrowTerms(
-                            instrument, time,
-                            _number(provider.fee_rate(security.symbol, local)),
-                            _number(provider.shortable_quantity(security.symbol, local)),
-                        )
-                    )
+                records = self._borrow_records(instruments, time)
                 if records:
-                    custom["borrow"] = tuple(records)
+                    custom["borrow"] = records
         return custom
+
+    def _borrow_records(self, instruments, time: datetime) -> tuple:
+        """Each instrument's borrow terms from its security's shortable provider, at the
+        algorithm's local time; none for a security without a provider."""
+        records = []
+        for instrument in instruments:
+            if self.symbols[instrument] not in self.algorithm.securities:
+                continue
+            security = self.algorithm.securities[self.symbols[instrument]]
+            record = borrow_terms(instrument, security, self.algorithm.time, time)
+            if record is not None:
+                records.append(record)
+        return tuple(records)
 
     def _custom_instruments(self) -> tuple[InstrumentId, ...]:
         result = []
@@ -1066,6 +1064,7 @@ class QuantConnectAdapter:
         self.pending.run_all(self.time, "on_securities_changed")
         added = {self.bind(s.symbol) for s in changes.added_securities}
         removed = {self.bind(s.symbol) for s in changes.removed_securities}
+        joining = []
         for name, (definition, feeds, _) in self.universes.items():
             finest = min(
                 (RESOLUTION_PERIODS[f.resolution] for f in feeds), default=timedelta(days=1)
@@ -1117,6 +1116,19 @@ class QuantConnectAdapter:
             self.runner.on_securities_changed(
                 name, joined, left, bool(self.algorithm.is_warming_up)
             )
+            joining.extend(joined)
+        # A joining member's borrow terms for this session arrive with its join, before
+        # any scheduled callback of the session, as one Arrival carrying only them; the
+        # daily read on the session's first slice delivers them again for every member.
+        borrowed = set(self._custom_instruments()) if "borrow" in self.customs else set()
+        records = self._borrow_records(
+            tuple(dict.fromkeys(i for i in joining if i in borrowed)), self.time
+        )
+        if records:
+            self.runner.on_data(Arrival(
+                self.time, custom={"borrow": records},
+                warming_up=bool(self.algorithm.is_warming_up),
+            ))
 
     def _fill(self, feeds, instruments, cutoff: datetime, source: str) -> None:
         """Fill windows from one history call per feed, with bars ending before ``cutoff``.
@@ -1237,6 +1249,19 @@ def _number(value):
         return None
     value = float(value)
     return value if value == value and value not in (float("inf"), float("-inf")) else None
+
+
+def borrow_terms(instrument, security, local, time) -> BorrowTerms | None:
+    """A security's borrow terms from its shortable provider at the local time ``local``,
+    stamped ``time``; None when the security has no provider or LEAN's null provider."""
+    provider = getattr(security, "shortable_provider", None)
+    if provider is None or type(provider).__name__ == "NullShortableProvider":
+        return None
+    return BorrowTerms(
+        instrument, time,
+        _number(provider.fee_rate(security.symbol, local)),
+        _number(provider.shortable_quantity(security.symbol, local)),
+    )
 
 
 def _sector(item) -> int | None:
