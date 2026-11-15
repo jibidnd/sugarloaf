@@ -561,10 +561,13 @@ class FakeAlgorithm:
         self.adapter.on_data(slice)
 
     def changed(self, added=(), removed=()):
-        self.adapter.on_securities_changed(
-            SimpleNamespace(added_securities=[self.securities[s] for s in added],
-                            removed_securities=[self.securities[s] for s in removed])
-        )
+        changes = SimpleNamespace(added_securities=[self.securities[s] for s in added],
+                                  removed_securities=[self.securities[s] for s in removed])
+        # As LEAN does, a removed member with no holding leaves the security list.
+        for symbol in removed:
+            if self.securities[symbol].holdings.quantity == 0:
+                del self.securities[symbol]
+        self.adapter.on_securities_changed(changes)
 
 
 def _manual(kind):

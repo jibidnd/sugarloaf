@@ -200,6 +200,15 @@ def test_universe_members_get_windows_warmed_from_history_and_notify():
     adapter._selected["liquid"] = ()
     algorithm.changed(removed=(aaa,))
     assert adapter.members("liquid") == () and source.changes[-1] == ((), (instrument,))
+    # LEAN dropped the departed member from its securities; the account still reads,
+    # and a target naming it is skipped rather than failing the run.
+    assert aaa not in algorithm.securities
+    portfolio = adapter.portfolio()
+    assert instrument not in portfolio.prices
+    target = PositionView({instrument: 0.1}, "weight", "t",
+                          Metadata("t:1", "n", adapter.time, adapter.time + DAY))
+    (record,) = adapter.execute(target, ExecutionPolicy())
+    assert record.status == "skipped" and record.reason == "not subscribed"
 
 
 def test_targets_become_tagged_market_orders_and_feedback_is_forwarded():

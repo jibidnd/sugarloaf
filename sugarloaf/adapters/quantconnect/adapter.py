@@ -246,7 +246,10 @@ class QuantConnectAdapter:
             raise CapabilityError(f"{instrument.value} is not subscribed") from None
 
     def _security(self, instrument: InstrumentId):
-        return self.algorithm.securities[self._symbol(instrument)]
+        symbol = self._symbol(instrument)
+        if symbol not in self.algorithm.securities:
+            raise CapabilityError(f"{instrument.value} is no longer subscribed")
+        return self.algorithm.securities[symbol]
 
     def _zone(self, symbol) -> ZoneInfo:
         key = str(symbol.id)
@@ -638,12 +641,16 @@ class QuantConnectAdapter:
 
     def calendar(self, instrument: InstrumentId) -> NativeCalendar:
         symbol = self._symbol(instrument)
-        return NativeCalendar(self.algorithm.securities[symbol], self._zone(symbol))
+        return NativeCalendar(self._security(instrument), self._zone(symbol))
 
     def portfolio(self) -> Portfolio:
         algorithm = self.algorithm
         holdings, prices = {}, {}
         for instrument, symbol in self.symbols.items():
+            # LEAN drops a departed universe member from ``securities`` once nothing
+            # holds it; the binding stays here so its identity survives a return.
+            if symbol not in algorithm.securities:
+                continue
             security = algorithm.securities[symbol]
             quantity = float(security.holdings.quantity)
             if quantity:
@@ -695,7 +702,12 @@ class QuantConnectAdapter:
             amount = target.positions[instrument]
             symbol = self.symbols.get(instrument)
             price = account.prices.get(instrument)
-            if symbol is None or price is None or price <= 0:
+            if symbol is None or symbol not in algorithm.securities:
+                records.append(
+                    OrderRecord(target_id, instrument, 0.0, None, "skipped", "not subscribed")
+                )
+                continue
+            if price is None or price <= 0:
                 records.append(OrderRecord(target_id, instrument, 0.0, None, "skipped", "no mark"))
                 continue
             if policy.cancel_on_new_target:
@@ -802,6 +814,8 @@ class QuantConnectAdapter:
             if "fundamentals" in wanted:
                 records = []
                 for instrument in instruments:
+                    if self.symbols[instrument] not in self.algorithm.securities:
+                        continue
                     security = self.algorithm.securities[self.symbols[instrument]]
                     record = security.fundamentals
                     if record is None or not getattr(record, "has_fundamental_data", True):
@@ -812,6 +826,8 @@ class QuantConnectAdapter:
             if "borrow" in wanted:
                 records = []
                 for instrument in instruments:
+                    if self.symbols[instrument] not in self.algorithm.securities:
+                        continue
                     security = self.algorithm.securities[self.symbols[instrument]]
                     provider = security.shortable_provider
                     if provider is None or type(provider).__name__ == "NullShortableProvider":
