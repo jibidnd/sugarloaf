@@ -1,6 +1,6 @@
 """The runner: dispatch by declaration, view carriage, archive and execution."""
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 
 import pytest
 
@@ -426,3 +426,80 @@ def test_restated_expired_views_drop_out_and_warm_up_records_no_diagnostics():
     # Two days later the day-long view has expired; restating it withdraws, no error.
     adapter.deliver(T0 + 2 * DAY, [bar(SPY, T0 + 2 * DAY)])
     assert runner.outputs("r", "views") == ()
+
+
+class ScheduledTarget:
+    """Emits a weight target from its schedule; records ctx.warming_up at each call."""
+
+    ports = {}
+    outputs = {"positions": OutputSpec((PositionView,))}
+    inputs = (Bars(Selection((SPY,))),)
+    schedules = (Schedule("rebalance", at=time(10, 0)),)
+
+    def __init__(self, ready=True):
+        self.ready = ready
+        self.warming = []
+
+    def update(self, ctx, data, views):
+        return None
+
+    def on_scheduled(self, ctx, name, views):
+        self.warming.append(ctx.warming_up)
+        if not self.ready:
+            raise NotReady("no target yet")
+        return {
+            "positions": (
+                PositionView({SPY: 0.5}, "weight", "test",
+                             Metadata(f"{ctx.node_id}:{ctx.sequence}", ctx.node_id, ctx.time,
+                                      ctx.time + DAY)),
+            )
+        }
+
+
+def test_a_schedule_during_warm_up_reaches_no_execution_and_records_no_diagnostic():
+    node = ScheduledTarget()
+    graph = Graph().add_node("target", node).set_output("target", "positions").compile()
+    adapter = MemoryAdapter(T0 - DAY)
+    runner = GraphRunner(graph, adapter)
+    adapter.attach(runner)
+    adapter.set_price(SPY, 100.0)
+    adapter.fire("rebalance", T0 - DAY + timedelta(hours=1), warming_up=True)
+    assert node.warming == [True]
+    assert runner.orders == [] and runner.outputs("target") == {}
+    assert runner.diagnostic_count == 0
+    adapter.fire("rebalance", T0)
+    assert node.warming == [True, False] and len(runner.orders) == 1
+
+    waiting = ScheduledTarget(ready=False)
+    graph = Graph().add_node("target", waiting).set_output("target", "positions").compile()
+    adapter = MemoryAdapter(T0 - DAY)
+    runner = GraphRunner(graph, adapter)
+    adapter.attach(runner)
+    adapter.fire("rebalance", warming_up=True)
+    assert runner.diagnostic_count == 0
+    adapter.fire("rebalance", T0)
+    assert runner.diagnostic_count == 1
+
+
+def test_a_membership_change_during_warm_up_carries_the_warm_up_state():
+    class Members:
+        ports = {}
+        outputs = {"views": OutputSpec((ScoreView,))}
+        inputs = (LiquidityUniverse("liquid", 2), Bars(Selection(universe="liquid")))
+
+        def __init__(self):
+            self.warming = []
+
+        def on_securities_changed(self, ctx, added, removed):
+            self.warming.append((added, removed, ctx.warming_up))
+
+        def update(self, ctx, data, views):
+            return None
+
+    node = Members()
+    graph = Graph().add_node("m", node).set_output("m", "views").compile()
+    adapter = MemoryAdapter(T0 - DAY)
+    adapter.attach(GraphRunner(graph, adapter))
+    adapter.set_members("liquid", (SPY,), warming_up=True)
+    adapter.set_members("liquid", (SPY, QQQ))
+    assert node.warming == [((SPY,), (), True), ((QQQ,), (), False)]

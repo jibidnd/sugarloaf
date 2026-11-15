@@ -90,6 +90,18 @@ a value ending after `ctx.time`, and records the callback that performed each fi
 ETF and monthly fundamental universe, wall-clock schedule, quote and SMA, RSI and Donchian
 paths together and counts each declaration's arrivals.
 
+## Schedules
+
+`schedule` registers `schedule.on(date_rule, time_rule, fn)`. The date rule takes the
+symbol of the declaration's `calendar`, so a schedule runs on that exchange's trading days. A
+`Schedule` that names no calendar (one with `at`) runs on the US equity market's trading days:
+`_default_calendar` gives the date rule SPY's symbol, the subscribed one when a declaration
+reads SPY, otherwise SPY added once at daily resolution as a calendar-only security that no
+window, indicator or arrival carries. To run on another market's days, name an instrument of
+that market as the `calendar`. `fn` passes `algorithm.is_warming_up` to `runner.on_scheduled`,
+and `on_securities_changed` passes it to `runner.on_securities_changed`, so `ctx.warming_up`
+is true in every callback of the warm-up replay.
+
 ## Scope
 
 US equities (ETFs included) and US indices; market, market-on-open and market-on-close

@@ -6,6 +6,11 @@ Nothing here fetches data: a declaration is a request the adapter translates int
 the platform's own calls (a subscription, a consolidator, an indicator, a scheduled
 event). The shapes follow QuantConnect's algorithm API so that a node reads like an
 alpha model, but they name no platform type.
+
+A ``Schedule`` runs on the trading days of its ``calendar`` instrument's exchange. One that
+names no calendar runs on the trading days of the US equity market, which the QuantConnect
+adapter reads from SPY's exchange calendar; to use another market's days, name an
+instrument of that market as the ``calendar``.
 """
 
 from collections.abc import Callable, Iterable
@@ -331,7 +336,9 @@ class Schedule:
     Attributes:
         name: The name passed to the callback.
         calendar: The instrument whose exchange calendar defines trading days and
-            session times. Required for ``after_open`` and ``before_close``.
+            session times. Required for ``after_open`` and ``before_close``. None (with
+            ``at``) means the US equity market's trading days; name an instrument to use
+            its exchange's days instead.
         days: ``every_day`` (each trading day of the calendar), ``week_start``,
             ``month_start``, ``month_end`` or ``year_start``.
         after_open: Minutes after the session open.

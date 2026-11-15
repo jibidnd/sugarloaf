@@ -120,9 +120,16 @@ consolidator whose bars are not marked for the next slice, `add_in_order` stores
 window, `update_in_order` updates an indicator, and `history` returns bars to the requesting
 node only.
 
-A scheduled function calls `runner.on_scheduled(name)`; the owning node's `on_scheduled`
-runs, then its dependents. A universe change calls `runner.on_securities_changed(universe,
-added, removed)` after the adapter has created the new members' windows and indicators.
+A scheduled function calls `runner.on_scheduled(name, warming_up)`; the owning node's
+`on_scheduled` runs, then its dependents. A universe change calls
+`runner.on_securities_changed(universe, added, removed, warming_up)` after the adapter has
+created the new members' windows and indicators.
+
+Every callback carries LEAN's `is_warming_up`: `on_data` in `Arrival.warming_up`,
+`on_scheduled` and `on_securities_changed` as an argument, and each node reads it as
+`ctx.warming_up`. During the warm-up replay the runner runs the nodes so their state fills,
+keeps none of their outputs, records no diagnostic and hands no target to
+`adapter.execute`.
 Order events become `OrderUpdate` records in `runner.updates`. `on_end_of_algorithm`
 calls `launcher.finish`, which saves the result (and the forecast archive) to the Object
 Store.

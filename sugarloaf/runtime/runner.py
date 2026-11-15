@@ -261,9 +261,17 @@ class GraphRunner:
             self._terminal(arrival.time)
 
     def on_securities_changed(
-        self, universe: str, added: tuple[InstrumentId, ...], removed: tuple[InstrumentId, ...]
+        self,
+        universe: str,
+        added: tuple[InstrumentId, ...],
+        removed: tuple[InstrumentId, ...],
+        warming_up: bool = False,
     ) -> None:
-        """Forward a membership change to every node that declares or selects the universe."""
+        """Forward a membership change to every node that declares or selects the universe.
+
+        ``warming_up`` is the platform's warm-up state, as ``Arrival.warming_up`` is for
+        ``on_data``; the nodes' ``ctx.warming_up`` carries it.
+        """
         time = self.adapter.time
         for node_id in self.graph.topological_order:
             if node_id not in self._universe_readers.get(universe, ()):
@@ -272,11 +280,16 @@ class GraphRunner:
             callback = getattr(node, "on_securities_changed", None)
             if callback is None:
                 continue
-            ctx = self._context(node_id, time, False)
+            ctx = self._context(node_id, time, warming_up)
             callback(ctx, tuple(added), tuple(removed))
 
-    def on_scheduled(self, name: str) -> None:
-        """Run the node owning the named schedule, then whatever depends on it."""
+    def on_scheduled(self, name: str, warming_up: bool = False) -> None:
+        """Run the node owning the named schedule, then whatever depends on it.
+
+        ``warming_up`` is the platform's warm-up state, as for ``on_data``: the nodes see it
+        in ``ctx.warming_up``, their outputs are not kept, and no target reaches
+        ``adapter.execute``.
+        """
         self.steps += 1
         time = self.adapter.time
         owner = self._schedules.get(name)
@@ -285,14 +298,15 @@ class GraphRunner:
         changed: set[str] = set()
         for node_id in self.graph.topological_order:
             if node_id == owner:
-                ran = self._run(node_id, time, False, "on_scheduled", name)
+                ran = self._run(node_id, time, warming_up, "on_scheduled", name)
             elif any(producer in changed for producer in self._producers(node_id)):
-                ran = self._run(node_id, time, False, "update", Slice(time))
+                ran = self._run(node_id, time, warming_up, "update", Slice(time))
             else:
                 continue
             if ran:
                 changed.add(node_id)
-        self._terminal(time)
+        if not warming_up:
+            self._terminal(time)
 
     def on_order_event(self, update: OrderUpdate) -> None:
         """Keep order feedback for the run's evidence."""

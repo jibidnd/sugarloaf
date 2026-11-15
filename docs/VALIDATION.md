@@ -212,8 +212,8 @@ in the result record (`sugarloaf/results/37377184/<backtest id>/result.json`, re
 same line, because LEAN keeps no log message of the final step when `on_end_of_algorithm`
 raises.
 
-Backtest `16e45840de6ff95b3972c566c4450e14` (source hash `22ab5b3e…d578b1`): no runtime
-errors, no diagnostics, no orders, 6,284 steps, 2,340 evaluations during warm-up and 3,908
+Backtest `0438718bee8b158fc397aa5d0cd40053` (source hash `41bf3dbc…015ab4`): no runtime
+errors, no diagnostics, no orders, 6,278 steps, 2,340 evaluations during warm-up and 3,908
 after it. Counts from the `COVERAGE_CHECK` line:
 
 | Declaration | LEAN calls | Arrivals | Distinct times | During warm-up | Observed |
@@ -226,7 +226,7 @@ after it. Counts from the `COVERAGE_CHECK` line:
 | `Bars` daily of its members, window 5 | `on_securities_changed`, `history[TradeBar]` | 32 | 16 | 12 | 2 members × 16 sessions |
 | `FundamentalUniverse`, monthly cadence (three energy stocks by dollar volume) | `FundamentalUniverse.usa(selector, settings)`, `settings.schedule.on(date_rules.month_start())` | 5 | 2 | 3 | three members join at 04:00 UTC on 11 July, in the replay; at 04:00 UTC on 1 August one joins and one leaves; no change between |
 | `Bars` daily of its members, window 5 | as above | 48 | 16 | 18 | 3 members × 16 sessions |
-| `Schedule` at 10:02, `America/Chicago`, every day | `time_rules.at(10, 2, DateTimeZoneProviders.Tzdb["America/Chicago"])`, `date_rules.every_day()` | 22 | 22 | 10 | every call at 10:02 in Chicago (15:02 UTC); one per calendar day from 11 July to 1 August, weekends included, since the declaration names no calendar |
+| `Schedule` at 10:02, `America/Chicago`, every day, no calendar | `time_rules.at(10, 2, DateTimeZoneProviders.Tzdb["America/Chicago"])`, `date_rules.every_day(SPY)` (`_default_calendar`, the subscribed SPY) | 16 | 16 | 6 | every call at 10:02 in Chicago (15:02 UTC), one per trading day from 11 July to 1 August (6 in the replay, 10 after it), none on a weekend |
 
 | Indicator on SPY (window 5) or on members | LEAN class and consolidator | Value updates read | Distinct end times | Ready |
 | --- | --- | --- | --- | --- |
@@ -251,18 +251,24 @@ from a history fill out of the next arrival; without it backtest
 `38e1126593aa66106b3182bfc9413758` (source hash `646339e0…3d067b`) delivers 1,249 5-minute
 bars, one ending earlier than the start of the replay (`tests/test_qc_window_order.py`).
 
-`GraphRunner.on_scheduled` and `GraphRunner.on_securities_changed` give the node a context
-with `warming_up` False during the replay: 10 of the 22 scheduled calls and the membership
-changes of 11 July fall in the replay, and the node tells them apart only by `ctx.time`.
-`on_scheduled` also calls `_terminal`, which hands a changed `PositionView` to
-`adapter.execute`; this forecast run places no order, so the check does not show what LEAN
-does with an order during warm-up.
+Every callback carries LEAN's `is_warming_up`: `QuantConnectAdapter.on_data` in the arrival,
+the scheduled function built in `schedule` and `QuantConnectAdapter.on_securities_changed` as
+the `warming_up` argument of `GraphRunner.on_scheduled` and
+`GraphRunner.on_securities_changed`. In the run, `ctx.warming_up` agrees with the clock (a time
+earlier than midnight in New York on 21 July is replay) at every callback: 0 disagreements over the 6,248
+evaluations, the 16 scheduled calls and the membership callbacks. The 6 scheduled calls and the
+membership changes of 11 July fall in the replay. While warming up the runner keeps no
+output, records no diagnostic and calls no `_terminal`, so no target reaches
+`adapter.execute` (`tests/test_runner.py`); this forecast run places no order, so the native
+run shows the warm-up state and not the skipped execution.
 
 Not exercised by this check: a fill performed by a consolidator handler, `on_data`, a read or
 a scheduled function (every first touch here is `on_securities_changed` at 04:00 UTC, outside
 any session; `tests/test_qc_window_order.py` covers those paths), a fill of a `Quotes` window
 from history (`_fill` fills `Bars` windows only; the replay fills the quote window), a member
-leaving the ETF universe, and listings of a universe member under `Custom("earnings")`.
+leaving the ETF universe, listings of a universe member under `Custom("earnings")`, the
+calendar-only SPY that `_default_calendar` adds when no declaration subscribes SPY (this check
+subscribes it), and an order skipped during warm-up.
 
 ### Capability limits
 

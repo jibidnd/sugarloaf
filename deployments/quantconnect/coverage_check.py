@@ -9,7 +9,8 @@ One node declares, over two weeks of 2025 with a ten-day ``WarmUp``:
   ``universe.etf`` in ``add_universe``; members join in ``on_securities_changed``.
 * ``FundamentalUniverse`` with a monthly cadence (the three energy stocks with the largest
   dollar volume): ``FundamentalUniverse.usa`` and ``universe_settings.schedule.on``.
-* ``Schedule`` at 10:02 in Chicago: ``time_rules.at`` with a NodaTime zone, in ``schedule``.
+* ``Schedule`` at 10:02 in Chicago with no calendar: ``time_rules.at`` with a NodaTime zone and
+  ``date_rules.every_day`` with SPY's symbol (``_default_calendar``), in ``schedule``.
 * ``Quotes`` on SPY at minute: ``slice.quote_bars`` in ``on_data``.
 * ``Indicator`` kinds ``sma``, ``rsi`` and ``donchian`` on SPY at the minute feed (an identity
   consolidator) and at five minutes (a ``TradeBarConsolidator``), in ``_create_indicator``;
@@ -22,8 +23,9 @@ end times (bars) or record times (listings, membership changes, scheduled calls)
 them, and for every indicator the distinct value end times it observed and whether it
 became ready. ``_report`` writes the counts to the result record ``coverage_check`` and to
 one ``COVERAGE_CHECK`` log line, then raises ``AssertionError`` naming each declaration
-with no arrival, so a run that misses a path ends with a runtime error. The graph's output
-port emits views, so this is a forecast run: nothing is traded.
+with no arrival, or when a callback's ``ctx.warming_up`` disagrees with the clock, or when the
+schedule calls on a weekend, so a run that misses a path ends with a runtime error. The
+graph's output port emits views, so this is a forecast run: nothing is traded.
 
     sugarloaf run --adapter quantconnect --manifest deployments/quantconnect/coverage_check.toml
 """
@@ -125,8 +127,8 @@ class CoverageProbe:
 
     def __init__(self, start: date):
         # The live period starts at midnight in New York on the start date; earlier
-        # callbacks belong to the warm-up replay. ctx.warming_up is passed as False to
-        # on_securities_changed and on_scheduled, so the clock decides there.
+        # callbacks belong to the warm-up replay. Every callback's ctx.warming_up is
+        # compared with this clock rule; warm_up_mismatches counts the disagreements.
         self.live_from = datetime.combine(start, time(0), NEW_YORK).astimezone(UTC)
         self.config = {"start": start.isoformat(), "warm_up_days": WARM_UP_DAYS}
         names = ["spy_1m", "spy_5m", "spy_quotes", "earnings", "earnings:USA:SPY",
@@ -143,14 +145,19 @@ class CoverageProbe:
         self.timings: dict[str, int] = {}  # earnings listings by report timing
         self.report_dates: set[str] = set()  # (instrument, report date) pairs listed
         self.quote_gaps = 0  # quote entries without a bid and an ask
+        self.warm_up_mismatches = 0  # callbacks whose ctx.warming_up disagrees with the clock
+        self.schedule_weekend_calls = 0  # scheduled calls on a Saturday or Sunday in Chicago
         self.schedule_local = set()  # wall times of scheduled calls in Chicago
         self.evaluations = {"warming_up": 0, "live": 0}
 
     def _replay(self, ctx) -> bool:
-        return ctx.time < self.live_from
+        """ctx.warming_up, after counting a disagreement with the clock rule."""
+        if ctx.warming_up != (ctx.time < self.live_from):
+            self.warm_up_mismatches += 1
+        return ctx.warming_up
 
     def update(self, ctx, data, views):
-        warming = ctx.warming_up
+        warming = self._replay(ctx)
         self.evaluations["warming_up" if warming else "live"] += 1
         for name in ("spy_1m", "spy_5m", "etf_daily", "energy_daily"):
             for bar in data.series(name).values():
@@ -203,6 +210,7 @@ class CoverageProbe:
         self.tallies[f"schedule:{name}"].add(ctx.time, self._replay(ctx))
         local = ctx.time.astimezone(ZoneInfo(SCHEDULE.timezone))
         self.schedule_local.add(local.strftime("%H:%M"))
+        self.schedule_weekend_calls += local.weekday() >= 5
         return None
 
 
@@ -220,6 +228,8 @@ def summarize(probe: CoverageProbe) -> dict:
         "earnings_report_dates": sorted(probe.report_dates),
         "quote_entries_without_bid_and_ask": probe.quote_gaps,
         "schedule_local_times": sorted(probe.schedule_local),
+        "schedule_weekend_calls": probe.schedule_weekend_calls,
+        "warm_up_mismatches": probe.warm_up_mismatches,
         "evaluations": probe.evaluations,
     }
 
@@ -249,6 +259,8 @@ def log_line(summary: dict, fills: list[dict]) -> str:
         "earnings_report_dates": summary["earnings_report_dates"],
         "quote_gaps": summary["quote_entries_without_bid_and_ask"],
         "schedule_local_times": summary["schedule_local_times"],
+        "schedule_weekend_calls": summary["schedule_weekend_calls"],
+        "warm_up_mismatches": summary["warm_up_mismatches"],
         "evaluations": summary["evaluations"],
         # Each fill: what, the clock, the callback that performed it; the first
         # LOGGED_FILLS of them, so a large universe keeps the line short.
@@ -274,6 +286,9 @@ def _report(context):
         algorithm.log(line)
     empty = missing(summary)
     assert not empty, f"declarations with no arrival: {', '.join(empty)}; {line}"
+    # Every callback's ctx.warming_up matches the clock, and the schedule keeps to trading days.
+    assert summary["warm_up_mismatches"] == 0, f"ctx.warming_up disagrees with the clock; {line}"
+    assert summary["schedule_weekend_calls"] == 0, f"scheduled calls on weekends; {line}"
     return summary
 
 

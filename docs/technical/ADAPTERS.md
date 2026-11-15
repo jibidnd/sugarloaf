@@ -24,7 +24,7 @@ methods and calls the runner's callbacks (`adapter.runner`).
 | Setup | `add_universe(definition, feeds)` | Create the membership rule; members get `feeds` when they join |
 | Setup | `add_custom(declaration)` | Register a `Custom` dataset |
 | Setup | `add_indicator(declaration, instruments)` | Create and warm the native indicator per instrument |
-| Setup | `schedule(declaration)` | Register a scheduled callback that calls `runner.on_scheduled(name)` |
+| Setup | `schedule(declaration)` | Register a scheduled callback that calls `runner.on_scheduled(name, warming_up)` |
 | Setup | `warm_up(declaration)` | Ask the platform to replay history before the start |
 | Read | `time` | The platform clock, aware UTC |
 | Read | `window(declaration, instrument)` | Newest-first window of completed bars |
@@ -68,7 +68,7 @@ Each row is read off `adapter.py`; `algorithm` is the `QCAlgorithm`.
 | `Custom("fundamentals")` | `algorithm.securities[symbol].fundamentals`, read once per day |
 | `Custom("borrow")` | `security.shortable_provider.fee_rate(symbol, time)` and `shortable_quantity(symbol, time)`, read once per day; no record under `NullShortableProvider` |
 | `add_indicator(Indicator)` | `SimpleMovingAverage(name, period)`, `ExponentialMovingAverage(name, period[, smoothing])`, `RelativeStrengthIndex(name, period, MovingAverageType)` or `DonchianChannel(name, period)`; a consolidator of the declaration's period (`IdentityDataConsolidator[TradeBar]()` at the security's own resolution, otherwise the `TradeBarConsolidator` used for windows) registered with `subscription_manager.add_consolidator(symbol, consolidator)`, whose `data_consolidated` handler feeds the indicator through `update_in_order` (`indicator.update(end_time, field)`, or the whole bar for Donchian, only when the bar ends after `indicator.current.end_time`); `indicator.window.size = window`; `algorithm.warm_up_indicator(symbol, indicator, resolution or interval[, selector])` on first touch (its consolidator handler, a read, `on_data`, `on_securities_changed` or a scheduled function), where `selector` is the `Field` member of the declared field when it is not the close |
-| `schedule(Schedule)` | `algorithm.schedule.on(date_rule, time_rule, fn)` with `date_rules.every_day / week_start / month_start / month_end / year_start`, given the calendar symbol when the schedule names one, and `time_rules.after_market_open(symbol, minutes)`, `before_market_close(symbol, minutes)` or `at(hour, minute, DateTimeZoneProviders.tzdb[timezone])`; `fn` calls `runner.on_scheduled(name)` |
+| `schedule(Schedule)` | `algorithm.schedule.on(date_rule, time_rule, fn)` with `date_rules.every_day / week_start / month_start / month_end / year_start`, given the calendar symbol, or SPY's when the schedule names none (`_default_calendar`; SPY is added at daily resolution as a calendar-only security when no declaration subscribes it), and `time_rules.after_market_open(symbol, minutes)`, `before_market_close(symbol, minutes)` or `at(hour, minute, DateTimeZoneProviders.tzdb[timezone])`; `fn` calls `runner.on_scheduled(name, algorithm.is_warming_up)` |
 | `warm_up(WarmUp)` | `algorithm.set_warm_up(count, resolution)` or `algorithm.set_warm_up(span)` |
 | `time` | `algorithm.utc_time` |
 | `window(declaration, instrument)` | The adapter's `RollingWindow`, read through `NativeWindow` (bars converted on access) |
@@ -114,7 +114,7 @@ joined, removes them for members that left, fills the joined members' `Bars` win
 `history[TradeBar]` when the feed keeps more than one bar or has an interval
 (`window × interval / resolution` feed bars, passed through the consolidator when the feed
 has an interval), records the membership and calls
-`runner.on_securities_changed(name, joined, left)`. Consolidated history bars are not
+`runner.on_securities_changed(name, joined, left, warming_up)`. Consolidated history bars are not
 delivered as news in the next slice.
 
 ### Corporate actions
@@ -147,8 +147,8 @@ them, and fills orders at the price last given. The caller drives it:
 | --- | --- |
 | `attach(runner)` | Binds the runner and calls `runner.start()` |
 | `deliver(time, bars=(), quotes=(), custom=None, dividends=(), splits=(), delistings=(), symbol_changes=(), warming_up=False)` | Advances the clock (never backwards), routes each bar to every subscribed feed whose resolution period equals the bar's duration, consolidates, updates windows and indicators, builds an `Arrival` and calls `runner.on_data` |
-| `fire(name, time=None)` | Calls `runner.on_scheduled(name)` for a declared schedule |
-| `set_members(universe, members)` | Replaces membership, creates windows and indicators for new members, calls `runner.on_securities_changed` |
+| `fire(name, time=None, warming_up=False)` | Calls `runner.on_scheduled(name, warming_up)` for a declared schedule |
+| `set_members(universe, members, warming_up=False)` | Replaces membership, creates windows and indicators for new members, calls `runner.on_securities_changed` |
 | `refresh(universe, rows, at=None)` | Applies the universe rule (`select`) to `SelectionRow`s, then `set_members` |
 | `set_price(instrument, price)` | Sets a mark (bars set marks too) |
 | `fill(order_id)` | Fills an open order at the current mark, for adapters built with `fills=False` |

@@ -221,8 +221,13 @@ class MemoryAdapter:
 
     # ---------------------------------------------------------------- driving
 
-    def set_members(self, universe: str, members: Iterable[InstrumentId]) -> None:
-        """Replace a universe's members, subscribing the new ones, and notify the runner."""
+    def set_members(
+        self, universe: str, members: Iterable[InstrumentId], warming_up: bool = False
+    ) -> None:
+        """Replace a universe's members, subscribing the new ones, and notify the runner.
+
+        ``warming_up`` marks a change made during a warm-up replay, as for ``deliver``.
+        """
         if universe not in self.universes:
             raise ContractError(f"No universe named {universe}")
         members = tuple(dict.fromkeys(members))
@@ -245,7 +250,7 @@ class MemoryAdapter:
                             (declaration, instrument), formulas.create(declaration)
                         )
             if added or removed:
-                self.runner.on_securities_changed(universe, added, removed)
+                self.runner.on_securities_changed(universe, added, removed, warming_up)
 
     def _universe_indicators(self, universe: str) -> set:
         result = set()
@@ -322,14 +327,17 @@ class MemoryAdapter:
             self.runner.on_data(arrival)
         return arrival
 
-    def fire(self, name: str, time: datetime | None = None) -> None:
-        """Fire a declared schedule at ``time`` (default: the current clock)."""
+    def fire(self, name: str, time: datetime | None = None, warming_up: bool = False) -> None:
+        """Fire a declared schedule at ``time`` (default: the current clock).
+
+        ``warming_up`` marks a call made during a warm-up replay, as for ``deliver``.
+        """
         if name not in self.schedules:
             raise ContractError(f"No schedule named {name}")
         if time is not None:
             aware(time)
             self.clock = max(self.clock, time)
-        self.runner.on_scheduled(name)
+        self.runner.on_scheduled(name, warming_up)
 
     def set_price(self, instrument: InstrumentId, price: float) -> None:
         self.prices[instrument] = float(price)

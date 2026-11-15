@@ -263,7 +263,7 @@ def test_the_repository_check_file_matches_the_recorded_backtests(monkeypatch):
         ("ema_forecasts", "ema_forecasts.toml", "9cccde8becf73ebf3a180a82a20358c1"),
         ("index_check", "index_check.toml", "0fb8d6c2b1c930c4f2dca0d3fb4513a8"),
         ("warm_up_check", "warm_up_check.toml", "fbb5498a55efd76c5c82a6a7dca276f9"),
-        ("coverage_check", "coverage_check.toml", "16e45840de6ff95b3972c566c4450e14"),
+        ("coverage_check", "coverage_check.toml", "0438718bee8b158fc397aa5d0cd40053"),
     ]
     assert native_checks.evaluate(checks[0], EMA_STATISTICS)[0] == "pass"
     assert native_checks.evaluate(checks[1], NO_ORDERS)[0] == "pass"

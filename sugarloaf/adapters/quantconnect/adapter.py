@@ -11,7 +11,8 @@ Setup (called by the runner before the clock starts):
 * ``Indicator``: ``SimpleMovingAverage``/``ExponentialMovingAverage``/
   ``RelativeStrengthIndex``/``DonchianChannel`` fed by a consolidator through
   ``update_in_order``, warmed with ``warm_up_indicator``.
-* ``Schedule``: ``schedule.on(date_rules..., time_rules..., fn)``.
+* ``Schedule``: ``schedule.on(date_rules..., time_rules..., fn)``; the date rule takes the
+  calendar instrument's symbol, or SPY's when the schedule names none.
 * ``WarmUp``: ``set_warm_up``.
 
 Reads: ``history[TradeBar](...)``, ``securities[symbol].exchange.hours``,
@@ -70,6 +71,8 @@ from sugarloaf.execution.contracts import (
 
 # Neutral asset class -> LEAN SecurityType member, for the classes this adapter subscribes.
 SECURITY_TYPES = {"equity": "EQUITY", "index": "INDEX"}
+# The exchange calendar of a schedule that names none: the US equity market, read from SPY.
+DEFAULT_CALENDAR = "SPY"
 RESOLUTION_NAMES = {"minute": "MINUTE", "hour": "HOUR", "daily": "DAILY"}
 EARNINGS_TIMINGS = {
     "BEFORE_MARKET": "before_open",
@@ -335,6 +338,8 @@ class QuantConnectAdapter:
         self.tags: dict[str, str] = {}
         self._last_daily_custom = None
         self._earnings_symbol = None
+        # SPY's symbol when a schedule names no calendar (_default_calendar).
+        self._calendar_symbol = None
         # History fills and indicator warm-ups requested during setup, performed on first
         # touch, when the clock stands at or after the start of the warm-up replay. See _fill.
         self.pending = PendingFills()
@@ -681,9 +686,12 @@ class QuantConnectAdapter:
     def schedule(self, declaration: Schedule) -> None:
         algorithm = self.algorithm
         self.schedules[declaration.name] = declaration
-        symbol = self._symbol(declaration.calendar) if declaration.calendar else None
-        arguments = () if symbol is None else (symbol,)
-        date_rule = getattr(algorithm.date_rules, declaration.days)(*arguments)
+        if declaration.calendar is not None:
+            symbol = self._symbol(declaration.calendar)
+        else:
+            # No calendar named: the US equity calendar, the trading days of SPY's exchange.
+            symbol = self._default_calendar()
+        date_rule = getattr(algorithm.date_rules, declaration.days)(symbol)
         if declaration.after_open is not None:
             time_rule = algorithm.time_rules.after_market_open(symbol, declaration.after_open)
         elif declaration.before_close is not None:
@@ -698,9 +706,28 @@ class QuantConnectAdapter:
         name = declaration.name
         def fire():
             self.pending.run_all(self.time, "scheduled")
-            self.runner.on_scheduled(name)
+            self.runner.on_scheduled(name, bool(algorithm.is_warming_up))
 
         algorithm.schedule.on(date_rule, time_rule, fire)
+
+    def _default_calendar(self):
+        """SPY's symbol, for a schedule that names no calendar.
+
+        A subscribed SPY is used as it is. Otherwise SPY is added once, at daily resolution,
+        as a calendar-only security: no declaration reads it, so no window, indicator or
+        arrival carries it.
+        """
+        for instrument, ticker in self.tickers.items():
+            if ticker.ticker == DEFAULT_CALENDAR and instrument in self.symbols:
+                return self.symbols[instrument]
+        if self._calendar_symbol is None:
+            symbol = self.lean.Symbol.create(
+                DEFAULT_CALENDAR, self.lean.SecurityType.EQUITY, self.lean.Market.USA
+            )
+            if symbol not in self.algorithm.securities:
+                self.algorithm.add_security(symbol, self.lean.Resolution.DAILY)
+            self._calendar_symbol = symbol
+        return self._calendar_symbol
 
     def warm_up(self, declaration: WarmUp) -> None:
         if declaration.span is not None:
@@ -1086,7 +1113,9 @@ class QuantConnectAdapter:
             )
             # Joined members' indicators warm now, ending at this callback's clock.
             self.pending.run_all(self.time, "on_securities_changed")
-            self.runner.on_securities_changed(name, joined, left)
+            self.runner.on_securities_changed(
+                name, joined, left, bool(self.algorithm.is_warming_up)
+            )
 
     def _fill(self, feeds, instruments, cutoff: datetime, source: str) -> None:
         """Fill windows from one history call per feed, with bars ending before ``cutoff``.

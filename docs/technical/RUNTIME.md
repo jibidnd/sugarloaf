@@ -50,8 +50,8 @@ setup methods in this order:
 | Method | Called by the adapter when | What runs |
 | --- | --- | --- |
 | `on_data(arrival)` | The platform delivers a slice | Every node whose declared part of the slice is not empty, then every node with a producer whose outputs changed, in topological order; then the terminal check |
-| `on_securities_changed(universe, added, removed)` | A universe's membership changed | `on_securities_changed` of every node that declares or selects that universe |
-| `on_scheduled(name)` | A declared schedule fired | `on_scheduled` of the owning node, then `update` (with an empty slice) of every node downstream whose producer changed; then the terminal check |
+| `on_securities_changed(universe, added, removed, warming_up=False)` | A universe's membership changed | `on_securities_changed` of every node that declares or selects that universe |
+| `on_scheduled(name, warming_up=False)` | A declared schedule fired | `on_scheduled` of the owning node, then `update` (with an empty slice) of every node downstream whose producer changed; then the terminal check |
 | `on_order_event(update)` | The platform reports order feedback | Appends the `OrderUpdate` to `runner.updates` (last 10,000) |
 | `finish()` | The run ends | Returns a summary for the result file |
 
@@ -98,13 +98,16 @@ outputs.
 
 ### Warm-up
 
-An arrival with `warming_up=True` (LEAN's `is_warming_up`) runs the nodes as usual, so node
-state, windows and indicators fill, but their outputs are discarded, nothing is archived and
-no target is executed.
+Every callback carries the platform's warm-up state (LEAN's `is_warming_up`): `on_data` in
+`Arrival.warming_up`, `on_scheduled(name, warming_up)` and
+`on_securities_changed(universe, added, removed, warming_up)` as an argument. Nodes read it
+as `ctx.warming_up`. While it is true the nodes run as usual, so node state, windows and
+indicators fill, but their outputs are discarded, nothing is archived, no diagnostic is
+recorded and no target reaches `adapter.execute`.
 
 ## Terminal target
 
-After `on_data` (outside warm-up) and after `on_scheduled`, a trading run takes the terminal
+After `on_data` and `on_scheduled`, outside warm-up, a trading run takes the terminal
 port's views. When there is exactly one `PositionView`, it differs from `runner.last_target`
 and it has not expired, the runner checks it against `constraints`:
 

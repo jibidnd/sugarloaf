@@ -50,7 +50,7 @@
       "name": "coverage_check",
       "manifest": "coverage_check.toml",
       "description": "Adapter paths the other checks leave out, declared together, July 21 to August 1, 2025, with a 10-day WarmUp: no orders; the COVERAGE_CHECK log line and the result record hold each declaration's arrivals and distinct times, and the report asserts every declaration delivered at least one arrival.",
-      "recorded_backtest": "16e45840de6ff95b3972c566c4450e14",
+      "recorded_backtest": "0438718bee8b158fc397aa5d0cd40053",
       "backtest_timeout": 3600,
       "expected": {
         "Total Orders": 0
