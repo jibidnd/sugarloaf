@@ -2,6 +2,11 @@
 
 One node declares, over two weeks of 2025 with a ten-day ``WarmUp``:
 
+* ``Custom("borrow")`` on the fundamental-universe members, with Interactive Brokers borrow
+  data: ``shortable_quantity`` and ``fee_rate`` of LEAN's shortable provider, read once per
+  trading session at its first event (``QuantConnectAdapter._deliver_borrow``). The report
+  asserts no member's terms arrive twice in a session, every record is stamped in the
+  session it arrives in, and no scheduled call runs before its session's terms.
 * ``Custom("earnings")`` on SPY and AAPL: ``add_data(EODHDUpcomingEarnings)`` and
   ``slice.get`` in ``QuantConnectAdapter._custom``. AAPL has no other declaration, so its
   listings reach the node only through the earnings path; SPY, an ETF, has none.
@@ -21,10 +26,11 @@ One node declares, over two weeks of 2025 with a ten-day ``WarmUp``:
 For every declaration the node counts arrivals (records delivered to it) and the distinct
 end times (bars) or record times (listings, membership changes, scheduled calls) among
 them, and for every indicator the distinct value end times it observed and whether it
-became ready. ``_report`` writes the counts to the result record ``coverage_check`` and to
-one ``COVERAGE_CHECK`` log line, then raises ``AssertionError`` naming each declaration
-with no arrival, or when a callback's ``ctx.warming_up`` disagrees with the clock, or when the
-schedule calls on a weekend, so a run that misses a path ends with a runtime error. The
+became ready. ``_report`` writes the counts to the report record ``coverage_check`` (a
+``RUN_RECORD`` log line) and to one ``COVERAGE_CHECK`` log line, then raises
+``AssertionError`` naming each declaration with no arrival, or when a callback's
+``ctx.warming_up`` disagrees with the clock, when the schedule calls on a weekend, or when
+borrow terms arrive out of their session, so a run that misses a path ends with a runtime error. The
 graph's output port emits views, so this is a forecast run: nothing is traded.
 
     sugarloaf run --adapter quantconnect --manifest deployments/quantconnect/coverage_check.toml
@@ -74,6 +80,8 @@ SPY_MINUTE = Bars(Selection((SPY,)), "minute", window=30, name="spy_1m")
 SPY_FIVE = Bars(Selection((SPY,)), "minute", interval=FIVE_MINUTES, window=12, name="spy_5m")
 SPY_QUOTES = Quotes(Selection((SPY,)), "minute", window=5)
 EARNINGS = Custom("earnings", Selection((SPY, AAPL)))
+# Interactive Brokers borrow terms of the energy members, once per trading session.
+BORROW = Custom("borrow", Selection(universe="energy_top3"))
 ETF_TOP = ETFConstituentsUniverse("spy_top2", etf=SPY, count=2)
 ENERGY_TOP = FundamentalUniverse("energy_top3", cadence="monthly", rule=energy_leaders)
 ETF_DAILY = Bars(Selection(universe="spy_top2"), "daily", window=5, name="etf_daily")
@@ -119,7 +127,7 @@ class CoverageProbe:
 
     ports = {}
     outputs = {"views": OutputSpec((ScoreView,))}
-    inputs = (SPY_MINUTE, SPY_FIVE, SPY_QUOTES, EARNINGS, ETF_TOP, ENERGY_TOP,
+    inputs = (SPY_MINUTE, SPY_FIVE, SPY_QUOTES, EARNINGS, BORROW, ETF_TOP, ENERGY_TOP,
               ETF_DAILY, ENERGY_DAILY)
     indicators = INDICATORS
     schedules = (SCHEDULE,)
@@ -132,7 +140,7 @@ class CoverageProbe:
         self.live_from = datetime.combine(start, time(0), NEW_YORK).astimezone(UTC)
         self.config = {"start": start.isoformat(), "warm_up_days": WARM_UP_DAYS}
         names = ["spy_1m", "spy_5m", "spy_quotes", "earnings", "earnings:USA:SPY",
-                 "earnings:USA:AAPL", "etf_daily", "energy_daily", "universe:spy_top2",
+                 "earnings:USA:AAPL", "borrow", "etf_daily", "energy_daily", "universe:spy_top2",
                  "universe:energy_top3", "schedule:chicago_1002"]
         self.tallies = {name: Tally() for name in names}
         self.indicator_tallies = {i.name: Tally() for i in INDICATORS}
@@ -149,6 +157,13 @@ class CoverageProbe:
         self.schedule_weekend_calls = 0  # scheduled calls on a Saturday or Sunday in Chicago
         self.schedule_local = set()  # wall times of scheduled calls in Chicago
         self.evaluations = {"warming_up": 0, "live": 0}
+        # Borrow terms: the New York sessions delivered, records per session and instrument,
+        # records with a quantity, records stamped on another date than their delivery's
+        # session, and scheduled calls that ran before their session's terms arrived.
+        self.borrow_sessions: set[str] = set()
+        self.borrow_seen: set[tuple] = set()
+        self.borrow = {"records": 0, "with_quantity": 0, "repeated": 0,
+                       "stamped_off_session": 0, "schedule_before_terms": 0}
 
     def _replay(self, ctx) -> bool:
         """ctx.warming_up, after counting a disagreement with the clock rule."""
@@ -174,6 +189,17 @@ class CoverageProbe:
             per = self.tallies.get(f"earnings:{listing.instrument.value}")
             if per is not None:
                 per.add(listing.time, warming)
+        for record in data.custom.get("borrow", ()):
+            session = ctx.time.astimezone(NEW_YORK).date().isoformat()
+            self.tallies["borrow"].add(record.time, warming)
+            self.borrow_sessions.add(session)
+            self.borrow["records"] += 1
+            self.borrow["with_quantity"] += record.shortable is not None
+            self.borrow["stamped_off_session"] += (
+                record.time.astimezone(NEW_YORK).date().isoformat() != session)
+            key = (session, record.instrument)
+            self.borrow["repeated"] += key in self.borrow_seen
+            self.borrow_seen.add(key)
         for declaration in INDICATORS:
             universe = declaration.selection.universe
             instruments = ctx.members(universe) if universe else declaration.selection.instruments
@@ -208,6 +234,8 @@ class CoverageProbe:
 
     def on_scheduled(self, ctx, name, views):
         self.tallies[f"schedule:{name}"].add(ctx.time, self._replay(ctx))
+        if ctx.time.astimezone(NEW_YORK).date().isoformat() not in self.borrow_sessions:
+            self.borrow["schedule_before_terms"] += 1
         local = ctx.time.astimezone(ZoneInfo(SCHEDULE.timezone))
         self.schedule_local.add(local.strftime("%H:%M"))
         self.schedule_weekend_calls += local.weekday() >= 5
@@ -231,6 +259,7 @@ def summarize(probe: CoverageProbe) -> dict:
         "schedule_weekend_calls": probe.schedule_weekend_calls,
         "warm_up_mismatches": probe.warm_up_mismatches,
         "evaluations": probe.evaluations,
+        "borrow": {**probe.borrow, "sessions": len(probe.borrow_sessions)},
     }
 
 
@@ -262,6 +291,7 @@ def log_line(summary: dict, fills: list[dict]) -> str:
         "schedule_weekend_calls": summary["schedule_weekend_calls"],
         "warm_up_mismatches": summary["warm_up_mismatches"],
         "evaluations": summary["evaluations"],
+        "borrow": summary["borrow"],
         # Each fill: what, the clock, the callback that performed it; the first
         # LOGGED_FILLS of them, so a large universe keeps the line short.
         "fill_count": len(fills),
@@ -277,7 +307,7 @@ def _report(context):
     fills = list(getattr(adapter, "fills", ()))
     summary["fills"] = fills
     context.record("coverage_check", summary)
-    # This account reads results from the backtest log, not the Object Store. LEAN keeps
+    # Run output is read from the backtest log. LEAN keeps
     # no log message of the final step when on_end_of_algorithm raises, so a failing
     # assertion carries the same line in its message, which the runtime error reports.
     line = log_line(summary, fills)
@@ -289,6 +319,11 @@ def _report(context):
     # Every callback's ctx.warming_up matches the clock, and the schedule keeps to trading days.
     assert summary["warm_up_mismatches"] == 0, f"ctx.warming_up disagrees with the clock; {line}"
     assert summary["schedule_weekend_calls"] == 0, f"scheduled calls on weekends; {line}"
+    # Borrow terms arrive once per session and instrument, stamped in that session, before
+    # the session's scheduled call (QuantConnectAdapter._deliver_borrow).
+    borrow = summary["borrow"]
+    assert borrow["repeated"] == borrow["stamped_off_session"] == 0, f"borrow terms; {line}"
+    assert borrow["schedule_before_terms"] == 0, f"schedule before borrow terms; {line}"
     return summary
 
 
@@ -297,6 +332,7 @@ def deployment(parameter):
     environment = Environment(
         start=date.fromisoformat(parameter("start_date") or "2025-07-21"),
         end=date.fromisoformat(parameter("end_date") or "2025-08-01"),
+        borrow_data="interactive_brokers",
     )
 
     def build():

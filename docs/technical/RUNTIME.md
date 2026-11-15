@@ -53,7 +53,7 @@ setup methods in this order:
 | `on_securities_changed(universe, added, removed, warming_up=False)` | A universe's membership changed | `on_securities_changed` of every node that declares or selects that universe |
 | `on_scheduled(name, warming_up=False)` | A declared schedule fired | `on_scheduled` of the owning node, then `update` (with an empty slice) of every node downstream whose producer changed; then the terminal check |
 | `on_order_event(update)` | The platform reports order feedback | Appends the `OrderUpdate` to `runner.updates` (last 10,000) |
-| `finish()` | The run ends | Returns a summary for the result file |
+| `finish()` | The run ends | Returns a summary for the run's `RUN_SUMMARY` line |
 
 `on_data` and `on_scheduled` each increment `runner.steps`, the value nodes read as
 `ctx.sequence`.
@@ -126,8 +126,56 @@ A target that passes becomes `runner.last_target` and goes to
 
 When the output port does not declare exactly `(PositionView,)`, every view any node emits
 outside warm-up is recorded in `runner.archive`, a `ForecastArchive`, with the node id, port
-and callback time. Position views are ignored by the archive. The QuantConnect launcher saves
-the archive as JSON at the end of the run; see [research](RESEARCH.md).
+and callback time. Position views are ignored by the archive. At the end of the run the
+QuantConnect launcher scores the archive against prices and writes the metrics to the
+backtest log; see [run output](#run-output) and [research](RESEARCH.md).
+
+## Run output
+
+A run's output goes to the backtest log and to the backtest's runtime statistics; the caller
+reads both through QuantConnect's REST API and saves them on disk, by backtest id. The Object
+Store holds persistent things only: fitted models and datasets reused across projects, which a
+deployment factory reads through `stored` (`launcher.stored_reader`). `launcher.finish`, called
+from `SugarloafAlgorithm.on_end_of_algorithm` at the platform's last clock, runs the strategy
+report, computes the view metrics and writes:
+
+| Log line | Content | Character budget |
+| --- | --- | --- |
+| `RUN_SUMMARY` | Deployment name, mode, environment, execution policy, `runner.finish()`, member counts per universe, order and update counts, node configs, the report's return value, its record labels, the error list | 10,000 (`SUMMARY_BUDGET`) |
+| `VIEW_METRICS` | `view_metrics(archive, prices, clock)` from [`sugarloaf.research.view_metrics`](../../sugarloaf/research/view_metrics.py) | 32,000 (`METRICS_BUDGET`) |
+| `VIEW_SAMPLE` | The first 20 archived views of each node, one per value, as `encode_archive` encodes a record | 16,000 (`SAMPLE_BUDGET`) |
+| `RUN_RECORD` | Each `ReportContext.record(label, value)` | 12,000 (`RECORD_BUDGET`) |
+
+Each value is JSON written as `<TAG> <part>/<parts> <text>` over as many consecutive lines as
+it needs, at most 8,000 characters each: QuantConnect keeps 8,192 characters of a log line,
+the timestamp LEAN adds included, and drops the rest without error. A value that would pass
+its budget is reduced (`VIEW_METRICS` loses per-node groups, then per-node summaries) or left
+out, and the error list says which. `algorithm.set_runtime_statistic` carries the headline:
+views issued, views scored, and per view kind its primary metrics (score: hit rate, F1,
+top-minus-bottom decile return; distribution: mean pinball loss, 90% coverage, mean log
+score; ranking: mean Kendall tau). An exception from the strategy report is recorded, the
+output is written, and the exception is raised again; LEAN then reports the error message
+and keeps no log line of that final step.
+
+QuantConnect caps the log output of a backtest by organization tier
+([log quotas](https://www.quantconnect.com/docs/v2/cloud-platform/organizations/resources#09-Log-Quotas),
+read 15 November 2026): 10 KB per backtest and 3 MB per day on the Free tier, 100 KB and 3 MB
+on Quant Researcher, 1 MB and 10 MB on Team, 5 MB and 50 MB on Trading Firm. Reading or
+downloading logs counts toward the daily quota. The organization that runs the native checks
+is on Quant Researcher (`organizations/read` reports a 102,400-byte limit per backtest), so the
+four budgets sum to 70,000 characters, and a one-node forecast run such as `ema_forecasts`
+writes about 22,000. Lines a node or report logs itself count toward the same quota and come
+earlier in the log. On a tier with a larger quota, raise the budgets in
+[launcher.py](../../sugarloaf/adapters/quantconnect/launcher.py).
+
+`cloud.backtests.read_run_output(client, project_id, backtest_id)` reads a finished backtest's
+log through `read_all_logs`, joins and decodes the lines (`parse_run_output`) and returns
+`{"summary", "metrics", "samples", "records", "errors"}` with the project, backtest id and the
+number of log lines read; `save_run_output(output, path)` writes it as JSON and refuses to
+replace a file with different contents unless `overwrite=True`. `run_backtest` saves the output
+of each run it completes as `artifacts/<manifest stem>/<backtest id>-output.json`, and
+`sugarloaf output --adapter quantconnect --manifest M --backtest-id ID [--out PATH]` reads and
+saves the output of an earlier run.
 
 ## Reads
 

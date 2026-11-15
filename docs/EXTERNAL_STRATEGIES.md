@@ -53,9 +53,10 @@ a live session, which fetches. A factory without these keywords is called with
 `parameter` only.
 
 An optional `report(context)` callback inspects `context.runner` (its `graph`, `orders`,
-`archive`, `diagnostics`) and returns summary diagnostics for the result file. Use
-`context.record(label, value)` for individual records; the launcher serializes them into
-`result.json`. `ReportContext` carries no native algorithm object.
+`archive`, `diagnostics`) and returns summary diagnostics for the `RUN_SUMMARY` log line. Use
+`context.record(label, value)` for individual records; the launcher writes each as a
+`RUN_RECORD` log line ([run output](technical/RUNTIME.md#run-output)). `ReportContext` carries
+no native algorithm object.
 
 ## Source manifest
 

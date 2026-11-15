@@ -1,5 +1,5 @@
-# The EMA score alone, as a forecast run: views are archived to the Object Store,
-# nothing is traded. Field reference: ../../docs/EXTERNAL_STRATEGIES.md#manifest-fields
+# The EMA score alone, as a forecast run: views are archived and scored at the end of
+# the backtest, the metrics go to the backtest log, nothing is traded. Field reference: ../../docs/EXTERNAL_STRATEGIES.md#manifest-fields
 name = "Sugarloaf public EMA forecasts"
 root = "../.."
 factory = "deployments.quantconnect.config:ema_forecasts"

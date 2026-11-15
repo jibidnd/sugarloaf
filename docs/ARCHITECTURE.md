@@ -39,7 +39,7 @@ flowchart LR
     R -- execute target --> A
     A -- market_order --> L
     R -- forecast views --> F[ForecastArchive]
-    F -- object_store.save --> L
+    F -- view metrics, log lines, runtime statistics --> L
 ```
 
 ## Module map
@@ -52,7 +52,7 @@ flowchart LR
 | `sugarloaf.execution` | `contracts` | `ExecutionPolicy`, account records, the shared sizing rule |
 | `sugarloaf.portfolio` | `constraints` | `PortfolioConstraints`, `violations`, `breaches` |
 | `sugarloaf.nodes` | `technical`, `simple`, `positions` | Built-in nodes |
-| `sugarloaf.research` | `archive`, `serialization`, `anchors`, `evaluation`, `inference` | Forecast archive, its JSON form, outcome anchors, scoring |
+| `sugarloaf.research` | `archive`, `serialization`, `anchors`, `evaluation`, `view_metrics`, `inference` | Forecast archive, its JSON form, outcome anchors, scoring, a run's view metrics |
 | `sugarloaf.deployment` | `config`, `reporting`, `evidence` | `Deployment`, `Environment`, `ReportContext`, run evidence |
 
 Dependencies point inward: `core` imports only `core` and, for distribution numerics, scipy;
@@ -131,16 +131,28 @@ Every callback carries LEAN's `is_warming_up`: `on_data` in `Arrival.warming_up`
 keeps none of their outputs, records no diagnostic and hands no target to
 `adapter.execute`.
 Order events become `OrderUpdate` records in `runner.updates`. `on_end_of_algorithm`
-calls `launcher.finish`, which saves the result (and the forecast archive) to the Object
-Store.
+calls `launcher.finish`, which scores the forecast archive and writes the run's output to the
+backtest log and its runtime statistics.
 
 ## Trading and forecast runs
 
 The graph's output port decides the mode. When it declares exactly `(PositionView,)`, the
 run trades: the terminal target goes to `adapter.execute`. Otherwise the run is a forecast
-run: every predictive view any node emits is recorded in `runner.archive`, saved as
-`forecasts.json`, and scored later in a research kernel (`sugarloaf.research.evaluate`).
+run: every predictive view any node emits is recorded in `runner.archive`, and at the end of
+the run each view is scored against what prices then did (`sugarloaf.research.view_metrics`,
+over bars from `adapter.history`). A forecast run needs no trades: nodes declare their logic,
+events stream through them, views come out, and the run reports the views' metrics.
 Research on prices themselves uses `QuantBook` directly in the kernel.
+
+## Run output and the Object Store
+
+A run's output goes to the backtest log (`RUN_SUMMARY`, `VIEW_METRICS`, `VIEW_SAMPLE` and
+`RUN_RECORD` lines) and to its runtime statistics. The caller reads both through
+QuantConnect's REST API (`cloud.backtests.read_run_output`) and saves them on disk, by
+backtest id (`save_run_output`). The Object Store holds persistent things only: fitted models
+and datasets reused across projects, which a deployment factory reads through `stored`.
+[Runtime](technical/RUNTIME.md#run-output) gives the line format, the size budgets and the
+platform's log quota.
 
 ## Ownership
 

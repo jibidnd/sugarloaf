@@ -68,7 +68,7 @@ Check in order:
 3. Did the node run? It runs when its declared part of the slice is not empty, when a
    producer's outputs changed in this callback, or when its schedule fired.
 4. Did it raise `NotReady`? Read `runner.diagnostics` (the last 2,000) and
-   `runner.diagnostic_count`; on QuantConnect the last 20 are in `result.json` under `run`.
+   `runner.diagnostic_count`; on QuantConnect the last 20 are in the `RUN_SUMMARY` log line under `run`.
 5. Did a consumer's port have fewer views than its `min_count`? That is a `NotReady`
    diagnostic recorded against the consumer; views of the wrong class or too many views raise
    `ContractError`. Expired views are removed before the count.
@@ -88,8 +88,9 @@ with the target's `view_id`, so a LEAN order list joins to targets by tag. An in
 no order usually means `order_quantity` returned zero: check `min_trade_value`,
 `rebalance_band` and pending open orders against the [sizing rule](technical/EXECUTION.md#sizing).
 
-For a QuantConnect run, read `SUGARLOAF_RUN`, `SUGARLOAF_RESULT`, the backtest's errors and
-`result.json`, and keep the source identity tied to the run.
+For a QuantConnect run, read `SUGARLOAF_RUN`, the backtest's errors and the run output
+(`artifacts/<manifest stem>/<backtest id>-output.json`: `RUN_SUMMARY`, `VIEW_METRICS`,
+`VIEW_SAMPLE`), and keep the source identity tied to the run.
 
 ## Maintain documentation
 

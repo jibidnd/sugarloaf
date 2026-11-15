@@ -8,7 +8,7 @@ strategies belong in an external package.
 | Manifest | Factory | Run |
 | --- | --- | --- |
 | [ema.toml](quantconnect/ema.toml) | `ema_definition` in [config.py](quantconnect/config.py) | Trading: `EMAScore` → `LongWhenPositive` → `PortfolioConstraintNode` on SPY |
-| [ema_forecasts.toml](quantconnect/ema_forecasts.toml) | `ema_forecasts` in [config.py](quantconnect/config.py) | Forecast run: `EMAScore` alone, archived to the Object Store |
+| [ema_forecasts.toml](quantconnect/ema_forecasts.toml) | `ema_forecasts` in [config.py](quantconnect/config.py) | Forecast run: `EMAScore` alone; its views scored at the end of the backtest, metrics in the backtest log |
 | [index_check.toml](quantconnect/index_check.toml) | `deployment` in [index_check.py](quantconnect/index_check.py) | Forecast run: SPY and the VIX index read side by side, reported per session |
 
 Build a bundle offline:

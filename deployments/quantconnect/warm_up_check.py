@@ -128,8 +128,8 @@ def _report(context):
         "first_live_bar": probe.first_live,
     }
     context.record("warm_up_check", summary)
-    # The same counts in the backtest log, readable with `sugarloaf logs` where the
-    # account cannot export from the Object Store.
+    # The same counts in their own backtest log line, readable with `sugarloaf logs`;
+    # the record above is written as a RUN_RECORD line.
     counts = {
         label: [parts["window"]["bars"], parts["window"]["distinct_end_times"],
                 parts["indicator"]["values"], parts["indicator"]["distinct_end_times"]]

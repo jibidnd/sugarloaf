@@ -36,9 +36,9 @@ The [built-in nodes](../sugarloaf/nodes/README.md) hold reusable baseline rules.
 The [public factories](../deployments/quantconnect/config.py) run `EMAScore` on SPY with a
 five-minute consolidation of the minute feed and a one-day horizon:
 [ema.toml](../deployments/quantconnect/ema.toml) trades it,
-[ema_forecasts.toml](../deployments/quantconnect/ema_forecasts.toml) archives its scores.
-The [EMA walkthrough](EMA_RESEARCH.md) and [notebook](ema_research.ipynb) score a saved
-archive in the research kernel.
+[ema_forecasts.toml](../deployments/quantconnect/ema_forecasts.toml) archives its scores
+and reports their metrics in the backtest log. The [EMA walkthrough](EMA_RESEARCH.md) and
+[notebook](ema_research.ipynb) read a run's metrics back.
 
 ```powershell
 sugarloaf package --adapter quantconnect --manifest deployments/quantconnect/ema.toml

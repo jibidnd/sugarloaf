@@ -9,11 +9,11 @@ package; nodes receive the records in `sugarloaf.core.data`. The full mapping ta
 
 | Module | Entry points |
 | --- | --- |
-| [adapter.py](adapter.py) | `QuantConnectAdapter`: setup (`subscribe`, `add_universe`, `add_custom`, `add_indicator`, `schedule`, `warm_up`), reads (`time`, `window`, `indicator`, `members`, `history`, `calendar`, `portfolio`), `execute`, `save`, callbacks (`on_data`, `on_securities_changed`, `on_order_event`); `Ticker`, `NativeWindow`, `NativeCalendar` |
-| [launcher.py](launcher.py) | `load` (calls the deployment factory), `start` (environment, adapter, runner, `SUGARLOAF_RUN`), `finish` (`result.json`, `forecasts.json`, `SUGARLOAF_RESULT`) |
+| [adapter.py](adapter.py) | `QuantConnectAdapter`: setup (`subscribe`, `add_universe`, `add_custom`, `add_indicator`, `schedule`, `warm_up`), reads (`time`, `window`, `indicator`, `members`, `history`, `calendar`, `portfolio`), `execute`, callbacks (`on_data`, `on_securities_changed`, `on_order_event`); `Ticker`, `NativeWindow`, `NativeCalendar` |
+| [launcher.py](launcher.py) | `load` (calls the deployment factory), `start` (environment, adapter, runner, `SUGARLOAF_RUN`), `finish` (view metrics; `RUN_SUMMARY`, `VIEW_METRICS`, `VIEW_SAMPLE`, `RUN_RECORD` log lines; runtime statistics) |
 | [main.py](main.py) | `SugarloafAlgorithm`: LEAN's `initialize`, `on_data`, `on_securities_changed`, `on_order_event`, `on_end_of_algorithm`, each a forward |
 | [cloud/packaging.py](cloud/packaging.py) | Manifests and offline source bundles |
-| [cloud/backtests.py](cloud/backtests.py) | Project, upload, compile, backtest, status and log actions |
+| [cloud/backtests.py](cloud/backtests.py) | Project, upload, compile, backtest, status and log actions; `read_run_output` and `save_run_output` |
 | [cloud/client.py](cloud/client.py) | REST client for the QuantConnect API |
 | [cloud/kernels.py](cloud/kernels.py), [cloud/notebooks.py](cloud/notebooks.py) | Remote research kernels and notebook execution |
 

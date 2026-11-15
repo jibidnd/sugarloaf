@@ -1,19 +1,65 @@
-"""Platform initialization and end-of-run reporting for any configured strategy."""
+"""Platform initialization and end-of-run reporting for any configured strategy.
+
+A run's output goes to the backtest log and to runtime statistics, which the caller reads
+through QuantConnect's REST API (``cloud.backtests.read_run_output``) and saves on disk.
+The Object Store holds persistent things only (fitted models, datasets reused across
+projects); ``stored_reader`` reads them, and nothing here writes to it.
+
+``finish`` writes these log lines, each ``<TAG> <part>/<parts> <json text>``: a JSON value
+longer than one line is split across consecutive lines, because QuantConnect keeps at most
+8,192 characters of a log line, timestamp included, and drops the rest without error.
+
+* ``RUN_SUMMARY``: name, mode, environment, execution policy, ``runner.finish()``, member
+  counts per universe, order and update counts, node configs, the strategy report's return
+  value, the labels of its records, and the error list.
+* ``VIEW_METRICS``: ``sugarloaf.research.view_metrics.view_metrics`` of the forecast archive.
+* ``VIEW_SAMPLE``: the first ``SAMPLES_PER_NODE`` archived views of each node, one per value,
+  encoded as ``sugarloaf.research.serialization.encode_archive`` encodes a record.
+* ``RUN_RECORD``: each ``ReportContext.record(label, value)`` of the strategy report.
+
+The character budgets below keep one run's lines well under the organization's log quota
+per backtest (100 KB on the Quant Researcher tier; see docs/technical/RUNTIME.md). Raise
+them for a tier with a larger quota.
+"""
 
 import inspect
 import json
 import platform
+from collections import defaultdict
 
 import numpy
 import scipy
 
 from sugarloaf import __version__
 from sugarloaf.adapters.quantconnect.adapter import QuantConnectAdapter, Ticker
+from sugarloaf.core.inputs import RESOLUTION_PERIODS, HistoryRequest
 from sugarloaf.deployment.reporting import ReportContext, serialize
 from sugarloaf.research.serialization import encode_archive
+from sugarloaf.research.view_metrics import (
+    PriceTable,
+    compact,
+    headline,
+    price_requests,
+    reduced,
+    view_metrics,
+)
 from sugarloaf.runtime import GraphRunner
 
-RESULT_PREFIX = "sugarloaf/results"
+# Characters of one log line's message; LEAN adds a 20-character timestamp and QuantConnect
+# keeps 8,192 characters of the whole line.
+LINE_CHARACTERS = 8000
+# Character budgets of each kind of line, summed over its parts and values.
+SUMMARY_BUDGET = 10_000
+METRICS_BUDGET = 32_000
+SAMPLE_BUDGET = 16_000
+RECORD_BUDGET = 12_000
+SAMPLES_PER_NODE = 20
+# The price series an outcome reads: a price return from split-adjusted closes, a total
+# return from closes adjusted for splits and dividends.
+CONVENTION_NORMALIZATION = {"price_return": "split_adjusted", "total_return": "adjusted"}
+RESOLUTION_NAMES = {period: name for name, period in RESOLUTION_PERIODS.items()}
+# Instruments per history call when reading outcome prices.
+HISTORY_CHUNK = 50
 
 
 def stored_reader(algorithm):
@@ -96,43 +142,173 @@ def start(algorithm: object, deployment: object) -> QuantConnectAdapter:
     return adapter
 
 
-def finish(algorithm, deployment, adapter):
-    """Save the run's result record (and forecast archive) to the Object Store."""
+def log_lines(tag: str, value) -> list[str]:
+    """``value`` as JSON in lines ``<tag> <part>/<parts> <text>`` of at most
+    ``LINE_CHARACTERS`` characters; ``cloud.backtests.parse_run_output`` joins them."""
+    text = json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    width = LINE_CHARACTERS - len(tag) - 16
+    chunks = [text[i : i + width] for i in range(0, len(text), width)] or [""]
+    return [f"{tag} {k}/{len(chunks)} {chunk}" for k, chunk in enumerate(chunks, 1)]
+
+
+def _size(lines: list[str]) -> int:
+    return sum(len(line) for line in lines)
+
+
+def outcome_prices(adapter, records, errors: list[str]) -> PriceTable:
+    """Closes of every instrument the views' outcomes read, from ``adapter.history``.
+
+    Each instrument is read at its subscription's resolution (``adapter.periods``) from
+    before its earliest view to the clock, which at the end of the run is past every
+    horizon that can be scored. An instrument without a subscription, or a convention
+    without a price series, gets no closes; its views count as having no bar.
+    """
+    now = adapter.time
+    groups: dict = defaultdict(dict)
+    for (convention, instrument), (start, _end) in price_requests(records).items():
+        normalization = CONVENTION_NORMALIZATION.get(convention)
+        resolution = RESOLUTION_NAMES.get(adapter.periods.get(instrument))
+        if normalization is None or resolution is None:
+            continue
+        groups[(convention, resolution)][instrument] = start
+    bars: dict = {}
+    for (convention, resolution), starts in groups.items():
+        items = sorted(starts.items(), key=lambda item: item[0].value)
+        for offset in range(0, len(items), HISTORY_CHUNK):
+            part = items[offset : offset + HISTORY_CHUNK]
+            # Two bar periods of margin keep the bar ending at the earliest start.
+            span = now - min(start for _, start in part) + 2 * RESOLUTION_PERIODS[resolution]
+            request = HistoryRequest(
+                tuple(instrument for instrument, _ in part), span=span,
+                resolution=resolution, normalization=CONVENTION_NORMALIZATION[convention],
+            )
+            try:
+                history = adapter.history(request)
+            except Exception as error:
+                errors.append(f"history {convention} {resolution}: {type(error).__name__}: "
+                              f"{str(error)[:200]}")
+                continue
+            for instrument, series in history.items():
+                bars.setdefault(convention, {})[instrument] = [(b.end, b.close) for b in series]
+    return PriceTable(bars)
+
+
+def run_view_metrics(adapter, runner, errors: list[str]) -> dict:
+    """The archive's view metrics at the adapter's clock, or a count-only record on error."""
+    records = list(runner.archive)
+    try:
+        prices = outcome_prices(adapter, records, errors)
+        return view_metrics(records, prices, adapter.time)
+    except Exception as error:
+        errors.append(f"view metrics: {type(error).__name__}: {str(error)[:300]}")
+        return {"as_of": adapter.time.isoformat(), "counts": {"issued": len(records)},
+                "kinds": {}}
+
+
+def _samples(runner) -> list[dict]:
+    """The first ``SAMPLES_PER_NODE`` archived views of each node, in issue order."""
+    taken: dict[str, int] = defaultdict(int)
+    samples = []
+    for record in runner.archive:
+        if taken[record.node_id] < SAMPLES_PER_NODE:
+            taken[record.node_id] += 1
+            samples.append(encode_archive([record])[0])
+    return samples
+
+
+def _within(tag: str, values: list, budget: int, errors: list[str]) -> list[str]:
+    """Lines of each value in turn while their total stays within ``budget``."""
+    lines: list[str] = []
+    for index, value in enumerate(values):
+        more = log_lines(tag, value)
+        if _size(lines) + _size(more) > budget:
+            errors.append(f"{tag}: {len(values) - index} of {len(values)} values omitted "
+                          f"beyond the {budget}-character budget")
+            break
+        lines.extend(more)
+    return lines
+
+
+def output_lines(algorithm, deployment, adapter, *, strategy, records, errors) -> tuple:
+    """Build every output line of the run; returns ``(lines, metrics)``."""
     runner = adapter.runner
-    records = []
-
-    def record(label, value):
-        records.append({"label": label, "value": serialize(value)})
-
-    context = ReportContext(runner, record)
-    strategy = deployment.report(context) if deployment.report else {}
-    result = {
+    metrics = run_view_metrics(adapter, runner, errors)
+    metric_lines = []
+    for level in range(3):
+        metric_lines = log_lines("VIEW_METRICS", reduced(metrics, level))
+        if _size(metric_lines) <= METRICS_BUDGET:
+            if level:
+                errors.append(f"VIEW_METRICS: detail level {level} to fit "
+                              f"the {METRICS_BUDGET}-character budget")
+            break
+    else:
+        errors.append("VIEW_METRICS: pooled metrics exceed the budget; counts only")
+        metric_lines = log_lines("VIEW_METRICS", {"as_of": metrics.get("as_of"),
+                                                  "counts": metrics.get("counts")})
+    sample_lines = _within("VIEW_SAMPLE", _samples(runner), SAMPLE_BUDGET, errors)
+    record_lines = _within("RUN_RECORD", records, RECORD_BUDGET, errors)
+    summary = {
         "name": deployment.name,
         "mode": "trading" if runner.trading else "forecast",
+        "backtest": {"project_id": getattr(algorithm, "project_id", None),
+                     "algorithm_id": getattr(algorithm, "algorithm_id", None)},
         "environment": serialize(deployment.environment),
         "execution": serialize(deployment.execution),
         "run": runner.finish(),
-        "members": {
-            name: [i.value for i in members] for name, members in adapter.memberships.items()
-        },
-        "orders": [serialize(o) for o in runner.orders[-5000:]],
-        "updates": [serialize(u) for u in runner.updates[-5000:]],
-        "strategy": serialize(strategy),
-        "records": records,
+        "members": {name: len(members) for name, members in adapter.memberships.items()},
+        "orders": len(runner.orders),
+        "updates": len(runner.updates),
         "nodes": {
             node_id: serialize(getattr(node, "config", {}))
             for node_id, node in runner.graph.nodes.items()
         },
+        "strategy": serialize(strategy),
+        "records": [r["label"] for r in records],
+        "output": {"VIEW_METRICS": len(metric_lines), "VIEW_SAMPLE": len(sample_lines),
+                   "RUN_RECORD": len(record_lines)},
+        "errors": errors,
     }
-    key = f"{RESULT_PREFIX}/{algorithm.project_id}/{algorithm.algorithm_id}"
-    adapter.save(key + "/result.json", json.dumps(result, default=str, sort_keys=True))
-    if not runner.trading:
-        adapter.save(key + "/forecasts.json", json.dumps(encode_archive(runner.archive)))
-    summary = {
-        "key": key,
-        "steps": runner.steps,
-        "orders": len(runner.orders),
-        "forecasts": len(runner.archive),
-        "diagnostics": runner.diagnostic_count,
-    }
-    algorithm.debug("SUGARLOAF_RESULT " + json.dumps(summary, sort_keys=True))
+    summary = compact(json.loads(json.dumps(summary, default=str)))
+    summary_lines = log_lines("RUN_SUMMARY", summary)
+    # Bulky optional parts leave first; the error list says which left.
+    for key in ("strategy", "nodes", "records", "environment", "execution"):
+        if _size(summary_lines) <= SUMMARY_BUDGET:
+            break
+        summary[key] = None
+        summary["errors"] = [*summary["errors"], f"RUN_SUMMARY: {key} omitted for size"]
+        summary_lines = log_lines("RUN_SUMMARY", summary)
+    return summary_lines + metric_lines + sample_lines + record_lines, metrics
+
+
+def finish(algorithm, deployment, adapter):
+    """Write the run's output to the backtest log and its headline to runtime statistics.
+
+    Runs from ``SugarloafAlgorithm.on_end_of_algorithm``, at the platform's last clock, so
+    every horizon that has ended is behind it. The strategy report runs first; an exception
+    it raises is recorded, the output is written, and the exception is raised again (LEAN
+    then keeps the error message, not the final step's log lines).
+    """
+    runner = adapter.runner
+    errors: list[str] = []
+    records: list[dict] = []
+
+    def record(label, value):
+        records.append({"label": label, "value": serialize(value)})
+
+    failure = None
+    strategy = {}
+    if deployment.report:
+        try:
+            strategy = deployment.report(ReportContext(runner, record)) or {}
+        except Exception as error:
+            failure = error
+            errors.append(f"report: {type(error).__name__}: {str(error)[:300]}")
+    lines, metrics = output_lines(
+        algorithm, deployment, adapter, strategy=strategy, records=records, errors=errors
+    )
+    for line in lines:
+        algorithm.log(line)
+    for name, value in headline(metrics).items():
+        algorithm.set_runtime_statistic(name, value)
+    if failure is not None:
+        raise failure

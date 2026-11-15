@@ -17,7 +17,7 @@ flowchart LR
     R -->|constraint check, execute| A
     A -->|orders| P
     R -->|forecast views| F[ForecastArchive]
-    F -->|Object Store| K[Research kernel: evaluate]
+    F -->|view metrics in the backtest log| K[REST API: run output saved on disk]
 ```
 
 ## What it provides

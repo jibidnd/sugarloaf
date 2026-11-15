@@ -17,7 +17,7 @@ Setup (called by the runner before the clock starts):
 
 Reads: ``history[TradeBar](...)``, ``securities[symbol].exchange.hours``,
 ``portfolio``, ``transactions``. Orders: ``market_order`` and the on-open and
-on-close variants with the target id as the tag. Results: ``object_store.save``.
+on-close variants with the target id as the tag. Nothing is written to the Object Store.
 
 LEAN's callbacks (``on_data``, ``on_securities_changed``, ``on_order_event``,
 scheduled functions, consolidator handlers) each forward to the runner. Native
@@ -337,6 +337,13 @@ class QuantConnectAdapter:
         self.schedules: dict[str, Schedule] = {}
         self.tags: dict[str, str] = {}
         self._last_daily_custom = None
+        # Borrow terms: the calendar symbol whose exchange hours define trading sessions,
+        # the exchange-local date last checked and whether it is a trading day, and the
+        # session whose terms were delivered (_deliver_borrow).
+        self._borrow_calendar = None
+        self._calendar_day = None
+        self._calendar_open = False
+        self._borrow_session = None
         self._earnings_symbol = None
         # SPY's symbol when a schedule names no calendar (_default_calendar).
         self._calendar_symbol = None
@@ -592,6 +599,9 @@ class QuantConnectAdapter:
 
     def add_custom(self, declaration: Custom) -> None:
         self.customs[declaration.kind] = declaration
+        if declaration.kind == "borrow":
+            # Sessions of the US equity market, read from SPY's exchange hours.
+            self._borrow_calendar = self._default_calendar()
         if declaration.kind != "earnings":
             return
         if self._earnings_symbol is None:
@@ -707,6 +717,7 @@ class QuantConnectAdapter:
         name = declaration.name
         def fire():
             self.pending.run_all(self.time, "scheduled")
+            self._deliver_borrow()
             self.runner.on_scheduled(name, bool(algorithm.is_warming_up))
 
         algorithm.schedule.on(date_rule, time_rule, fire)
@@ -918,9 +929,6 @@ class QuantConnectAdapter:
             records.append(OrderRecord(target_id, instrument, quantity, str(ticket.order_id)))
         return tuple(records)
 
-    def save(self, key: str, text: str) -> None:
-        self.algorithm.object_store.save(key, text)
-
     # ------------------------------------------------------------ callbacks
 
     def _record(self, what: str, cutoff: datetime, source: str) -> None:
@@ -932,6 +940,7 @@ class QuantConnectAdapter:
         time = self.time
         # The slice's own bars end at the clock; pending fills end before them.
         self.pending.run_all(time, "on_data")
+        self._deliver_borrow()
         bars: dict = {}
         quotes: dict = {}
         for key, feed in self.feeds.items():
@@ -988,47 +997,89 @@ class QuantConnectAdapter:
                 )
             if listings:
                 custom["earnings"] = tuple(listings)
-        wanted = {k for k in ("fundamentals", "borrow") if k in self.customs}
         day = time.date()
-        if wanted and self._last_daily_custom != day:
-            # Fundamental and borrow records are daily facts: read once a day.
+        if "fundamentals" in self.customs and self._last_daily_custom != day:
+            # Fundamental records are daily facts: read once a day. Borrow terms arrive
+            # per trading session through _deliver_borrow.
             self._last_daily_custom = day
-            instruments = self._custom_instruments()
-            if "fundamentals" in wanted:
-                records = []
-                for instrument in instruments:
-                    if self.symbols[instrument] not in self.algorithm.securities:
-                        continue
-                    security = self.algorithm.securities[self.symbols[instrument]]
-                    record = security.fundamentals
-                    if record is None or not getattr(record, "has_fundamental_data", True):
-                        continue
-                    records.append(_fundamental_record(instrument, record, time))
-                if records:
-                    custom["fundamentals"] = tuple(records)
-            if "borrow" in wanted:
-                records = self._borrow_records(instruments, time)
-                if records:
-                    custom["borrow"] = records
+            records = []
+            for instrument in self._custom_instruments("fundamentals"):
+                if self.symbols[instrument] not in self.algorithm.securities:
+                    continue
+                security = self.algorithm.securities[self.symbols[instrument]]
+                record = security.fundamentals
+                if record is None or not getattr(record, "has_fundamental_data", True):
+                    continue
+                records.append(_fundamental_record(instrument, record, time))
+            if records:
+                custom["fundamentals"] = tuple(records)
         return custom
 
-    def _borrow_records(self, instruments, time: datetime) -> tuple:
-        """Each instrument's borrow terms from its security's shortable provider, at the
-        algorithm's local time; none for a security without a provider."""
+    def _session_date(self):
+        """The exchange-local date of the clock when it is a trading day, else None.
+
+        The calendar is SPY's exchange (``_borrow_calendar``). A date is a trading day when
+        ``exchange.hours.get_next_market_open`` from its local midnight opens on that date;
+        it is asked once per date.
+        """
+        symbol = self._borrow_calendar
+        day = self.time.astimezone(self._zone(symbol)).date()
+        if self._calendar_day != day:
+            self._calendar_day = day
+            hours = self.algorithm.securities[symbol].exchange.hours
+            opened = hours.get_next_market_open(datetime(day.year, day.month, day.day), False)
+            self._calendar_open = opened.date() == day
+        return day if self._calendar_open else None
+
+    def _deliver_borrow(self, joined: Sequence[InstrumentId] = ()) -> None:
+        """Deliver borrow terms once per trading session, at the session's first event.
+
+        ``on_data``, the scheduled function built in ``schedule`` and
+        ``on_securities_changed`` call this before the runner sees their event. At the first
+        of them whose exchange-local date is a trading day not yet delivered, every member
+        of the borrow selection gets its terms for that date, read with that date, in one
+        ``Arrival`` carrying only them; a member that joins later in the same session gets
+        its own at its join. An event on a day without a session (a Saturday universe
+        selection) delivers nothing: its joiners get their terms at the next session's
+        first event, before any scheduled callback or ``update`` of that session.
+        """
+        if "borrow" not in self.customs:
+            return
+        day = self._session_date()
+        if day is None:
+            return
+        if self._borrow_session != day:
+            self._borrow_session = day
+            instruments = self._custom_instruments("borrow")
+        else:
+            borrowed = set(self._custom_instruments("borrow"))
+            instruments = tuple(dict.fromkeys(i for i in joined if i in borrowed))
+        records = self._borrow_records(instruments, day)
+        if records:
+            self.runner.on_data(Arrival(
+                self.time, custom={"borrow": records},
+                warming_up=bool(self.algorithm.is_warming_up),
+            ))
+
+    def _borrow_records(self, instruments, day) -> tuple:
+        """Each instrument's borrow terms for the session date ``day``, stamped with the
+        clock; none for a security without a provider."""
+        local = datetime(day.year, day.month, day.day)
         records = []
         for instrument in instruments:
             if self.symbols[instrument] not in self.algorithm.securities:
                 continue
             security = self.algorithm.securities[self.symbols[instrument]]
-            record = borrow_terms(instrument, security, self.algorithm.time, time)
+            record = borrow_terms(instrument, security, local, self.time)
             if record is not None:
                 records.append(record)
         return tuple(records)
 
-    def _custom_instruments(self) -> tuple[InstrumentId, ...]:
+    def _custom_instruments(self, kind: str) -> tuple[InstrumentId, ...]:
+        """The instruments a ``Custom`` declaration of ``kind`` selects, now."""
         result = []
         for declaration in self.customs.values():
-            if declaration.kind == "earnings":
+            if declaration.kind != kind:
                 continue
             selection = declaration.selection
             if selection.universe is not None:
@@ -1117,18 +1168,8 @@ class QuantConnectAdapter:
                 name, joined, left, bool(self.algorithm.is_warming_up)
             )
             joining.extend(joined)
-        # A joining member's borrow terms for this session arrive with its join, before
-        # any scheduled callback of the session, as one Arrival carrying only them; the
-        # daily read on the session's first slice delivers them again for every member.
-        borrowed = set(self._custom_instruments()) if "borrow" in self.customs else set()
-        records = self._borrow_records(
-            tuple(dict.fromkeys(i for i in joining if i in borrowed)), self.time
-        )
-        if records:
-            self.runner.on_data(Arrival(
-                self.time, custom={"borrow": records},
-                warming_up=bool(self.algorithm.is_warming_up),
-            ))
+        # Borrow terms of the session, or of members joining after its first event.
+        self._deliver_borrow(joining)
 
     def _fill(self, feeds, instruments, cutoff: datetime, source: str) -> None:
         """Fill windows from one history call per feed, with bars ending before ``cutoff``.
@@ -1252,16 +1293,19 @@ def _number(value):
 
 
 def borrow_terms(instrument, security, local, time) -> BorrowTerms | None:
-    """A security's borrow terms from its shortable provider at the local time ``local``,
-    stamped ``time``; None when the security has no provider or LEAN's null provider."""
+    """A security's borrow terms from its shortable provider for the date of ``local``,
+    stamped ``time``; None when the security has no provider or LEAN's null provider.
+
+    LEAN's ``LocalDiskShortableProvider`` answers from the row of ``local``'s calendar date
+    only: with no row, ``shortable_quantity`` is null and ``fee_rate`` zero. A null quantity
+    therefore gives a record with neither quantity nor fee, not a free borrow.
+    """
     provider = getattr(security, "shortable_provider", None)
     if provider is None or type(provider).__name__ == "NullShortableProvider":
         return None
-    return BorrowTerms(
-        instrument, time,
-        _number(provider.fee_rate(security.symbol, local)),
-        _number(provider.shortable_quantity(security.symbol, local)),
-    )
+    shortable = _number(provider.shortable_quantity(security.symbol, local))
+    fee = _number(provider.fee_rate(security.symbol, local)) if shortable is not None else None
+    return BorrowTerms(instrument, time, fee, shortable)
 
 
 def _sector(item) -> int | None:

@@ -39,7 +39,7 @@
     {
       "name": "warm_up_check",
       "manifest": "warm_up_check.toml",
-      "description": "Windows and indicators under a 45-day WarmUp, January 6-10, 2025: no orders; the WARM_UP_CHECK log line and the result record hold each window's and indicator's count beside its distinct end times.",
+      "description": "Windows and indicators under a 45-day WarmUp, January 6-10, 2025: no orders; the WARM_UP_CHECK and RUN_RECORD log lines hold each window's and indicator's count beside its distinct end times.",
       "recorded_backtest": "6509e4ac1a1b6413d63519d1f063827f",
       "backtest_timeout": 1800,
       "expected": {
@@ -49,7 +49,7 @@
     {
       "name": "coverage_check",
       "manifest": "coverage_check.toml",
-      "description": "Adapter paths the other checks leave out, declared together, July 21 to August 1, 2025, with a 10-day WarmUp: no orders; the COVERAGE_CHECK log line and the result record hold each declaration's arrivals and distinct times, and the report asserts every declaration delivered at least one arrival.",
+      "description": "Adapter paths the other checks leave out, declared together, July 21 to August 1, 2025, with a 10-day WarmUp: no orders; the COVERAGE_CHECK and RUN_RECORD log lines hold each declaration's arrivals and distinct times, and the report asserts every declaration delivered at least one arrival.",
       "recorded_backtest": "509b6e541c322cc055b12605afa2f78c",
       "backtest_timeout": 3600,
       "expected": {

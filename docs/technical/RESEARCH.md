@@ -3,15 +3,16 @@
 Research on prices happens in the QuantConnect research kernel with `QuantBook` directly: a
 study reads `qb.history` DataFrames and works on them with ordinary Python. A Sugarloaf node
 is replayed only by a backtest. A graph whose output port emits predictive views runs as a
-forecast run: the runner archives every view the nodes issue, and the launcher saves the
-archive to the Object Store. A notebook in the same project reads the archive back, reads
-the prices it needs with one `qb.history` call, and scores the forecasts with
-`sugarloaf.research.evaluate`.
+forecast run: the runner archives every view the nodes issue, and at the end of the
+backtest the launcher scores each archived view against what prices then did
+(`sugarloaf.research.view_metrics`) and writes the metrics to the backtest log. The caller
+reads them through the REST API and saves them on disk.
 
 Source: [archive](../../sugarloaf/research/archive.py),
 [serialization](../../sugarloaf/research/serialization.py),
 [anchors](../../sugarloaf/research/anchors.py),
 [evaluation](../../sugarloaf/research/evaluation.py),
+[view metrics](../../sugarloaf/research/view_metrics.py),
 [inference](../../sugarloaf/research/inference.py).
 Example: [EMA notebook](../../examples/ema_research.ipynb) and its
 [walkthrough](../../examples/EMA_RESEARCH.md).
@@ -23,22 +24,51 @@ Example: [EMA notebook](../../examples/ema_research.ipynb) and its
 2. Run it as a backtest from a manifest
    ([ema_forecasts.toml](../../deployments/quantconnect/ema_forecasts.toml)):
    `sugarloaf run --adapter quantconnect --manifest deployments/quantconnect/ema_forecasts.toml`.
-   The run log's `SUGARLOAF_RESULT` line names the key
-   `sugarloaf/results/<project_id>/<backtest_id>`; the archive is `forecasts.json` under it
-   and the run summary `result.json`.
-3. In the project's research kernel:
+   At the end of the backtest `launcher.finish` scores the archive and writes
+   `VIEW_METRICS`, `VIEW_SAMPLE` and `RUN_SUMMARY` to the log
+   ([run output](RUNTIME.md#run-output)); `run` saves them as
+   `artifacts/ema_forecasts/<backtest_id>-output.json`.
+3. Read a run's output later, locally:
 
-<!-- snippet: fragment (needs the QuantConnect research kernel and a saved archive) -->
+<!-- snippet: fragment (needs QuantConnect credentials and a finished backtest) -->
 ```python
-archive = decode_archive(json.loads(qb.object_store.read(KEY)))
-frame = qb.history([symbol], start, end, Resolution.DAILY)
-closes = closes_from_frame(frame, instrument_of=..., time_of=...)
-resolver = ReturnOutcomeResolver(anchor_from_closes(closes), provenance={"source": "qb.history"})
-report = evaluate(archive, resolver, as_of=evaluation_time)
-report.coverage, report.summary(pool_horizons=True)
+output = read_run_output(default_client(), project_id, backtest_id)
+save_run_output(output, Path("artifacts/runs") / f"{backtest_id}.json")
+output["metrics"]["counts"], output["metrics"]["kinds"]["score"]["pooled"]
 ```
 
 The notebook has the complete code with imports.
+
+## View metrics of a run
+
+`view_metrics(records, prices, as_of)` resolves each record's target with
+`ReturnOutcomeResolver` over a `PriceTable` of exact bar-end closes, scores it, and returns
+`{"as_of", "path_fractions", "counts", "by_node_counts", "kinds", "unsupported_reasons"}`.
+In a backtest `as_of` is the clock in `on_end_of_algorithm`, past every horizon it scores, and
+the closes come from `adapter.history` at each instrument's subscription resolution:
+split-adjusted for a `price_return` target, adjusted for splits and dividends for a
+`total_return` target. The outcome is the exact simple return between the closes of the bars
+ending at the target interval's start and end; no other price stands in for a missing one.
+
+`counts` accounts for every issued view: `scored`, `horizon_after_end` (the target ends after
+`as_of`), `no_bar` (no bar ends at a start or end time; `no_bar_at_start` and `no_bar_at_end`
+say which, `no_bar_ends` and `horizon_after_end_ends` give the first and last target end) and
+`unsupported` (no metric applies; `unsupported_reasons` lists the commonest). `kinds[kind]`
+holds a `pooled` summary and one per node (`by_node`):
+
+| Kind | Views | Summary |
+| --- | --- | --- |
+| `distribution` | A scalar `Distribution` | `pinball` (mean pinball loss at 0.1..0.9) and `pinball_mean`; `pit_histogram` (counts of the forecast cdf at the outcome in ten equal bins; uniform counts mean calibrated); `coverage_50` and `coverage_90` (share of outcomes inside the central 50% and 90% intervals); `log_score_mean` (mean negative log density, finite values) with `log_score_count` and `log_score_infinite`, where the law states a density; `quintiles` by forecast median: `count`, outcome `mean` and `median`, `forecast_median_mean`, `path` |
+| `score` | `Score`, or an `Estimate` of the mean | `hit_rate` (sign of score against sign of outcome, over `hit_count` rows where both are nonzero); `precision`, `recall` and `f1` with up as the positive class; `deciles` by score: `count`, score range and mean, outcome `mean`, `median`, `q0.1`, `q0.25`, `q0.5`, `q0.75`, `q0.9`, `path`; `decile_spread` (top minus bottom decile mean) |
+| `ranking` | `Ordering` | `kendall_tau_mean` and `kendall_tau_count` |
+| `probability` | `Probability` | `brier_mean`, `log_loss_mean` |
+
+`path` is the group's mean realized return from signal time to each of ten evenly spaced
+times up to the target end (`path_fractions`), each read from the last close at or before
+that time. Floats carry six significant digits; an infinite value is the string `"inf"`.
+The pooled diagnostics (`pinball_loss`, `quantile_metrics`, `pit_histogram`,
+`direction_metrics`, `quantile_groups`, `grouped_outcomes`) are in `evaluation`. Overlapping
+horizons make the rows dependent; no sampling distribution is attached to these numbers.
 
 ## Forecast archive
 
@@ -54,7 +84,8 @@ call `archive.get(view_id)`. It lives in memory for the length of the run.
 `encode_archive(archive)` and `decode_archive(records)` convert it to and from JSON-ready
 lists. `Estimate`, `Probability`, `Score`, `Ordering`, `QuantileDistribution` and
 `ScaledHalfT` encode field by field; any other statement is pickled and base64-encoded, so decoding it needs its class
-importable in the kernel.
+importable where it is decoded. `VIEW_SAMPLE` log lines carry this encoding of the first
+views of each node.
 
 ## Outcome anchors
 

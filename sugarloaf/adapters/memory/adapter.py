@@ -168,7 +168,6 @@ class MemoryAdapter:
         self.schedules: dict[str, Schedule] = {}
         self.warm_up_request: WarmUp | None = None
         self.open_orders: list[OpenOrder] = []
-        self.saved: dict[str, str] = {}
         self._order_sequence = 0
 
     # ------------------------------------------------------------------ setup
@@ -458,9 +457,6 @@ class MemoryAdapter:
                 OrderUpdate(order.order_id, order.instrument, status, order.filled, self.clock,
                             order.tag)
             )
-
-    def save(self, key: str, text: str) -> None:
-        self.saved[key] = text
 
 
 def _period(resolution: str) -> timedelta:

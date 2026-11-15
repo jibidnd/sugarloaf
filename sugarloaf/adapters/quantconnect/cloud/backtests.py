@@ -285,6 +285,98 @@ def read_all_logs(client, project_id: int, backtest_id: str) -> dict:
     return {"logs": logs, "length": length, "success": True, "errors": []}
 
 
+# Tags of the lines ``launcher.finish`` writes, and the key each takes in the run output.
+OUTPUT_TAGS = {"RUN_SUMMARY": "summary", "VIEW_METRICS": "metrics",
+               "VIEW_SAMPLE": "samples", "RUN_RECORD": "records"}
+# Tags with one value per run; the others carry one value per line group.
+SINGLE_TAGS = ("RUN_SUMMARY", "VIEW_METRICS")
+_OUTPUT_LINE = re.compile(
+    r"(?:^|\s)(" + "|".join(OUTPUT_TAGS) + r") (\d+)/(\d+) (.*)$"
+)
+
+
+def parse_run_output(lines: Sequence[str]) -> dict:
+    """Join and decode the ``launcher.finish`` lines of a backtest log.
+
+    Each value is written as ``<TAG> <part>/<parts> <json text>`` on consecutive lines
+    (a log line keeps at most 8,192 characters). Returns ``{"summary", "metrics",
+    "samples", "records", "errors"}``: the run summary and the view metrics (None when
+    absent), the view samples and report records in log order, and a description of each
+    line group that could not be joined or decoded. A run summary or view metrics line
+    group seen more than once keeps the last and lists the repeat as an error.
+    """
+    output: dict = {"summary": None, "metrics": None, "samples": [], "records": [],
+                    "errors": []}
+    seen = {tag: 0 for tag in SINGLE_TAGS}
+    pending: dict | None = None
+
+    def close(reason: str) -> None:
+        nonlocal pending
+        if pending is not None:
+            output["errors"].append(
+                f"{pending['tag']}: {len(pending['parts'])} of {pending['total']} parts, {reason}"
+            )
+        pending = None
+
+    for line in lines:
+        match = _OUTPUT_LINE.search(line)
+        if match is None:
+            continue
+        tag, part, total, text = match.group(1), int(match.group(2)), int(match.group(3)), \
+            match.group(4)
+        if part == 1:
+            close("followed by a new value")
+            pending = {"tag": tag, "total": total, "parts": []}
+        elif pending is None or pending["tag"] != tag or pending["total"] != total \
+                or len(pending["parts"]) + 1 != part:
+            close("then out of sequence")
+            output["errors"].append(f"{tag}: part {part}/{total} without its earlier parts")
+            continue
+        pending["parts"].append(text)
+        if part < total:
+            continue
+        text = "".join(pending["parts"])
+        pending = None
+        try:
+            value = json.loads(text)
+        except json.JSONDecodeError as error:
+            output["errors"].append(f"{tag}: undecodable JSON ({error.msg})")
+            continue
+        key = OUTPUT_TAGS[tag]
+        if tag in SINGLE_TAGS:
+            seen[tag] += 1
+            if seen[tag] > 1:
+                output["errors"].append(f"{tag}: value {seen[tag]} replaces an earlier one")
+            output[key] = value
+        else:
+            output[key].append(value)
+    close("at the end of the log")
+    return output
+
+
+def read_run_output(client, project_id: int, backtest_id: str) -> dict:
+    """Read a finished backtest's logs through the REST API and parse its run output.
+
+    Returns ``parse_run_output`` of the log with ``project_id``, ``backtest_id`` and
+    ``log_lines`` (the number of log lines read) added. Reading logs counts toward the
+    organization's daily log quota.
+    """
+    logs = read_all_logs(client, project_id, backtest_id)["logs"]
+    return {"project_id": project_id, "backtest_id": backtest_id, "log_lines": len(logs),
+            **parse_run_output(logs)}
+
+
+def save_run_output(output: dict, path: str | Path, *, overwrite: bool = False) -> Path:
+    """Write a run output (``read_run_output``) to ``path`` as sorted, indented JSON.
+
+    An existing file with other contents is refused unless ``overwrite`` is true, so a
+    saved run is not replaced by accident; identical contents are accepted.
+    """
+    path = Path(path)
+    write_json(path, output, immutable=not overwrite)
+    return path
+
+
 def read_logs(spec: BundleSpec, *, backtest_id: str | None = None, client=None) -> dict:
     """Retrieve and retain available logs using the saved run's project identity."""
     # Logs belong to the selected saved run, not necessarily the currently compiled
@@ -380,7 +472,14 @@ def run_backtest(
         error = result.get("error") or result.get("status") or "initialization error"
         failure = f"QC backtest {selected} failed: {error}"
     try:
-        read_logs(spec, backtest_id=selected, client=client)
+        logs = read_logs(spec, backtest_id=selected, client=client)
+        # The run's output, parsed from its log lines, kept on disk by backtest id.
+        save_run_output(
+            {"project_id": run_snapshot(spec.artifacts, selected)["project_id"],
+             "backtest_id": selected, "log_lines": len(logs["logs"]),
+             **parse_run_output(logs["logs"])},
+            spec.artifacts / f"{selected}-output.json",
+        )
     except Exception as log_error:
         if failure:
             raise RuntimeError(f"{failure}; log retrieval failed: {log_error}") from log_error
@@ -399,6 +498,7 @@ def run_backtest(
         "completed": result["completed"],
         "statistics": result["statistics"],
         "artifacts": str(spec.artifacts),
+        "output": str(spec.artifacts / f"{selected}-output.json"),
     }
 
 
@@ -420,6 +520,7 @@ def main(argv: Sequence[str] | None = None, *, prog: str | None = None) -> int:
             "backtest",
             "status",
             "logs",
+            "output",
             "snapshot",
         ),
     )
@@ -429,6 +530,7 @@ def main(argv: Sequence[str] | None = None, *, prog: str | None = None) -> int:
     )
     parser.add_argument("--backtest-id")
     parser.add_argument("--name")
+    parser.add_argument("--out", type=Path, help="output: file to write (default: artifacts)")
     parser.add_argument("--compile-timeout", type=float, default=120)
     parser.add_argument("--backtest-timeout", type=float, default=1800)
     parser.add_argument("--poll-interval", type=float, default=5)
@@ -441,8 +543,10 @@ def main(argv: Sequence[str] | None = None, *, prog: str | None = None) -> int:
         args.compile_timeout != 120 or args.backtest_timeout != 1800 or args.poll_interval != 5
     ):
         parser.error("polling options apply to run")
-    if args.backtest_id and args.action not in {"status", "logs", "snapshot"}:
-        parser.error("--backtest-id applies to status, logs and snapshot")
+    if args.backtest_id and args.action not in {"status", "logs", "output", "snapshot"}:
+        parser.error("--backtest-id applies to status, logs, output and snapshot")
+    if args.out is not None and args.action != "output":
+        parser.error("--out applies to output")
     # Repeated --parameter NAME VALUE pairs become string overrides. Their effect
     # depends on whether the selected factory/native study actually reads each name.
     parameters = dict(args.parameter)
@@ -483,6 +587,12 @@ def main(argv: Sequence[str] | None = None, *, prog: str | None = None) -> int:
             result = read_status(spec, backtest_id=args.backtest_id)
         elif args.action == "logs":
             result = read_logs(spec, backtest_id=args.backtest_id)
+        elif args.action == "output":
+            deployment = _selected_run(spec, args.backtest_id)
+            selected = deployment["backtest_id"]
+            output = read_run_output(_client(), deployment["project_id"], selected)
+            path = save_run_output(output, args.out or spec.artifacts / f"{selected}-output.json")
+            result = {"output": str(path), "errors": output["errors"]}
         else:
             if not args.backtest_id:
                 parser.error("snapshot requires --backtest-id")

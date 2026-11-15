@@ -314,7 +314,7 @@ class GraphRunner:
         del self.updates[:-10_000]
 
     def finish(self) -> dict:
-        """A summary of the run for the adapter's result record."""
+        """A summary of the run, for the run summary the adapter reports."""
         return {
             "steps": self.steps,
             "diagnostic_count": self.diagnostic_count,

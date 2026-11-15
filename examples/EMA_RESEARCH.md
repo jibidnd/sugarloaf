@@ -29,22 +29,25 @@ evaluation.
 
 1. Run the forecast manifest:
    `sugarloaf run --adapter quantconnect --manifest deployments/quantconnect/ema_forecasts.toml`.
-   The run saves `forecasts.json` under the key printed in its `SUGARLOAF_RESULT` line.
-2. In the same project's research kernel, open the uploaded notebook, set `KEY`, and run it.
-   It decodes the archive (`decode_archive`), reads daily closes with one `qb.history` call,
-   builds an anchor with `closes_from_frame` and `anchor_from_closes`, and calls `evaluate`
-   with `ReturnOutcomeResolver`. An endpoint with no close stays unavailable.
+   At the end of the backtest the launcher scores every archived view against the closes of
+   SPY's minute bars (split-adjusted, from `adapter.history`) and writes `VIEW_METRICS` to
+   the log; `run` saves the parsed output as
+   `artifacts/ema_forecasts/<backtest id>-output.json`.
+2. Open the notebook locally, set `BACKTEST`, and run it. It reads the run's log through
+   the REST API (`read_run_output`), saves the output on disk (`save_run_output`) and prints
+   the counts, the hit rate, precision, recall and F1, and realized returns by score decile
+   with their path from signal time.
 
-The notebook's daily closes match targets that start and end at session closes. The public
-deployments issue a score on every five-minute bar with a one-day horizon, so only the
-scores issued at 16:00 New York have both endpoints at daily closes; the anchor reports the
-others unavailable. Score such a run with minute history, or run the forecast graph with
-`resolution="daily"` and an `int` horizon. Record datasets, parameter trials, held-out
-periods and unsuccessful results here before making a research claim. Overlapping forecasts
-are dependent observations.
+A score's target is the price return from its bar's close to `ctx.time + 1 day`. A target
+ending on a day without a session (a Thursday score when Friday is a holiday, a Friday score
+ending on Saturday) has no bar at its end and is counted under `no_bar`, not scored; a
+target ending after the backtest is counted under `horizon_after_end`. An `int` horizon
+(`horizon=1`) ends at the next session close instead. Record datasets, parameter trials,
+held-out periods and unsuccessful results here before making a research claim. Overlapping
+forecasts are dependent observations.
 
 **Validation.** The node, both graphs and the public deployments have local tests in
-[tests/test_examples.py](../tests/test_examples.py). The archive round trip through the
+[tests/test_examples.py](../tests/test_examples.py). The view metrics written by the
 launcher and both public deployments are verified by the backtests listed in
 [validation](../docs/VALIDATION.md#native-checks), run with `tools/native_checks.py`.
 The notebook ships without outputs.

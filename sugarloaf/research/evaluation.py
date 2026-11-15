@@ -657,3 +657,146 @@ def evaluate(
             cleaned[name] = value
         rows.append(EvaluationRow(record, outcome, cleaned))
     return EvaluationReport(tuple(rows), as_of)
+
+
+# ------------------------------------------------------------ pooled view diagnostics
+#
+# The functions below summarize many scored forecasts at once. They are descriptive,
+# as the rest of this module: overlapping horizons make the rows dependent, so no
+# sampling distribution is attached to any of them.
+
+DECILE_LEVELS = (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9)
+CENTRAL_INTERVALS = (0.5, 0.9)
+GROUP_QUANTILES = (0.1, 0.25, 0.5, 0.75, 0.9)
+
+
+def pinball_loss(quantile: float, value: float, level: float) -> float:
+    """Quantile (pinball) loss of a forecast ``quantile`` at ``level`` for a realized ``value``.
+
+    ``(value - quantile) * level`` when the value lies at or above the quantile, and
+    ``(quantile - value) * (1 - level)`` below it. Example: the 0.9 quantile 0.02 and a
+    realized 0.00 lose ``0.02 * 0.1 = 0.002``; a realized 0.03 loses ``0.01 * 0.9``.
+    """
+    if not 0 < level < 1:
+        raise ContractError("Pinball levels lie strictly between 0 and 1")
+    difference = value - quantile
+    return difference * level if difference >= 0 else -difference * (1 - level)
+
+
+def quantile_metrics(law: Distribution, value: float) -> dict[str, float]:
+    """Pinball loss at each decile and central-interval coverage for a scalar law.
+
+    Keys: ``pinball_<level>`` for each of ``DECILE_LEVELS``, ``pinball_mean`` (their
+    average), ``median`` (the forecast 0.5 quantile) and ``covered_<width>`` (1 when the
+    value lies in the central interval of that probability, ``[q((1-w)/2), q((1+w)/2)]``).
+    """
+    quantiles = {level: float(law.quantile(level)) for level in DECILE_LEVELS}
+    metrics = {
+        f"pinball_{level:g}": pinball_loss(q, value, level) for level, q in quantiles.items()
+    }
+    metrics["pinball_mean"] = float(np.mean(list(metrics.values())))
+    metrics["median"] = quantiles[0.5]
+    for width in CENTRAL_INTERVALS:
+        lower = float(law.quantile((1 - width) / 2))
+        upper = float(law.quantile((1 + width) / 2))
+        metrics[f"covered_{width:g}"] = float(lower <= value <= upper)
+    return metrics
+
+
+def pit_histogram(pits: Iterable[float], bins: int = 10) -> list[int]:
+    """Counts of PIT values in ``bins`` equal bins of [0, 1]; 1.0 falls in the last bin.
+
+    The PIT (probability integral transform) is the forecast cdf at the realized value.
+    A calibrated forecaster's PITs are uniform, so each bin holds about ``n / bins``.
+    """
+    counts = [0] * bins
+    for pit in pits:
+        if not 0 <= pit <= 1:
+            raise ContractError("PIT values lie in [0, 1]")
+        counts[min(bins - 1, int(pit * bins))] += 1
+    return counts
+
+
+def direction_metrics(scores: Iterable[float], realized: Iterable[float]) -> dict:
+    """Sign agreement of scores with realized returns, with up as the positive class.
+
+    ``hit_rate`` is the share of rows where the score and the return have the same sign,
+    over rows where both are nonzero (``hit_count`` of them). A row is predicted up when
+    its score is positive and is up when its return is positive; ``precision`` is the
+    share of predicted-up rows that were up, ``recall`` the share of up rows predicted up,
+    and ``f1`` their harmonic mean. An undefined ratio is None.
+    """
+    pairs = list(zip(scores, realized))
+    signed = [(s, r) for s, r in pairs if s != 0 and r != 0]
+    hits = sum((s > 0) == (r > 0) for s, r in signed)
+    true_up = sum(s > 0 and r > 0 for s, r in pairs)
+    predicted_up = sum(s > 0 for s, _ in pairs)
+    actual_up = sum(r > 0 for _, r in pairs)
+    precision = true_up / predicted_up if predicted_up else None
+    recall = true_up / actual_up if actual_up else None
+    f1 = (
+        2 * precision * recall / (precision + recall)
+        if precision is not None and recall is not None and precision + recall > 0
+        else None
+    )
+    return {
+        "hit_rate": hits / len(signed) if signed else None,
+        "hit_count": len(signed),
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+        "predicted_up": predicted_up,
+        "actual_up": actual_up,
+    }
+
+
+def quantile_groups(keys: Iterable[float], groups: int) -> list[int]:
+    """Assign each key to one of ``groups`` equal-count groups by rank, lowest first.
+
+    Tied keys share their average rank and so share a group. Example: ten distinct keys
+    in five groups put two keys in each; ten keys equal to 0 all fall in one group.
+    """
+    keys = list(keys)
+    if not keys:
+        return []
+    ranks = rankdata(keys)  # 1..n, ties averaged
+    n = len(keys)
+    return [min(groups - 1, int((rank - 0.5) * groups / n)) for rank in ranks]
+
+
+def grouped_outcomes(
+    keys: Iterable[float],
+    realized: Iterable[float],
+    groups: int,
+    *,
+    quantiles: tuple[float, ...] = (),
+) -> list[dict]:
+    """Realized outcomes grouped by the rank of ``keys`` into ``groups`` groups.
+
+    One entry per nonempty group, lowest keys first: the group index, ``count``, the
+    keys' ``key_min``, ``key_max`` and ``key_mean``, and the realized ``mean`` and
+    ``median``, plus ``q<level>`` for each requested quantile of the realized values.
+    """
+    keys, realized = list(keys), list(realized)
+    assignment = quantile_groups(keys, groups)
+    members: dict[int, list[int]] = defaultdict(list)
+    for index, group in enumerate(assignment):
+        members[group].append(index)
+    result = []
+    for group in sorted(members):
+        rows = members[group]
+        values = np.array([realized[i] for i in rows], dtype=float)
+        group_keys = [keys[i] for i in rows]
+        item = {
+            "group": group,
+            "count": len(rows),
+            "key_min": min(group_keys),
+            "key_max": max(group_keys),
+            "key_mean": float(np.mean(group_keys)),
+            "mean": float(np.mean(values)),
+            "median": float(np.median(values)),
+        }
+        for level in quantiles:
+            item[f"q{level:g}"] = float(np.quantile(values, level))
+        result.append(item)
+    return result

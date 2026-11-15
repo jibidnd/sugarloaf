@@ -11,7 +11,7 @@ interact; these pages give signatures, parameters, return values and failures.
 | Built-in nodes and constraint arithmetic | `sugarloaf.nodes.*`, `sugarloaf.portfolio.constraints` | [Nodes and portfolio](portfolio.md) |
 | Execution policy, account records, sizing | `sugarloaf.execution.contracts` | [Execution](execution.md) |
 | Adapter interface, memory and QuantConnect adapters, launcher, cloud tooling | `sugarloaf.adapters.*` | [Adapters](adapters.md) |
-| Forecast archive, serialization, anchors, evaluation, inference | `sugarloaf.research.*` | [Research](research.md) |
+| Forecast archive, serialization, anchors, evaluation, view metrics, inference | `sugarloaf.research.*` | [Research](research.md) |
 | Deployment configuration, evidence, reporting, command dispatch | `sugarloaf.deployment.*`, `sugarloaf.cli` | [Deployment](deployment.md) |
 
 The build reads source statically; it imports no LEAN code and runs no strategy. Native

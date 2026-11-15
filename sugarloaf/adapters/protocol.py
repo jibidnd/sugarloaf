@@ -158,7 +158,3 @@ class Adapter(Protocol):
     def execute(self, target: PositionView, policy: ExecutionPolicy) -> tuple[OrderRecord, ...]:
         """Turn a position target into platform orders, by the shared sizing rule."""
         ...
-
-    def save(self, key: str, text: str) -> None:
-        """Keep a result where the platform keeps files (an object store, a directory)."""
-        ...

@@ -34,7 +34,6 @@ methods and calls the runner's callbacks (`adapter.runner`).
 | Read | `calendar(instrument)` | A `Calendar`: `next_close`, `next_open`, `is_open`, `session` |
 | Read | `portfolio()` | A `Portfolio` record |
 | Action | `execute(target, policy)` | Turn a `PositionView` into platform orders; return `OrderRecord`s |
-| Action | `save(key, text)` | Keep a result where the platform keeps files |
 
 `Arrival` is what an adapter hands `runner.on_data`: the callback's `time`, `bars` and
 `quotes` keyed by declaration key and then instrument, `custom` keyed by kind, the four
@@ -66,7 +65,7 @@ Each row is read off `adapter.py`; `algorithm` is the `QCAlgorithm`.
 | Universe selector | Converts each row to a `SelectionRow` (`price`, `volume`, `dollar_volume`, `has_fundamental_data`, the sector `asset_classification.morningstar_sector_code` when the `LiquidityUniverse` excludes sectors, or `weight`) or a `FundamentalRecord`, applies `select(...)`, returns the selected symbols; `NotReady` returns `Universe.UNCHANGED` |
 | `Custom("earnings")` | `algorithm.add_data(EODHDUpcomingEarnings, "earnings")`; per slice `data.get(EODHDUpcomingEarnings)` gives `report_date` and `report_time`. `add_custom` registers the security id of each equity the selection names (`Symbol.create`, through `listed_tickers`), so a listing maps to the declared instrument whether or not another declaration subscribes it; a named instrument without an equity ticker binding raises `CapabilityError` |
 | `Custom("fundamentals")` | `algorithm.securities[symbol].fundamentals`, read once per day |
-| `Custom("borrow")` | `security.shortable_provider.fee_rate(symbol, time)` and `shortable_quantity(symbol, time)` (`borrow_terms`), read once per day on the day's first slice and, for a universe member that joins, in `on_securities_changed`, delivered at the join as an `Arrival` carrying only those terms, before any scheduled callback of the session; no record under `NullShortableProvider` |
+| `Custom("borrow")` | `security.shortable_provider.shortable_quantity(symbol, date)` and `fee_rate(symbol, date)` (`borrow_terms`), read with the session's date once per trading session at its first event, for every member of the selection, joiners included, as an `Arrival` carrying only those terms (`_deliver_borrow`; see [borrow terms](#borrow-terms)); trading days from `exchange.hours.get_next_market_open` of SPY (`_default_calendar`); no record under `NullShortableProvider` |
 | `add_indicator(Indicator)` | `SimpleMovingAverage(name, period)`, `ExponentialMovingAverage(name, period[, smoothing])`, `RelativeStrengthIndex(name, period, MovingAverageType)` or `DonchianChannel(name, period)`; a consolidator of the declaration's period (`IdentityDataConsolidator[TradeBar]()` at the security's own resolution, otherwise the `TradeBarConsolidator` used for windows) registered with `subscription_manager.add_consolidator(symbol, consolidator)`, whose `data_consolidated` handler feeds the indicator through `update_in_order` (`indicator.update(end_time, field)`, or the whole bar for Donchian, only when the bar ends after `indicator.current.end_time`); `indicator.window.size = window`; `algorithm.warm_up_indicator(symbol, indicator, resolution or interval[, selector])` on first touch (its consolidator handler, a read, `on_data`, `on_securities_changed` or a scheduled function), where `selector` is the `Field` member of the declared field when it is not the close |
 | `schedule(Schedule)` | `algorithm.schedule.on(date_rule, time_rule, fn)` with `date_rules.every_day / week_start / month_start / month_end / year_start`, given the calendar symbol, or SPY's when the schedule names none (`_default_calendar`; SPY is added at daily resolution as a calendar-only security when no declaration subscribes it), and `time_rules.after_market_open(symbol, minutes)`, `before_market_close(symbol, minutes)` or `at(hour, minute, DateTimeZoneProviders.tzdb[timezone])`; `fn` calls `runner.on_scheduled(name, algorithm.is_warming_up)` |
 | `warm_up(WarmUp)` | `algorithm.set_warm_up(count, resolution)` or `algorithm.set_warm_up(span)` |
@@ -81,9 +80,8 @@ Each row is read off `adapter.py`; `algorithm` is the `QCAlgorithm`.
 | Order feedback | `on_order_event(event)`: `transactions.get_order_ticket(event.order_id).quantity_filled`, `get_order_by_id(...).tag`, status mapped to an `OrderUpdate`, forwarded to `runner.on_order_event` |
 | Slice | `on_data(slice)`: `slice.bars` or `slice.quote_bars` for instruments read at their subscription's period (each bar is also offered to its window through `add_in_order`; the arrival carries it either way), bars completed since the last slice for instruments with a consolidator; `slice.dividends`, `slice.splits` (split warnings skipped), `slice.delistings`, `slice.symbol_changed_events`; `warming_up = algorithm.is_warming_up`; forwarded to `runner.on_data` |
 | Membership change | `on_securities_changed(changes)`: `changes.added_securities` and `removed_securities`; windows and consolidators created or removed (`subscription_manager.remove_consolidator`), indicators created, or their consolidators removed, new members' windows filled from `history[TradeBar]` through their consolidators; forwarded to `runner.on_securities_changed` |
-| `save(key, text)` | `algorithm.object_store.save(key, text)` |
 | Run start | `set_start_date`, `set_end_date`, `set_time_zone`, `set_account_currency`, `set_cash`, `set_brokerage_model(BrokerageName, AccountType)`, `set_benchmark` (in `launcher.start`); one `algorithm.debug("SUGARLOAF_RUN ...")` line |
-| Run end | `on_end_of_algorithm` calls `launcher.finish`: `object_store.save` of `result.json` (and `forecasts.json` in a forecast run) under `sugarloaf/results/<project_id>/<algorithm_id>/`; one `algorithm.debug("SUGARLOAF_RESULT ...")` line with the key |
+| Run end | `on_end_of_algorithm` calls `launcher.finish`: `adapter.history` for the closes the archived views' outcomes read, then `algorithm.log` of the `RUN_SUMMARY`, `VIEW_METRICS`, `VIEW_SAMPLE` and `RUN_RECORD` lines and `algorithm.set_runtime_statistic` of the headline numbers ([run output](RUNTIME.md#run-output)); nothing is written to the Object Store |
 
 ### Callbacks
 
@@ -116,6 +114,34 @@ joined, removes them for members that left, fills the joined members' `Bars` win
 has an interval), records the membership and calls
 `runner.on_securities_changed(name, joined, left, warming_up)`. Consolidated history bars are not
 delivered as news in the next slice.
+
+### Borrow terms
+
+LEAN's `InteractiveBrokersShortableProvider` is a `LocalDiskShortableProvider`
+(`Common/Data/Shortable/LocalDiskShortableProvider.cs` in the LEAN repository): `FeeRate`,
+`RebateRate` and `ShortableQuantity` look up the row whose date equals `localTime.Date`
+exactly. The files have rows for trading days only, so a read for a Saturday finds nothing:
+`ShortableQuantity` returns null and `FeeRate` zero.
+
+The adapter delivers terms once per trading session. `QuantConnectAdapter._deliver_borrow`
+runs at the start of `on_data`, of the scheduled function built in `schedule` and at the end
+of `on_securities_changed`, before the runner sees that event. `_session_date` takes the
+exchange-local date of the clock in SPY's time zone and asks SPY's
+`exchange.hours.get_next_market_open(midnight, False)` once per date whether a session opens
+on it. At the first event of a trading date not yet delivered, every instrument the
+`Custom("borrow")` selection names, universe joiners included, gets
+`borrow_terms(instrument, security, <session date at 00:00>, clock)`, and the records go to
+`runner.on_data` as one `Arrival` carrying only them; the session's scheduled callbacks and
+`update` calls follow. An event on a date without a session delivers nothing: a member that
+joins in a Saturday 00:00 universe selection gets Monday's terms at Monday's first event,
+before Monday's 09:31 scheduled callback. A member joining after its session's first event
+gets that session's terms at its join. A date with no row gives a record with neither
+quantity nor fee (`BorrowTerms(instrument, time, None, None)`): `borrow_terms` reports no fee
+when LEAN reports no quantity, because LEAN's zero fee then stands for a missing row.
+`tests/test_qc_borrow.py` covers the Saturday join and the session date.
+
+LEAN opens `shortable/<brokerage>/symbols/<Symbol.Value>.csv`, so a renamed stock's rows
+may sit under its later ticker and read as missing under the earlier one.
 
 ### Corporate actions
 
@@ -158,7 +184,7 @@ Inputs the caller supplies: `calendars` maps instruments to
 defaults to one. With `fills=True`, `execute` fills each order immediately at the current
 mark and reports it through `runner.on_order_event`; `cancel_on_new_target` cancels every
 open order in the target's instruments first, whatever its tag. Sizing uses the account read
-before those cancellations, so within that call a cancelled order still counts as pending. `saved` holds what `save` was given.
+before those cancellations, so within that call a cancelled order still counts as pending.
 
 Indicators come from [memory/indicators.py](../../sugarloaf/adapters/memory/indicators.py):
 SMA, an EMA seeded by its first value, Wilder's RSI and a Donchian channel. An indicator

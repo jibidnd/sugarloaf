@@ -143,7 +143,8 @@ native checks in [validation](../../../../docs/VALIDATION.md#native-checks).
 ## 10 Predictive research and methodology
 
 - **10.1 Forecast runs:** a graph ending in a predictive port; `ForecastArchive.record`;
-  `encode_archive` and `decode_archive`; `forecasts.json` in the Object Store; research on
+  `encode_archive` and `decode_archive`; view metrics computed in the run and written to the
+  backtest log (`VIEW_METRICS`, `sugarloaf.research.view_metrics`); research on
   prices with `QuantBook` directly.
 - **10.2 Outcome resolution:** `anchor_from_closes`, `closes_from_frame`,
   `ReturnOutcomeResolver`, exact endpoints, `as_of`, pending, unavailable and unsupported
@@ -165,7 +166,8 @@ Sources: [research](../../../../docs/technical/RESEARCH.md), `sugarloaf/research
   inspection, project selection, upload, compile, backtest, status and logs; the remote
   notebook runner.
 - **11.3 Run identity and results:** source hashes, snapshots, compile and backtest ids,
-  `SUGARLOAF_RUN`, `SUGARLOAF_RESULT`, `result.json`, `forecasts.json`.
+  `SUGARLOAF_RUN`, `RUN_SUMMARY`, `VIEW_METRICS`, `VIEW_SAMPLE`, `read_run_output`; the
+  Object Store for fitted models and reusable datasets only.
 
 Sources: [external factories](../../../../docs/EXTERNAL_STRATEGIES.md),
 [deployment](../../../../docs/technical/DEPLOYMENT.md), `deployments/quantconnect/`,
@@ -204,8 +206,8 @@ scheduled function -> runner.on_scheduled(name) -> on_scheduled -> dependents
 LEAN on_securities_changed -> adapter windows and indicators -> runner.on_securities_changed
 LEAN on_order_event -> OrderUpdate -> runner.updates
 
-forecast graph -> runner.archive -> launcher.finish -> forecasts.json
--> research kernel: decode_archive -> qb.history -> anchor -> evaluate
+forecast graph -> runner.archive -> launcher.finish -> adapter.history -> view_metrics
+-> VIEW_METRICS log line -> read_run_output (REST API) -> run output on disk
 ```
 
 Show the current implementation's actual branches, ordering and error paths when explaining

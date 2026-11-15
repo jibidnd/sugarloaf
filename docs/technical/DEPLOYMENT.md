@@ -61,15 +61,13 @@ one line:
 SUGARLOAF_RUN {"mode": "trading", "name": "ema", "numpy": "...", "python": "...", "scipy": "...", "sugarloaf": "0.1.0"}
 ```
 
-At the end `launcher.finish` saves to the Object Store under
-`sugarloaf/results/<project_id>/<algorithm_id>/`:
-
-| Key | Content |
-| --- | --- |
-| `result.json` | `name`, `mode`, `environment`, `execution`, `run` (`runner.finish()`), universe `members`, the last 5,000 `orders` and `updates`, the `strategy` report, `records` from `ReportContext.record`, each node's `config` |
-| `forecasts.json` | Forecast runs only: `encode_archive(runner.archive)` |
-
-and logs `SUGARLOAF_RESULT {"diagnostics": ..., "forecasts": ..., "key": ..., "orders": ..., "steps": ...}`.
+At the end `launcher.finish` writes the run's output to the backtest log as `RUN_SUMMARY`,
+`VIEW_METRICS`, `VIEW_SAMPLE` and `RUN_RECORD` lines and sets the headline numbers as runtime
+statistics ([run output](RUNTIME.md#run-output)). `run_backtest` reads the log through the
+REST API and saves the parsed output as `artifacts/<manifest stem>/<backtest id>-output.json`;
+`sugarloaf output --adapter quantconnect --manifest M --backtest-id ID [--out PATH]` does the
+same for an earlier run. The Object Store holds fitted models and datasets reused across
+projects, which a factory reads through `stored`; run output is not written there.
 
 ## Manifest and bundle
 
@@ -251,8 +249,7 @@ kernels: `connect`, `start_kernel`, `run_cell` (one cell; on timeout the kernel 
 interrupted, not deleted), `kernel_status`, `stop_kernel`, and `ResearchKernel`,
 which tracks idle time against an `idle_timeout` so its owner can stop it.
 
-A notebook that scores a forecast run reads the run's `forecasts.json` from the Object Store
-of the same project; see [research](RESEARCH.md).
+A forecast run scores its own views inside the backtest; see [research](RESEARCH.md).
 
 ## Verification
 
