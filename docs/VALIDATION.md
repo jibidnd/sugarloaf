@@ -82,17 +82,18 @@ file are the results of the 15 November runs below, with a tolerance of USD 50 o
 ### Native checks, 15 November 2026
 
 Project `37377184`, LEAN as deployed by QuantConnect on that day, the adapter with
-`from_history` and `listed_tickers` (branch `check/adapter-coverage-2026-11-15`) plus the
-manifests' parameters; the Lab runs below used `2ee2c5d`. Each run's source hash is in
+`from_history`, `listed_tickers` and `_default_calendar` and the runner passing the warm-up
+state to every callback (commit `78e11aa`, branch `check/adapter-coverage-2026-11-15`) plus
+the manifests' parameters; the Lab runs below used `2ee2c5d`. Each run's source hash is in
 `artifacts/native_checks/` and `artifacts/<manifest stem>/` (git-ignored). Result records are
 in the Object Store under `sugarloaf/results/37377184/<backtest id>/result.json`; the forecast
 run also saves `forecasts.json`.
 
 | Check | Backtest | Observed |
 | --- | --- | --- |
-| EMA example, trading ([ema.toml](../deployments/quantconnect/ema.toml), January 6–10, 2025, USD 100,000, 5-minute bars) | `d76245fc607a7ba88e6c3893aa9c6fa6` | No runtime errors, no diagnostics, 1,560 steps (four sessions of minute slices; the market is closed on 9 January). 6 orders, USD 6.00 fees, end equity USD 99,652.57, net profit -0.347%. |
-| EMA forecast run ([ema_forecasts.toml](../deployments/quantconnect/ema_forecasts.toml), same window) | `9cccde8becf73ebf3a180a82a20358c1` | No orders, no diagnostics, 1,560 steps; 312 views archived (`SUGARLOAF_RESULT`), one per 5-minute bar of the four sessions (4 × 78). |
-| Index check ([index_check.toml](../deployments/quantconnect/index_check.toml), March 24 to April 17, 2025) | `0fb8d6c2b1c930c4f2dca0d3fb4513a8` | No orders, no diagnostics, 38 steps (one SPY slice and one VIX slice per session, 19 sessions). The check reads daily feeds without consolidation, which `from_history` does not touch. VIX daily bars run 13:30–20:15 UTC and arrive in their own slice after SPY's 20:00 close, so at the SPY close the VIX window holds the previous session's bar: 0 of 19 same-session; highest VIX close 52.24 on 8 April 2025 (result record of `4b9f5a3d9a149d06ef95df2d7ac6def1`, same feeds and adapter path). |
+| EMA example, trading ([ema.toml](../deployments/quantconnect/ema.toml), January 6–10, 2025, USD 100,000, 5-minute bars) | `039f9445ad7a0447bbc6e56f35285f67` | No runtime errors, no diagnostics, 1,560 steps (four sessions of minute slices; the market is closed on 9 January). 6 orders, USD 6.00 fees, end equity USD 99,652.57, net profit -0.347%. |
+| EMA forecast run ([ema_forecasts.toml](../deployments/quantconnect/ema_forecasts.toml), same window) | `0ce1f24584f7486e693a60299d8b486e` | No orders, no diagnostics, 1,560 steps; 312 views archived (`SUGARLOAF_RESULT`), one per 5-minute bar of the four sessions (4 × 78). |
+| Index check ([index_check.toml](../deployments/quantconnect/index_check.toml), March 24 to April 17, 2025) | `860134b5b612a3046883a857c6bbbd9c` | No orders, no diagnostics, 38 steps (one SPY slice and one VIX slice per session, 19 sessions). The check reads daily feeds without consolidation, which `from_history` does not touch. VIX daily bars run 13:30–20:15 UTC and arrive in their own slice after SPY's 20:00 close, so at the SPY close the VIX window holds the previous session's bar: 0 of 19 same-session; highest VIX close 52.24 on 8 April 2025 (result record of `4b9f5a3d9a149d06ef95df2d7ac6def1`, same feeds and adapter path). |
 
 `from_history` keeps a consolidated bar built from history bars alone out of the next
 arrival (`QuantConnectAdapter._track`, handler `completed`; [adapter
@@ -172,7 +173,7 @@ result record (`sugarloaf/results/37377184/<backtest id>/result.json`, record
 
 | Source | Backtest | SPY window: bars / distinct | SPY indicator: values / distinct | QQQ window | QQQ indicator | Evaluations with a value after `ctx.time` |
 | --- | --- | --- | --- | --- | --- | --- |
-| Adapter with the rules and `from_history` (source hash `736832f4…b61c7`) | `fbb5498a55efd76c5c82a6a7dca276f9` | 60 / 60 | 43 / 43 | 60 / 60 | 43 / 43 | 0 of 34, for each window and indicator |
+| Adapter with the rules and `from_history`, runner at `78e11aa` (source hash `77844cd1…87cc29`) | `0137dd4314b8185dd643c24d0040e23f` | 60 / 60 | 43 / 43 | 60 / 60 | 43 / 43 | 0 of 34, for each window and indicator |
 
 `on_securities_changed` performs all four setup fills (the SPY and QQQ
 windows and their EMAs) at 05:00 UTC on 22 November 2024, the start date minus 45 days, with

@@ -16,7 +16,7 @@ from tools.native_checks import compare, main, parse_number
 
 REPO = Path(__file__).resolve().parents[1]
 
-# Statistics as QuantConnect returned them for backtest d76245fc607a7ba88e6c3893aa9c6fa6.
+# Statistics as QuantConnect returned them for backtest 039f9445ad7a0447bbc6e56f35285f67.
 EMA_STATISTICS = {"Total Orders": "6", "Total Fees": "$6.00", "End Equity": "99665.11",
                   "Net Profit": "-0.335%", "Lowest Capacity Asset": "SPY R735QTJ8XC9X"}
 NO_ORDERS = {"Total Orders": "0", "Total Fees": "$0.00", "End Equity": "100000",
@@ -259,10 +259,10 @@ def test_the_repository_check_file_matches_the_recorded_backtests(monkeypatch):
     monkeypatch.setattr(native_checks, "_project", lambda manifest: "selected")
     checks = native_checks.load_checks(REPO / "deployments/quantconnect/native_checks.json")
     assert [(c.name, c.manifest.name, c.recorded_backtest) for c in checks] == [
-        ("ema", "ema.toml", "d76245fc607a7ba88e6c3893aa9c6fa6"),
-        ("ema_forecasts", "ema_forecasts.toml", "9cccde8becf73ebf3a180a82a20358c1"),
-        ("index_check", "index_check.toml", "0fb8d6c2b1c930c4f2dca0d3fb4513a8"),
-        ("warm_up_check", "warm_up_check.toml", "fbb5498a55efd76c5c82a6a7dca276f9"),
+        ("ema", "ema.toml", "039f9445ad7a0447bbc6e56f35285f67"),
+        ("ema_forecasts", "ema_forecasts.toml", "0ce1f24584f7486e693a60299d8b486e"),
+        ("index_check", "index_check.toml", "860134b5b612a3046883a857c6bbbd9c"),
+        ("warm_up_check", "warm_up_check.toml", "0137dd4314b8185dd643c24d0040e23f"),
         ("coverage_check", "coverage_check.toml", "0438718bee8b158fc397aa5d0cd40053"),
     ]
     assert native_checks.evaluate(checks[0], EMA_STATISTICS)[0] == "pass"

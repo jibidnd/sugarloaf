@@ -5,7 +5,7 @@
       "name": "ema",
       "manifest": "ema.toml",
       "description": "EMA example, trading: January 6-10, 2025, USD 100,000, 5-minute bars.",
-      "recorded_backtest": "d76245fc607a7ba88e6c3893aa9c6fa6",
+      "recorded_backtest": "039f9445ad7a0447bbc6e56f35285f67",
       "backtest_timeout": 1800,
       "expected": {
         "Total Orders": 6,
@@ -20,7 +20,7 @@
       "name": "ema_forecasts",
       "manifest": "ema_forecasts.toml",
       "description": "EMA forecast run over the same window: views archived, no orders.",
-      "recorded_backtest": "9cccde8becf73ebf3a180a82a20358c1",
+      "recorded_backtest": "0ce1f24584f7486e693a60299d8b486e",
       "backtest_timeout": 1800,
       "expected": {
         "Total Orders": 0
@@ -30,7 +30,7 @@
       "name": "index_check",
       "manifest": "index_check.toml",
       "description": "Index data check (the VIX beside SPY), March 24 to April 17, 2025: no orders.",
-      "recorded_backtest": "0fb8d6c2b1c930c4f2dca0d3fb4513a8",
+      "recorded_backtest": "860134b5b612a3046883a857c6bbbd9c",
       "backtest_timeout": 1800,
       "expected": {
         "Total Orders": 0
@@ -40,7 +40,7 @@
       "name": "warm_up_check",
       "manifest": "warm_up_check.toml",
       "description": "Windows and indicators under a 45-day WarmUp, January 6-10, 2025: no orders; the WARM_UP_CHECK log line and the result record hold each window's and indicator's count beside its distinct end times.",
-      "recorded_backtest": "fbb5498a55efd76c5c82a6a7dca276f9",
+      "recorded_backtest": "0137dd4314b8185dd643c24d0040e23f",
       "backtest_timeout": 1800,
       "expected": {
         "Total Orders": 0
