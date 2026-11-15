@@ -95,6 +95,20 @@ run also saves `forecasts.json`.
 | EMA forecast run ([ema_forecasts.toml](../deployments/quantconnect/ema_forecasts.toml), same window) | `0ce1f24584f7486e693a60299d8b486e` | No orders, no diagnostics, 1,560 steps; 312 views archived (`SUGARLOAF_RESULT`), one per 5-minute bar of the four sessions (4 × 78). |
 | Index check ([index_check.toml](../deployments/quantconnect/index_check.toml), March 24 to April 17, 2025) | `860134b5b612a3046883a857c6bbbd9c` | No orders, no diagnostics, 38 steps (one SPY slice and one VIX slice per session, 19 sessions). The check reads daily feeds without consolidation, which `from_history` does not touch. VIX daily bars run 13:30–20:15 UTC and arrive in their own slice after SPY's 20:00 close, so at the SPY close the VIX window holds the previous session's bar: 0 of 19 same-session; highest VIX close 52.24 on 8 April 2025 (result record of `4b9f5a3d9a149d06ef95df2d7ac6def1`, same feeds and adapter path). |
 
+The five native checks on commit `d38ed4c` (branch `core/universe-exclusions-2026-11-15`:
+`LiquidityUniverse.exclude_sectors`, and `QuantConnectAdapter.on_securities_changed`
+delivering a joining member's borrow terms), run with `tools/native_checks.py` in project
+`37377184`; each passes its expectations, and these are the `recorded_backtest` values of
+`native_checks.json`:
+
+| Check | Backtest | Source hash | Observed |
+| --- | --- | --- | --- |
+| `ema` | `cc7a7dba9388a8a5b0cd70a284dcc6fc` | `ecfa974f…ecf78d` | 6 orders, USD 6.00 fees, end equity USD 99,652.57, net profit -0.347% |
+| `ema_forecasts` | `84a094e67e1a467c4de51e06fcd44607` | `94fd786e…c0d5e7` | No orders |
+| `index_check` | `8e2a97ed460cdf6920f92d023b99cf9e` | `19f85fb8…3d4561` | No orders |
+| `warm_up_check` | `6509e4ac1a1b6413d63519d1f063827f` | `e530d54d…afc776` | No orders |
+| `coverage_check` | `509b6e541c322cc055b12605afa2f78c` | `fe0aaf90…a6626f` | No orders; the report's assertion that every declaration has an arrival holds (the run completes) |
+
 `from_history` keeps a consolidated bar built from history bars alone out of the next
 arrival (`QuantConnectAdapter._track`, handler `completed`; [adapter
 README](../sugarloaf/adapters/quantconnect/README.md#windows-and-warm-up)). The history fill in
