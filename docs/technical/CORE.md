@@ -168,10 +168,31 @@ components=())` states what a prediction concerns, including its horizon.
 | --- | --- | --- |
 | `Estimate(value, forecast_error_scale, property="mean", level=None)` | One property of the target: mean, variance or the quantile at `level` | That property only |
 | `Probability(events, probabilities, exhaustive=False)` | Probabilities of `ReturnEvent` intervals, each lower < return <= upper | The stated events only |
-| `Distribution` (abstract) | A full law with `units`, `support` and `dimension` | What the subclass implements, plus what follows from it |
+| `Distribution` (abstract) | A full law with `units`, `support` and `dimension` | For a scalar law, everything derived from its `cdf`; for a joint law, its density |
 | `QuantileDistribution(levels, values, lower_bound, tail_scale_low, tail_scale_high)` | A scalar law from stated quantiles, linear between them, exponential tails | Moments in closed form, quantiles, CDF, density |
+| `ScaledHalfT(scale, df, calibration=1.0)` | The law of c·s·\|T\|, T Student-t with `df` > 2 degrees of freedom, on y >= 0 | CDF, quantiles, density, mean and variance in closed form |
 | `Ordering(groups, temperature, property="mean")` | Highest-to-lowest tied groups of the target's instruments | The order |
 | `Score(value, calibration_id)` | A scalar on a named calibration | Nothing beyond itself |
+
+A scalar `Distribution` implements one method, `cdf(value)`; the base class in
+`sugarloaf/core/views.py` derives the rest from it. `quantile(p)` returns
+inf{x : cdf(x) >= p} by bracket expansion from 0 and bisection to a bracket of
+`QUANTILE_TOLERANCE` (1e-12) times max(1, |x|); `pdf` is the central difference of the cdf
+with step `DENSITY_STEP` (1e-6) times max(0.1, |x|), one-sided at a finite support bound;
+`mean` and `variance` integrate the cdf below the median and the survival function above it
+with `scipy.integrate.quad` in interquartile-range units, and raise `ContractError` when the
+integral does not converge, as for a law without that moment; `probability(lower, upper)`
+is a difference of cdf values. A subclass overrides any of these with a closed form, as
+`QuantileDistribution` and `ScaledHalfT` do. `check()`, called when a View is built,
+requires a scalar law to implement `cdf` and evaluates it at the support bounds, 0 and
++-10^j for j = -6..12: the values lie in [0, 1], do not decrease, and come within
+`CDF_TAIL_TOLERANCE` (1e-6) of 0 and of 1 at the outer probes. A calibration is a constant
+inside the cdf: `ScaledHalfT` has cdf(y) = 2 T_df(y / (c s)) - 1 for y >= 0, with
+T_df from `scipy.special.stdtr`, so calibrating the law changes c and keeps the family. A
+joint law (dimension > 1) implements `pdf` or `logpdf` instead, and a law of discrete
+masses exposes `events` and `masses`; neither needs a cdf. The archive serializer
+(`sugarloaf/research/serialization.py`) encodes `QuantileDistribution` and `ScaledHalfT`
+field by field.
 
 Every representation has `supports(query)` and the queries `mean()`, `variance()`,
 `quantile(p)` and `probability(lower, upper)`; a query the statement cannot answer raises

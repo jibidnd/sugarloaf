@@ -306,11 +306,22 @@ def test_distribution_dimensions_and_missing_density_are_explicit():
     with pytest.raises(ContractError, match="dimension"):
         DistributionView(target, joint_law, metadata("mismatch"))
 
-    class UnsupportedLaw(Distribution):
+    class NoCdf(Distribution):
         units = "decimal"
         support = (-1, float("inf"))
 
-    unsupported = DistributionView(target, UnsupportedLaw(), metadata("unsupported"))
+    # A scalar law states a cdf; one without it is refused when the View is built.
+    with pytest.raises(ContractError, match="must implement cdf"):
+        DistributionView(target, NoCdf(), metadata("no-cdf"))
+
+    class UnsupportedLaw(Distribution):
+        """A joint law with no density."""
+
+        units = "decimal"
+        dimension = 2
+
+    pair = Target((A, B), "return", INTERVAL)
+    unsupported = DistributionView(pair, UnsupportedLaw(), metadata("unsupported"))
     report = evaluate(archive_views(unsupported), ReturnOutcomeResolver(anchors), as_of=END)
     assert report.rows[0].status == "unsupported"
     assert "density" in report.rows[0].reason

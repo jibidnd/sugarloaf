@@ -2,7 +2,7 @@
 
 A forecast run saves its archive where the platform keeps files; a research kernel
 reads it back and scores it. The core representations (Estimate, Probability,
-Score, Ordering, QuantileDistribution) encode field by field. Any other
+Score, Ordering, QuantileDistribution, ScaledHalfT) encode field by field. Any other
 representation is pickled and stored as base64 under ``"pickle"``, so decoding it
 needs the class importable in the kernel.
 """
@@ -21,6 +21,7 @@ from sugarloaf.core.views import (
     Probability,
     QuantileDistribution,
     ReturnEvent,
+    ScaledHalfT,
     Score,
     Target,
     View,
@@ -28,7 +29,8 @@ from sugarloaf.core.views import (
 from sugarloaf.research.archive import ForecastArchive, ForecastRecord
 
 _REPRESENTATIONS = {
-    cls.__name__: cls for cls in (Estimate, Probability, Score, Ordering, QuantileDistribution)
+    cls.__name__: cls
+    for cls in (Estimate, Probability, Score, Ordering, QuantileDistribution, ScaledHalfT)
 }
 
 

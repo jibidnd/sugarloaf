@@ -23,11 +23,15 @@ Distributions own any dependence between joint coordinates and must be immutable
 
 import builtins
 import math
+import numbers
 from abc import ABC
 from bisect import bisect_right
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Mapping
+
+from scipy.integrate import quad
+from scipy.special import stdtr, stdtrit
 
 from sugarloaf.core.errors import CapabilityError, ContractError
 from sugarloaf.core.primitives import InstrumentId, Interval, Metadata, aware, finite, frozen_map
@@ -298,19 +302,40 @@ class Distribution(Representation, ABC):
     """A full predictive distribution over the target.
 
     Subclasses declare ``units``, ``support`` (low, high) and ``dimension`` (1 for a
-    scalar target, n for a joint target of n coordinates), and implement what they
-    can: ``cdf`` and ``quantile`` for scalar laws, ``pdf`` or ``logpdf`` for densities.
-    The base class derives event probabilities from ``cdf`` and ``pdf``/``logpdf``
-    from each other. Moments are not derived, because a quantile function does not
-    show whether they exist; a subclass states ``mean`` and ``variance`` itself.
+    scalar target, n for a joint target of n coordinates).
 
-    A distribution of discrete masses may instead expose ``events`` and ``masses``,
-    which evaluation scores as categorical probabilities.
+    A scalar law implements one method, ``cdf``; the base class derives the rest from
+    it. ``quantile(p)`` inverts the cdf by bracket expansion and bisection,
+    ``pdf`` is a central difference of the cdf, ``mean`` and ``variance`` integrate
+    the cdf and survival function numerically, and ``probability(lower, upper)`` is
+    a difference of cdf values. A subclass overrides any derived method with a
+    closed form. A derived moment raises ContractError when its integral does not
+    converge, which is how a law without that moment (a Cauchy law has no mean)
+    shows itself. ``check`` verifies that the cdf is non-decreasing and tends to 0
+    and 1.
+
+    A joint law (dimension > 1) implements ``pdf`` or ``logpdf``, and the base class
+    derives each from the other. A distribution of discrete masses may instead
+    expose ``events`` and ``masses``, which evaluation scores as categorical
+    probabilities. Neither of these needs a cdf.
     """
 
     units: str = "decimal"
     support: tuple[float, float] = (-_INF, _INF)
     dimension: int = 1
+
+    # Bisection in ``quantile`` stops when the bracket is no wider than
+    # QUANTILE_TOLERANCE * max(1, |x|), or when no double lies strictly inside it.
+    QUANTILE_TOLERANCE = 1e-12
+    # Central-difference step in ``pdf``: DENSITY_STEP * max(0.1, |x|).
+    DENSITY_STEP = 1e-6
+    # ``check`` requires cdf <= CDF_TAIL_TOLERANCE at the lowest probe and
+    # cdf >= 1 - CDF_TAIL_TOLERANCE at the highest.
+    CDF_TAIL_TOLERANCE = 1e-6
+    # Requested relative accuracy of the moment integrals (absolute 1e-3 of it, in
+    # interquartile-range units).
+    MOMENT_TOLERANCE = 1e-6
+    _PROBES = tuple(sorted({0.0, *(s * 10.0**j for s in (-1, 1) for j in range(-6, 13))}))
 
     _RESERVED = frozenset(
         {"mean", "variance", "quantile", "cdf", "pdf", "logpdf", "probability", "capabilities"}
@@ -327,7 +352,13 @@ class Distribution(Representation, ABC):
             )
 
     def check(self) -> None:
-        """Validate the declared units, support and dimension; called when a View is built."""
+        """Validate units, support and dimension, and a scalar law's cdf.
+
+        Called when a View is built. For a scalar law the cdf is evaluated at the
+        support bounds and at 0 and +-10^j (j = -6..12) inside the support: every
+        value lies in [0, 1], the values do not decrease, and they reach within
+        ``CDF_TAIL_TOLERANCE`` of 0 at the lowest probe and of 1 at the highest.
+        """
         if not isinstance(self.units, str) or not self.units:
             raise ContractError("Distribution needs explicit units")
         if not isinstance(self.dimension, int) or self.dimension < 1:
@@ -344,13 +375,42 @@ class Distribution(Representation, ABC):
                 raise ContractError("Distribution support must be (low, high)") from None
             if not low < high:
                 raise ContractError("Distribution support must have low < high")
+        if not self._scalar_law():
+            return
+        if not self._implements("cdf"):
+            raise ContractError(f"{type(self).__name__} is a scalar law and must implement cdf")
+        self._check_cdf()
+
+    def _check_cdf(self) -> None:
+        low, high = self.support
+        points = [x for x in self._PROBES if low < x < high]
+        points = [low] * math.isfinite(low) + points + [high] * math.isfinite(high)
+        values = [self.cdf(x) for x in points]
+        name = type(self).__name__
+        if any(not (math.isfinite(v) and 0 <= v <= 1) for v in values):
+            raise ContractError(f"{name}.cdf returned a value outside [0, 1]")
+        if any(b < a for a, b in zip(values, values[1:])):
+            raise ContractError(f"{name}.cdf decreases between probes")
+        if values[0] > self.CDF_TAIL_TOLERANCE or values[-1] < 1 - self.CDF_TAIL_TOLERANCE:
+            raise ContractError(f"{name}.cdf does not tend to 0 and 1 over its support")
+
+    def _scalar_law(self) -> bool:
+        # Scalar continuous laws follow the cdf contract; event-mass laws do not.
+        return self.dimension == 1 and not (hasattr(self, "events") and hasattr(self, "masses"))
 
     def _implements(self, name: str) -> bool:
         # A query is native when a subclass overrides the base implementation.
         return getattr(type(self), name, None) is not getattr(Distribution, name, None)
 
+    def _cdf_law(self) -> bool:
+        return self._scalar_law() and self._implements("cdf")
+
     @property
     def capabilities(self) -> frozenset[str]:
+        if self._cdf_law():
+            return frozenset(
+                {"cdf", "probability", "quantile", "pdf", "logpdf", "mean", "variance"}
+            )
         native = {
             name
             for name in ("pdf", "logpdf", "cdf", "quantile", "mean", "variance", "probability")
@@ -364,24 +424,157 @@ class Distribution(Representation, ABC):
             native.add("masses")
         return frozenset(native)
 
+    def cdf(self, value: float) -> float:
+        """P(target <= value) for a scalar law; the one method a scalar law implements."""
+        raise CapabilityError(f"{type(self).__name__} does not state a CDF")
+
     def pdf(self, value) -> float:
-        """Density at a value (a coordinate tuple for a joint law)."""
-        if not self._implements("logpdf"):
+        """Density at a value (a coordinate tuple for a joint law).
+
+        Derived from ``logpdf`` when the subclass states it, otherwise for a scalar
+        law as the central difference (F(x + h) - F(x - h)) / 2h with
+        h = DENSITY_STEP * max(0.1, |x|), one-sided at a finite support bound.
+        """
+        if self._implements("logpdf"):
+            return math.exp(self.logpdf(value))
+        if not self._cdf_law():
             raise CapabilityError(f"{type(self).__name__} does not state a density")
-        return math.exp(self.logpdf(value))
+        low, high = self.support
+        if not low <= value <= high or math.isinf(value):
+            return 0.0
+        step = self.DENSITY_STEP * max(0.1, abs(value))
+        a, b = max(value - step, low), min(value + step, high)
+        return max(0.0, (self.cdf(b) - self.cdf(a)) / (b - a))
 
     def logpdf(self, value) -> float:
         """Log density at a value; minus infinity where the density is zero."""
-        if not self._implements("pdf"):
+        if not (self._implements("pdf") or self._cdf_law()):
             raise CapabilityError(f"{type(self).__name__} does not state a density")
         density = self.pdf(value)
         if not math.isfinite(density) or density < 0:
             raise ContractError(f"{type(self).__name__} returned an invalid density")
         return math.log(density) if density > 0 else -_INF
 
-    def cdf(self, value: float) -> float:
-        """P(target <= value) for a scalar law."""
-        raise CapabilityError(f"{type(self).__name__} does not state a CDF")
+    def quantile(self, p: float) -> float:
+        """The p-quantile, inf{x : cdf(x) >= p}, by bracket expansion and bisection.
+
+        The bracket starts at 0 (or inside a finite support) and its ends move out by
+        1, 2, 4, ... until cdf(lo) < p <= cdf(hi); bisection then narrows it to
+        QUANTILE_TOLERANCE * max(1, |x|) and returns the upper end.
+        """
+        if not self._cdf_law():
+            return super().quantile(p)
+        if not 0 <= p <= 1:
+            raise ContractError("Quantile probability must be in [0, 1]")
+        low, high = self.support
+        if p == 0:
+            return low
+        if p == 1:
+            return high
+        if math.isfinite(low) and math.isfinite(high):
+            anchor = (low + high) / 2
+        elif math.isfinite(low):
+            anchor = low + 1.0
+        elif math.isfinite(high):
+            anchor = high - 1.0
+        else:
+            anchor = 0.0
+        lo = self._expand(anchor, low, p, -1.0)
+        hi = self._expand(anchor, high, p, 1.0)
+        if self.cdf(lo) >= p:  # only at a finite lower bound carrying mass p
+            return lo
+        while hi - lo > self.QUANTILE_TOLERANCE * max(1.0, abs(hi)):
+            mid = lo + (hi - lo) / 2
+            if not lo < mid < hi:
+                break
+            if self.cdf(mid) < p:
+                lo = mid
+            else:
+                hi = mid
+        return hi
+
+    def _expand(self, anchor: float, bound: float, p: float, direction: float) -> float:
+        """Move from anchor towards bound until the cdf lies below (or at least) p."""
+        def outside(x):
+            return self.cdf(x) < p if direction < 0 else self.cdf(x) >= p
+
+        step, x = 1.0, anchor
+        while not outside(x):
+            if x == bound:
+                break
+            x = anchor + direction * step
+            if (x - bound) * direction >= 0:
+                x = bound
+            step *= 2
+            if math.isinf(x) or step > 1e300:
+                end = "0" if direction < 0 else "1"
+                raise ContractError(f"{type(self).__name__}.cdf does not reach {end}")
+        return x
+
+    def mean(self) -> float:
+        """E[X] = m + integral of S above the median m - integral of F below it.
+
+        The integrals run in units of the interquartile range with scipy's
+        ``quad``; a failure to converge raises ContractError.
+        """
+        if not self._cdf_law():
+            return super().mean()
+        center, spread, first, _ = self._central_moments(second=False)
+        return center + spread * first
+
+    def variance(self) -> float:
+        """Var X from E[(X - m)^2] = integral of 2|u| times the tail beyond m."""
+        if not self._cdf_law():
+            return super().variance()
+        center, spread, first, second = self._central_moments(second=True)
+        return max(0.0, spread * spread * (second - first * first))
+
+    def _central_moments(self, second: bool):
+        """Median m, interquartile range r and E[(X - m) / r], E[((X - m) / r)^2]."""
+        center = self.quantile(0.5)
+        spread = self.quantile(0.75) - self.quantile(0.25)
+        if not spread > 0:
+            spread = max(1.0, abs(center)) * 1e-6
+        low, high = self.support
+        upper = (high - center) / spread
+        lower = (low - center) / spread
+
+        def survival(u):
+            return 1.0 - self.cdf(center + spread * u)
+
+        def below(u):
+            return self.cdf(center + spread * u)
+
+        first = self._integrate(survival, 0.0, upper, "mean") - self._integrate(
+            below, lower, 0.0, "mean"
+        )
+        if not second:
+            return center, spread, first, None
+        moment = self._integrate(lambda u: 2 * u * survival(u), 0.0, upper, "variance")
+        moment += self._integrate(lambda u: -2 * u * below(u), lower, 0.0, "variance")
+        return center, spread, first, moment
+
+    def _integrate(self, function, a: float, b: float, name: str) -> float:
+        if a >= b:
+            return 0.0
+        result = quad(
+            function, a, b, limit=200, full_output=1,
+            epsabs=self.MOMENT_TOLERANCE * 1e-3, epsrel=self.MOMENT_TOLERANCE,
+        )
+        value, error = float(result[0]), float(result[1])
+        # quad appends a message only when it did not meet its tolerance. Roundoff
+        # in a slowly decaying tail (1 - cdf near 1) is accepted when the error
+        # estimate stays within 10 * MOMENT_TOLERANCE; any other failure, such as
+        # the subdivision limit a divergent integral reaches, is an error.
+        if len(result) > 3:
+            message = result[3].splitlines()[0]
+            roundoff = "Roundoff" in message
+            if not (roundoff and error <= 10 * self.MOMENT_TOLERANCE * max(1.0, abs(value))):
+                raise ContractError(
+                    f"The {name} of {type(self).__name__} does not converge numerically; "
+                    f"the law may not have one: {message}"
+                )
+        return value
 
     def probability(self, lower: float | None = None, upper: float | None = None) -> float:
         if not self._implements("cdf"):
@@ -568,6 +761,92 @@ class QuantileDistribution(Distribution):
     def variance(self) -> float:
         m1, m2 = self._moments()
         return max(0.0, m2 - m1 * m1)
+
+
+@dataclass(frozen=True)
+class ScaledHalfT(Distribution):
+    """The law of c * s * |T|, T Student-t with ``df`` degrees of freedom.
+
+    For y >= 0, cdf(y) = 2 T_df(y / (c s)) - 1, and 0 below; T_df is the Student-t
+    cdf (``scipy.special.stdtr``). The calibration constant c multiplies the scale
+    inside the cdf, so a calibrated law is the same family with width c s.
+    Quantile, density, mean and variance are closed forms:
+
+    * Q(p) = c s T_df^{-1}((1 + p) / 2);
+    * f(y) = 2 t_df(y / (c s)) / (c s) for y >= 0;
+    * E[Y] = c s * 2 sqrt(df) Gamma((df + 1) / 2) / (sqrt(pi) (df - 1) Gamma(df / 2));
+    * E[Y^2] = (c s)^2 df / (df - 2), finite because df > 2.
+
+    Attributes:
+        scale: s > 0, in the target's units.
+        df: Degrees of freedom, df > 2 so the variance exists.
+        calibration: c > 0, default 1.
+        units: Units of the target.
+    """
+
+    scale: float
+    df: float
+    calibration: float = 1.0
+    units: str = "decimal"
+
+    support = (0.0, _INF)
+
+    def __post_init__(self):
+        for name in ("scale", "df", "calibration"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, numbers.Real):
+                raise ContractError(f"ScaledHalfT {name} must be a number")
+            object.__setattr__(self, name, float(value))
+        finite(self.scale, self.df, self.calibration)
+        if self.scale <= 0 or self.calibration <= 0:
+            raise ContractError("ScaledHalfT scale and calibration must be positive")
+        if self.df <= 2:
+            raise ContractError("ScaledHalfT needs df > 2 for a finite variance")
+        if not 0 < self.width < _INF:
+            raise ContractError("ScaledHalfT calibration * scale must be finite and positive")
+
+    @property
+    def width(self) -> float:
+        """c * s, the scale of |T| inside the cdf."""
+        return self.calibration * self.scale
+
+    def cdf(self, value: float) -> float:
+        if value <= 0:
+            return 0.0
+        if value == _INF:
+            return 1.0
+        # 1 - 2 T(-z) equals 2 T(z) - 1 and keeps precision in the upper tail.
+        return float(1.0 - 2.0 * stdtr(self.df, -value / self.width))
+
+    def quantile(self, p: float) -> float:
+        if not 0 <= p <= 1:
+            raise ContractError("Quantile probability must be in [0, 1]")
+        if p == 0:
+            return 0.0
+        if p == 1:
+            return _INF
+        # T^{-1}((1 + p) / 2) = -T^{-1}((1 - p) / 2), the second precise for small p.
+        return float(-self.width * stdtrit(self.df, (1.0 - p) / 2.0))
+
+    def pdf(self, value: float) -> float:
+        if value < 0 or value == _INF:
+            return 0.0
+        df, z = self.df, value / self.width
+        log_t = (
+            math.lgamma((df + 1) / 2)
+            - math.lgamma(df / 2)
+            - 0.5 * math.log(df * math.pi)
+            - (df + 1) / 2 * math.log1p(z * z / df)
+        )
+        return 2.0 * math.exp(log_t) / self.width
+
+    def mean(self) -> float:
+        df = self.df
+        ratio = math.exp(math.lgamma((df + 1) / 2) - math.lgamma(df / 2))
+        return self.width * 2.0 * math.sqrt(df) * ratio / (math.sqrt(math.pi) * (df - 1))
+
+    def variance(self) -> float:
+        return max(0.0, self.width**2 * self.df / (self.df - 2) - self.mean() ** 2)
 
 
 @dataclass(frozen=True)

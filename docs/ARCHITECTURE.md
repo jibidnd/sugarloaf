@@ -55,13 +55,19 @@ flowchart LR
 | `sugarloaf.research` | `archive`, `serialization`, `anchors`, `evaluation`, `inference` | Forecast archive, its JSON form, outcome anchors, scoring |
 | `sugarloaf.deployment` | `config`, `reporting`, `evidence` | `Deployment`, `Environment`, `ReportContext`, run evidence |
 
-Dependencies point inward: `core` imports only `core`; nodes import `core`, `portfolio` and
-the `execution` records; the runner imports `core`, `execution`, `portfolio`,
-`research.archive` and the adapter interface (`adapters.protocol`); adapters import what they
-map. Only
-`sugarloaf.adapters.quantconnect` imports LEAN, and only when a `QuantConnectAdapter` is
-built without an injected namespace. Strategy packages depend on Sugarloaf; Sugarloaf
-imports no strategy package.
+Dependencies point inward: `core` imports only `core` and, for distribution numerics, scipy;
+nodes import `core`, `portfolio` and the `execution` records; the runner imports `core`,
+`execution`, `portfolio`, `research.archive` and the adapter interface
+(`adapters.protocol`); adapters import what they map. Only `sugarloaf.adapters.quantconnect`
+imports LEAN, and only when a `QuantConnectAdapter` is built without an injected namespace.
+Strategy packages depend on Sugarloaf; Sugarloaf imports no strategy package.
+
+A predictive distribution has one required method. A scalar `Distribution` in
+`sugarloaf/core/views.py` implements `cdf`, and the base class derives `quantile` (by
+inverting the monotone cdf), `pdf` (by a central difference), `mean` and `variance` (by
+numerical integration) and event probabilities from it; a subclass overrides any of them
+with a closed form. Calibration is a constant inside the cdf, as in `ScaledHalfT`, whose cdf
+is 2 T_df(y / (c s)) - 1. [Core](technical/CORE.md#views) states the tolerances.
 
 ## Start-up on QuantConnect
 

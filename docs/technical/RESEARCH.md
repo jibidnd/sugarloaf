@@ -52,8 +52,8 @@ Position views are actions and are skipped. Iterate the archive, take `len(archi
 call `archive.get(view_id)`. It lives in memory for the length of the run.
 
 `encode_archive(archive)` and `decode_archive(records)` convert it to and from JSON-ready
-lists. `Estimate`, `Probability`, `Score`, `Ordering` and `QuantileDistribution` encode field
-by field; any other statement is pickled and base64-encoded, so decoding it needs its class
+lists. `Estimate`, `Probability`, `Score`, `Ordering`, `QuantileDistribution` and
+`ScaledHalfT` encode field by field; any other statement is pickled and base64-encoded, so decoding it needs its class
 importable in the kernel.
 
 ## Outcome anchors

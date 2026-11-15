@@ -144,28 +144,32 @@ def test_representations_answer_only_what_they_state():
         quantile_law().probability(0.1, -0.1)
 
 
-class QuantileOnly(Distribution):
-    """A Cauchy law: it has a quantile function but no mean."""
+class CauchyLaw(Distribution):
+    """A Cauchy law stated by its cdf: it has quantiles and a density but no mean."""
 
-    def quantile(self, p):
-        return math.tan(math.pi * (p - 0.5))
+    def cdf(self, value):
+        return 0.5 + math.atan(value) / math.pi
 
 
 class BrokenDensity(Distribution):
+    dimension = 2
+
     def pdf(self, value):
         return float("nan")
 
 
-def test_a_distribution_states_its_moments_and_does_not_infer_them():
-    law = QuantileOnly()
-    assert law.supports("quantile") and not law.supports("mean")
-    with pytest.raises(CapabilityError):
+def test_a_derived_moment_that_does_not_exist_is_an_error():
+    law = CauchyLaw()
+    law.check()
+    assert law.quantile(0.75) == pytest.approx(1.0, abs=1e-10)
+    assert law.pdf(0.0) == pytest.approx(1 / math.pi, rel=1e-8)
+    with pytest.raises(ContractError, match="does not converge"):
         law.mean()
 
 
 def test_an_invalid_density_is_an_error_not_a_zero():
     with pytest.raises(ContractError, match="invalid density"):
-        BrokenDensity().logpdf(0.0)
+        BrokenDensity().logpdf((0.0, 0.0))
 
 
 def test_a_distribution_field_cannot_hide_a_query():
