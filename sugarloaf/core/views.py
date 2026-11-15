@@ -121,6 +121,59 @@ def relative_return(
     )
 
 
+# Window-minimum quantities: the lowest return over the closes inside one interval, of one
+# instrument (``min_return``) or of a pair measured against its second instrument
+# (``min_relative_return``). A pair's minimum is one number, so its law has one coordinate.
+WINDOW_MINIMUM_QUANTITIES = ("min_return", "min_relative_return")
+# Quantities whose instrument pair yields one coordinate rather than a joint outcome.
+PAIR_QUANTITIES = ("difference", "min_relative_return")
+
+
+def min_return(
+    instrument: InstrumentId, interval: Interval, convention: str = "price_return"
+) -> Target:
+    """Construct the target ``min_k (P_k / P_0 - 1)`` over the closes inside one interval.
+
+    ``P_0`` is the price at ``interval.start`` and ``P_k`` the close of each bar ending in
+    ``(interval.start, interval.end]``: the deepest point of the path, in decimal units.
+    Example: closes 100 (start), 96, 91, 98 give a window minimum of -0.09.
+
+    Args:
+        instrument: Stable identity of the instrument.
+        interval: The window; its start prices the base, its closes form the path.
+        convention: ``price_return`` or ``total_return``.
+    """
+    if not isinstance(interval, Interval):
+        raise ContractError("A window-minimum target needs one interval")
+    return Target(instrument, "min_return", interval, convention=convention)
+
+
+def min_relative_return(
+    left: InstrumentId,
+    right: InstrumentId,
+    interval: Interval,
+    convention: str = "price_return",
+) -> Target:
+    """Construct ``min_k [(L_k / L_0 - 1) - (R_k / R_0 - 1)]`` over the closes inside an interval.
+
+    The lowest return of ``left`` against ``right`` at any close in
+    ``(interval.start, interval.end]``, both returns measured from the interval's start and
+    read at the same bar end. Example: stock 10 to 9.0 and 9.5, benchmark 100 to 98 and 101
+    give -0.08 and -0.06, so the window minimum is -0.08.
+
+    Args:
+        left: Instrument whose return is added (for example the stock).
+        right: Distinct instrument whose return is subtracted (for example a benchmark).
+        interval: The window shared by both instruments.
+        convention: ``price_return`` or ``total_return``, shared by both legs.
+    """
+    if left == right:
+        raise ContractError("A relative window minimum needs two distinct instruments")
+    if not isinstance(interval, Interval):
+        raise ContractError("A window-minimum target needs one interval")
+    return Target((left, right), "min_relative_return", interval, convention=convention)
+
+
 def is_scalar_return(target: Target) -> bool:
     """Whether a target is one instrument's decimal return over one interval."""
     return (
@@ -901,8 +954,9 @@ def _check_pair(target: Target, statement: Representation) -> None:
         statement.check()
         if target.units != statement.units:
             raise ContractError("Distribution and target units differ")
-        # A joint target of n instruments has n coordinates; a difference has one.
-        joint = isinstance(target.subject, tuple) and target.quantity != "difference"
+        # A joint target of n instruments has n coordinates; a difference, or the window
+        # minimum of a pair, has one.
+        joint = isinstance(target.subject, tuple) and target.quantity not in PAIR_QUANTITIES
         if statement.dimension != (len(target.subject) if joint else 1):
             raise ContractError("Distribution dimension differs from the target")
     elif isinstance(statement, Ordering):

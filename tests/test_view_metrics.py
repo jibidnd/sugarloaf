@@ -12,7 +12,17 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from sugarloaf.core.primitives import InstrumentId, Interval, Metadata
-from sugarloaf.core.views import Distribution, DistributionView, Score, ScoreView, return_target
+from sugarloaf.core.views import (
+    Distribution,
+    DistributionView,
+    QuantileDistribution,
+    Score,
+    ScoreView,
+    View,
+    min_relative_return,
+    relative_return,
+    return_target,
+)
 from sugarloaf.research import ForecastArchive
 from sugarloaf.research.evaluation import (
     direction_metrics,
@@ -22,7 +32,14 @@ from sugarloaf.research.evaluation import (
     quantile_groups,
     quantile_metrics,
 )
-from sugarloaf.research.view_metrics import PriceTable, compact, headline, reduced, view_metrics
+from sugarloaf.research.view_metrics import (
+    PriceTable,
+    compact,
+    headline,
+    reduced,
+    target_family,
+    view_metrics,
+)
 
 SPY = InstrumentId("USA:SPY")
 T0 = datetime(2025, 1, 6, 15, tzinfo=timezone.utc)
@@ -177,3 +194,70 @@ def test_reduced_detail_and_headline():
     stats = headline(metrics)
     assert stats["Views issued"] == "10" and stats["Views scored"] == "10"
     assert {"Score hit rate", "Score F1", "Score decile spread"} <= set(stats)
+
+
+IWC = InstrumentId("USA:IWC")
+DAY = 24 * 60 * MINUTE
+
+
+def _daily(opens_closes):
+    """Daily bars 09:30-16:00 from (open, close) pairs: (start, end, open, close)."""
+    return [(T0 + k * DAY, T0 + k * DAY + 390 * MINUTE, o, c)
+            for k, (o, c) in enumerate(opens_closes)]
+
+
+def test_price_table_series_holds_the_closes_inside_the_window_up_to_as_of():
+    bars = _daily([(100, 101), (101, 99), (99, 104), (104, 103)])
+    table = PriceTable({"total_return": {SPY: [(e, c) for _, e, _, c in bars]}},
+                       {"total_return": {SPY: [(s, o) for s, _, o, _ in bars]}})
+    # From day 1's open: the closes of days 1 to 3, not day 0's close nor the opens.
+    assert table.series(SPY, bars[1][0], bars[3][1], "total_return", bars[3][1]) == [
+        (bars[1][1], 99), (bars[2][1], 104), (bars[3][1], 103)]
+    # From day 1's close the window starts after it; as_of cuts the rest.
+    assert table.series(SPY, bars[1][1], bars[3][1], "total_return", bars[2][1]) == [
+        (bars[2][1], 104)]
+    assert table.series(SPY, bars[1][1], bars[3][1], "price_return", bars[3][1]) == []
+
+
+def test_window_minimum_views_are_scored_as_distributions_in_their_own_family():
+    # Stock opens 50 on day 1 and closes 47, 44, 48 on days 1-3; IWC opens 100, closes
+    # 99, 101, 102. Against IWC from day 1's open: -0.05, -0.13, -0.06, so the minimum is
+    # -0.13; the return at day 3's close is 48/50 - 102/100 = -0.06.
+    stock = _daily([(49, 50), (50, 47), (47, 44), (44, 48), (48, 49)])
+    bench = _daily([(100, 100), (100, 99), (99, 101), (101, 102), (102, 102)])
+    table = PriceTable(
+        {"total_return": {SPY: [(e, c) for _, e, _, c in stock],
+                          IWC: [(e, c) for _, e, _, c in bench]}},
+        {"total_return": {SPY: [(s, o) for s, _, o, _ in stock],
+                          IWC: [(s, o) for s, _, o, _ in bench]}},
+    )
+    window = Interval(stock[1][0], stock[3][1])
+    law = QuantileDistribution((0.1, 0.5, 0.9), (-0.20, -0.10, 0.00))
+    archive = ForecastArchive()
+    meta = Metadata("s1:min", "s1", window.start, window.end)
+    archive.record("s1", "views", (View(min_relative_return(SPY, IWC, window, "total_return"),
+                                        law, meta),), window.start)
+    at = View(relative_return(SPY, IWC, window, "total_return"), law,
+              Metadata("s1:at", "s1", window.start, window.end))
+    archive.record("s1", "views", (at,), window.start)
+    metrics = view_metrics(archive, table, stock[-1][1])
+    assert metrics["counts"]["scored"] == 2 and metrics["counts"]["unmatched_bars"] == 0
+    families = metrics["kinds"]["distribution"]["by_family"]
+    assert set(families) == {"difference:USA:IWC", "min_relative_return:USA:IWC"}
+    minimum = families["min_relative_return:USA:IWC"]
+    (group,) = minimum["quintiles"]
+    assert group["mean"] == pytest.approx(-0.13)
+    # Linear between the 10% and 50% quantiles: cdf(-0.13) = 0.1 + 0.4 * 0.07 / 0.1 = 0.38.
+    assert minimum["pit_histogram"][3] == 1
+    assert group["path"] is None  # the path rows read single-instrument and difference targets
+    assert families["difference:USA:IWC"]["quintiles"][0]["mean"] == pytest.approx(-0.06)
+    assert metrics["by_family_counts"]["min_relative_return:USA:IWC"]["scored"] == 1
+    assert "by_family" in reduced(metrics, 1)["kinds"]["distribution"]
+    assert "quintiles" not in reduced(metrics, 1)["kinds"]["distribution"]["by_family"][
+        "min_relative_return:USA:IWC"]
+    assert "by_family_counts" not in reduced(metrics, 2)
+    # One family: no per-family breakdown.
+    single = ForecastArchive()
+    single.record("s1", "views", (at,), window.start)
+    assert "by_family_counts" not in view_metrics(single, table, stock[-1][1])
+    assert target_family(return_target(SPY, window)) == "return"

@@ -15,6 +15,7 @@ from sugarloaf.core.views import (
     PositionView,
     Probability,
     ProbabilityView,
+    QuantileDistribution,
     RankingView,
     RelativeReturnView,
     ReturnEvent,
@@ -22,6 +23,9 @@ from sugarloaf.core.views import (
     Score,
     ScoreView,
     Target,
+    View,
+    min_relative_return,
+    min_return,
     return_target,
 )
 from sugarloaf.research import (
@@ -333,3 +337,116 @@ def test_distribution_dimensions_and_missing_density_are_explicit():
     assert report.rows[0].status == "unsupported"
     assert "density" in report.rows[0].reason
     assert report.coverage["scored"] == 0
+
+
+# Window minima: daily closes of A and B over INTERVAL, both 100 at START. Against B, A's
+# path is d1 +0.03, d2 -0.03, d3 -0.08 - (-0.02) = -0.06, d4 -0.03, d5 -0.02, d6 -0.04,
+# d7 +0.03, d8 +0.04, d9 +0.05, d10 +0.05: its minimum is -0.06 on day 3. A alone falls
+# to -0.08 on day 3.
+WINDOW_CLOSES = {
+    A: [104, 97, 92, 99, 101, 95, 103, 108, 110, 110],
+    B: [101, 100, 98, 102, 103, 99, 100, 104, 105, 105],
+}
+
+
+def window_sources(closes=WINDOW_CLOSES, ends=None):
+    """anchor and series over daily closes: day k's close at START + k days."""
+    table = {i: {START + timedelta(days=k + 1): float(c) for k, c in enumerate(values)}
+             for i, values in closes.items()}
+    for instrument in table:
+        table[instrument][START] = 100.0
+
+    def anchor(instrument, at, convention, as_of):
+        value = table[instrument].get(at)
+        return None if value is None else Observation(at, value)
+
+    def series(instrument, start, end, convention, as_of):
+        return sorted((t, v) for t, v in table[instrument].items() if start < t <= end)
+
+    return anchor, series
+
+
+def test_window_minimum_of_a_return_and_of_a_relative_return():
+    anchor, series = window_sources()
+    resolver = ReturnOutcomeResolver(anchor, series=series)
+    alone = resolver.resolve(min_return(A, INTERVAL, "total_return"), as_of=END)
+    assert alone.value == pytest.approx(-0.08) and alone.available_at == END
+    relative = resolver.resolve(min_relative_return(A, B, INTERVAL, "total_return"), as_of=END)
+    assert relative.value == pytest.approx(-0.06)
+    assert relative.provenance["unmatched_bars"] == "0"
+    # The window ends on day 2: the minimum reads days 1 and 2 only.
+    short = Interval(START, START + timedelta(days=2))
+    assert resolver.resolve(min_relative_return(A, B, short), as_of=END).value == pytest.approx(
+        -0.03)
+    # From the close of day 3 (A 92, B 98) to day 6: d4 99/92 - 102/98, d5, d6 95/92 - 99/98.
+    later = Interval(START + timedelta(days=3), START + timedelta(days=6))
+    expected = min(a / 92 - b / 98 for a, b in ((99, 102), (101, 103), (95, 99)))
+    assert resolver.resolve(min_relative_return(A, B, later), as_of=END).value == pytest.approx(
+        expected)
+    assert resolver.resolve(min_return(A, INTERVAL), as_of=START).status == "pending"
+
+
+def test_window_minimum_skips_and_counts_unmatched_bars_and_needs_half_of_them():
+    anchor, series = window_sources()
+
+    def without(days):
+        def thinned(instrument, start, end, convention, as_of):
+            rows = series(instrument, start, end, convention, as_of)
+            if instrument != B:
+                return rows
+            return [(t, v) for t, v in rows if (t - START).days not in days]
+        return ReturnOutcomeResolver(anchor, series=thinned)
+
+    target = min_relative_return(A, B, INTERVAL)
+    # Without B's bar on day 3 that day is skipped: the minimum is day 6's -0.04.
+    skipped = without({3}).resolve(target, as_of=END)
+    assert skipped.value == pytest.approx(-0.04)
+    assert skipped.provenance["unmatched_bars"] == "1"
+    # Five of A's ten bars matched is half; four is fewer.
+    assert without({1, 2, 3, 4, 5}).resolve(target, as_of=END).status == "resolved"
+    fewer = without({1, 2, 3, 4, 5, 6}).resolve(target, as_of=END)
+    assert fewer.status == "unsupported" and "fewer than half" in fewer.reason
+
+
+def test_window_minimum_states_why_it_has_no_label():
+    anchor, series = window_sources()
+    target = min_relative_return(A, B, INTERVAL)
+    bare = ReturnOutcomeResolver(anchor).resolve(target, as_of=END)
+    assert bare.status == "unsupported" and "series" in bare.reason
+    resolver = ReturnOutcomeResolver(anchor, series=series)
+    for broken in (replace(target, convention="abs_log_close_return"),
+                   replace(target, time=(INTERVAL, INTERVAL)),
+                   replace(target, units="percent"),
+                   replace(target, subject=(A, B, C))):
+        assert resolver.resolve(broken, as_of=END).status == "unsupported"
+    # The last close must be held, as for a return: a path that stops early has no label.
+    short = {A: WINDOW_CLOSES[A][:9], B: WINDOW_CLOSES[B]}
+    short_anchor, short_series = window_sources(short)
+    stopped = ReturnOutcomeResolver(short_anchor, series=short_series).resolve(target, as_of=END)
+    assert stopped.status == "unavailable"
+
+    def outside(instrument, start, end, convention, as_of):
+        return [*series(instrument, start, end, convention, as_of), (END + timedelta(days=1), 1.0)]
+
+    with pytest.raises(ContractError, match="outside its window"):
+        ReturnOutcomeResolver(anchor, series=outside).resolve(target, as_of=END)
+
+
+def test_a_window_minimum_view_is_one_coordinate_and_scored_as_a_distribution():
+    target = min_relative_return(A, B, INTERVAL)
+    with pytest.raises(ContractError):
+        min_relative_return(A, A, INTERVAL)
+    law = QuantileDistribution((0.1, 0.5, 0.9), (-0.10, -0.05, 0.0))
+    view = View(target, law, metadata("minimum"))
+    with pytest.raises(ContractError, match="dimension"):
+        View(target, GaussianReturns((0.0, 0.0), ((1, 0), (0, 1))), metadata("joint"))
+    with pytest.raises(ContractError):
+        View(target, Probability((ReturnEvent(None, 0.0),), (0.5,)), metadata("event"))
+    anchor, series = window_sources()
+    report = evaluate(archive_views(view), ReturnOutcomeResolver(anchor, series=series),
+                      as_of=END)
+    (row,) = report.rows
+    assert row.status == "scored" and row.outcome.value == pytest.approx(-0.06)
+    # Linear between the 10% and 50% quantiles: cdf(-0.06) = 0.1 + 0.4 * 0.04 / 0.05.
+    assert row.metrics["pit"] == pytest.approx(0.42)
+    assert row.metrics["log_score"] == pytest.approx(-log(law.pdf(-0.06)))

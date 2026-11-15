@@ -53,12 +53,22 @@ ending there or, at a bar's start, that bar's open (so a view issued at the sess
 scored from the open)
 (`evaluation.PRICE_OUTCOMES`): the exact simple return for quantity `return`, the absolute
 log return for quantity `move_size`; no other price stands in for a missing one.
+Quantity `min_return` (`views.min_return`) is the lowest of `P_k / P_0 - 1` over the closes
+`P_k` of the bars ending inside the interval, `P_0` its start price, and `min_relative_return`
+(`views.min_relative_return(stock, benchmark, ...)`) the lowest of
+`(S_k / S_0 - 1) - (B_k / B_0 - 1)` over the bar ends both hold, the others skipped and
+counted (`counts["unmatched_bars"]`), unsupported when fewer than half the stock's bars match.
+Both read the closes through `PriceTable.series`, need the interval's last close as an exact
+anchor, and are unsupported for a resolver built without `series`.
 
 `counts` accounts for every issued view: `scored`, `horizon_after_end` (the target ends after
 `as_of`), `no_bar` (no bar ends at a start or end time; `no_bar_at_start` and `no_bar_at_end`
 say which, `no_bar_ends` and `horizon_after_end_ends` give the first and last target end) and
 `unsupported` (no metric applies; `unsupported_reasons` lists the commonest). `kinds[kind]`
-holds a `pooled` summary and one per node (`by_node`):
+holds a `pooled` summary and one per node (`by_node`); when the views span more than one
+target family (`target_family`: the quantity, and for a pair the instrument it is measured
+against, as in `min_relative_return:IWC`) it also holds one per family (`by_family`), with
+their counts in `by_family_counts`:
 
 | Kind | Views | Summary |
 | --- | --- | --- |
@@ -115,8 +125,9 @@ after the target end and at most `as_of`, and provenance. The other statuses are
 `unavailable` and `unsupported`, each with a reason and no value. One label is resolved per
 exact target and shared by its revisions. A forecast first received after `as_of` is pending.
 
-`ReturnOutcomeResolver(anchor, *, provenance=None)` resolves decimal simple price or total
-returns, joint coordinates and aligned return differences. Its anchor
+`ReturnOutcomeResolver(anchor, *, series=None, provenance=None)` resolves decimal simple
+price or total returns, joint coordinates, aligned return differences and, with `series`,
+window minima. Its anchor
 `anchor(instrument, at, convention, as_of)` returns an `Observation` stamped at `at`, or
 None. It computes end over start minus one with positive start and nonnegative end values.
 An unmatured horizon is pending; a missing or later-available anchor is unavailable.

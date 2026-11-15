@@ -9,7 +9,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
 from math import isfinite, log
-from typing import Callable, Iterable, Mapping, Protocol
+from typing import Callable, Iterable, Mapping, Protocol, Sequence
 
 import numpy as np
 from scipy.stats import kendalltau, rankdata
@@ -18,6 +18,7 @@ from sugarloaf.core.data import Observation
 from sugarloaf.core.errors import CapabilityError, ContractError, NotReady
 from sugarloaf.core.primitives import InstrumentId, Interval, aware, finite, frozen_map
 from sugarloaf.core.views import (
+    WINDOW_MINIMUM_QUANTITIES,
     Distribution,
     Estimate,
     Ordering,
@@ -78,6 +79,11 @@ class OutcomeResolver(Protocol):
 
 
 Anchor = Callable[[InstrumentId, datetime, str, datetime], Observation | None]
+# series(instrument, start, end, convention, as_of): the closes of the bars ending in
+# (start, end], as (bar end, close) pairs, available by as_of.
+Series = Callable[
+    [InstrumentId, datetime, datetime, str, datetime], Sequence[tuple[datetime, float]]
+]
 
 
 # Outcomes computed from a start and an end price anchor, by (quantity, convention): the
@@ -95,7 +101,8 @@ class ReturnOutcomeResolver:
 
     The outcomes are those of ``PRICE_OUTCOMES``: a decimal simple return, a decimal
     absolute log close-to-close return (quantity ``move_size``), and the difference of two
-    aligned simple returns.
+    aligned simple returns; and, with ``series``, the window minimum of one instrument's
+    return (``min_return``) or of a pair's relative return (``min_relative_return``).
 
     ``anchor(instrument, at, convention, as_of)`` returns an Observation for the
     requested time, or None. Its availability must be <= as_of. The source owns
@@ -103,10 +110,23 @@ class ReturnOutcomeResolver:
     ``sugarloaf.research.anchors.anchor_from_closes`` builds one from exact bar-end
     closes. The resolver itself performs no substitution. Positive start values and
     nonnegative end values are required.
+
+    ``series(instrument, start, end, convention, as_of)`` returns the closes of the bars
+    ending in ``(start, end]`` as ``(bar end, close)`` pairs available by ``as_of``
+    (``PriceTable.series`` in ``sugarloaf.research.view_metrics``). A window minimum reads
+    its base prices and its last close through ``anchor``, as a return does, and the closes
+    between through ``series``; without ``series`` it is unsupported.
     """
 
-    def __init__(self, anchor: Anchor, *, provenance: Mapping[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        anchor: Anchor,
+        *,
+        series: Series | None = None,
+        provenance: Mapping[str, str] | None = None,
+    ) -> None:
         self.anchor = anchor
+        self.series = series
         self.provenance = frozen_map({"resolver": "exact-simple-return-1", **(provenance or {})})
 
     def resolve(self, target: Target, *, as_of: datetime) -> Outcome:
@@ -132,8 +152,15 @@ class ReturnOutcomeResolver:
                 reason="Target horizon has not ended",
                 provenance=self.provenance,
             )
+        provenance = self.provenance
         try:
-            value, available_at = self._resolve(target, as_of)
+            if target.quantity in WINDOW_MINIMUM_QUANTITIES:
+                value, available_at, unmatched = self._window_minimum(target, as_of)
+                # Bars held by one leg of a pair only are skipped; the count travels
+                # with the label so the evidence shows how many were left out.
+                provenance = frozen_map({**self.provenance, "unmatched_bars": str(unmatched)})
+            else:
+                value, available_at = self._resolve(target, as_of)
         # Missing/delayed data is unavailable; unsupported target semantics are a
         # separate coverage category. Both remain visible in row-level evidence.
         except NotReady as exc:
@@ -144,7 +171,106 @@ class ReturnOutcomeResolver:
             return Outcome(
                 target, status="unsupported", reason=str(exc), provenance=self.provenance
             )
-        return Outcome(target, value, available_at, provenance=self.provenance)
+        return Outcome(target, value, available_at, provenance=provenance)
+
+    def _anchors(
+        self, instrument: InstrumentId, interval: Interval, convention: str, as_of: datetime
+    ) -> tuple[Observation, Observation]:
+        """The exact start and end observations of one instrument's interval."""
+        observations = []
+        # Ask for exact endpoints with the declared adjustment convention.
+        # The anchor source owns its data vintage and point-in-time availability.
+        for at in (interval.start, interval.end):
+            observation = self.anchor(instrument, at, convention, as_of)
+            if observation is None:
+                raise NotReady(f"Exact {convention} anchor missing: {instrument.value} {at}")
+            # Nearest-price fallback would change the forecast horizon. Treat
+            # substituted times as a contract error, not a usable label.
+            if observation.time != at:
+                raise ContractError("Outcome source substituted a different observation time")
+            # Observation time alone is insufficient: a late publication or
+            # revision cannot be used before this evaluation availability cutoff.
+            if observation.available_at > as_of:
+                raise NotReady(f"Outcome anchor not yet available: {instrument.value} {at}")
+            observations.append(observation)
+        return observations[0], observations[1]
+
+    def _window_minimum(self, target: Target, as_of: datetime) -> tuple[float, datetime, int]:
+        """(minimum, availability, unmatched bars) of a ``min_return``/``min_relative_return``.
+
+        The path value at bar end k is ``S_k / S_0 - 1``, less ``B_k / B_0 - 1`` for a pair,
+        with ``S_0``, ``B_0`` the anchors at the interval start (a close at a bar end or an
+        open at a bar start) and ``S_k``, ``B_k`` the closes of the bars ending at k in
+        ``(start, end]``. A pair reads only the bar ends both legs hold; the others are
+        skipped and counted, and fewer than half of the first leg's bars matched leaves the
+        outcome unsupported. The end must be an exact anchor of every leg, as for a return,
+        so a path that stops early (a halt, a delisting) is unavailable rather than cut short.
+        """
+        if self.series is None:
+            raise CapabilityError(
+                f"Outcome {target.quantity} needs the closes inside the interval: "
+                "the resolver has no series source"
+            )
+        if target.units != "decimal":
+            raise CapabilityError("Default outcomes require decimal units")
+        if target.convention not in {"price_return", "total_return"}:
+            raise CapabilityError(
+                f"Outcome {target.quantity} needs a price_return or total_return convention"
+            )
+        interval = target.time
+        if not isinstance(interval, Interval):
+            raise CapabilityError(f"Outcome {target.quantity} needs a single interval")
+        relative = target.quantity == "min_relative_return"
+        legs = target.subject if relative else (target.subject,)
+        if not all(isinstance(leg, InstrumentId) for leg in legs) or len(legs) != (
+            2 if relative else 1
+        ) or (relative and legs[0] == legs[1]):
+            raise CapabilityError(
+                f"Outcome {target.quantity} needs "
+                + ("two distinct instruments" if relative else "one instrument")
+            )
+        if interval.end > as_of:
+            raise NotReady("A component horizon has not ended")
+        bases: list[float] = []
+        paths: list[dict[datetime, float]] = []
+        availability: list[datetime] = []
+        for instrument in legs:
+            start, end = self._anchors(instrument, interval, target.convention, as_of)
+            if start.value <= 0 or end.value < 0:
+                raise ContractError("Return anchors require positive start and nonnegative end")
+            bases.append(start.value)
+            availability.extend((start.available_at, end.available_at))
+            path: dict[datetime, float] = {}
+            for at, price in self.series(
+                instrument, interval.start, interval.end, target.convention, as_of
+            ):
+                # The source answers exactly the window asked for; a close outside it, a
+                # repeated bar end or a negative or non-finite price is a broken source.
+                if not interval.start < at <= interval.end or at in path:
+                    raise ContractError("Outcome series returned a bar outside its window")
+                if not isfinite(price) or price < 0:
+                    raise ContractError("Outcome series returned an invalid price")
+                path[at] = float(price)
+            paths.append(path)
+        own = paths[0]
+        if relative:
+            other = paths[1]
+            common = sorted(set(own) & set(other))
+            unmatched = len(set(own) ^ set(other))
+            if 2 * len(common) < len(own):
+                raise CapabilityError(
+                    f"Outcome {target.quantity}: {len(common)} of {len(own)} bars of "
+                    f"{legs[0].value} have a {legs[1].value} bar, fewer than half"
+                )
+            values = [
+                (own[at] / bases[0] - 1) - (other[at] / bases[1] - 1) for at in common
+            ]
+        else:
+            unmatched = 0
+            values = [price / bases[0] - 1 for price in own.values()]
+        if not values:
+            raise NotReady(f"No bar of {legs[0].value} ends inside the window")
+        return min(values), max(availability), unmatched
 
     def _resolve(
         self, target: Target, as_of: datetime
@@ -193,24 +319,7 @@ class ReturnOutcomeResolver:
                 raise CapabilityError("Return outcomes need instrument interval targets")
             if interval.end > as_of:
                 raise NotReady("A component horizon has not ended")
-            observations = []
-            # Ask for exact endpoints with the declared adjustment convention.
-            # The anchor source owns its data vintage and point-in-time availability.
-            for at in (interval.start, interval.end):
-                observation = self.anchor(instrument, at, target.convention, as_of)
-                if observation is None:
-                    raise NotReady(
-                        f"Exact {target.convention} anchor missing: {instrument.value} {at}"
-                    )
-                # Nearest-price fallback would change the forecast horizon. Treat
-                # substituted times as a contract error, not a usable label.
-                if observation.time != at:
-                    raise ContractError("Outcome source substituted a different observation time")
-                # Observation time alone is insufficient: a late publication or
-                # revision cannot be used before this evaluation availability cutoff.
-                if observation.available_at > as_of:
-                    raise NotReady(f"Outcome anchor not yet available: {instrument.value} {at}")
-                observations.append(observation)
+            observations = self._anchors(instrument, interval, target.convention, as_of)
             start, end = observations
             zero_end_allowed = target.quantity == "return"
             if start.value <= 0 or end.value < 0 or (end.value == 0 and not zero_end_allowed):

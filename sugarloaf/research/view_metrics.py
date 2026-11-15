@@ -16,8 +16,11 @@
 Each group also carries its path: the mean realized return from signal time to each of
 ``PATH_STEPS`` evenly spaced times up to the target's end, from the last close at or before
 each time. Every issued view is counted: scored, horizon after ``as_of``, no bar at an
-anchor time, or unsupported. The QuantConnect launcher calls this at the end of a backtest,
-when the clock is past every horizon it scores; any caller with a price table can.
+anchor time, or unsupported. When the views span more than one target family
+(``target_family``: the quantity and, for a pair, the instrument it is measured against),
+each kind also holds a summary per family and ``by_family_counts`` the counts per family.
+The QuantConnect launcher calls this at the end of a backtest, when the clock is past every
+horizon it scores; any caller with a price table can.
 """
 
 from bisect import bisect_right
@@ -30,7 +33,15 @@ import numpy as np
 
 from sugarloaf.core.errors import CapabilityError
 from sugarloaf.core.primitives import InstrumentId, Interval
-from sugarloaf.core.views import Distribution, Estimate, Ordering, Probability, Score, Target
+from sugarloaf.core.views import (
+    PAIR_QUANTITIES,
+    Distribution,
+    Estimate,
+    Ordering,
+    Probability,
+    Score,
+    Target,
+)
 from sugarloaf.research.anchors import anchor_from_closes
 from sugarloaf.research.archive import ForecastRecord
 from sugarloaf.research.evaluation import (
@@ -102,6 +113,27 @@ class PriceTable:
         index = bisect_right(ends, at)
         return (index > 0 and ends[index - 1] == at) or (convention, instrument, at) in self._starts
 
+    def series(
+        self,
+        instrument: InstrumentId,
+        start: datetime,
+        end: datetime,
+        convention: str,
+        as_of: datetime,
+    ) -> list[tuple[datetime, float]]:
+        """``(bar end, close)`` of the bars ending in ``(start, end]`` and by ``as_of``.
+
+        The ``series`` source of ``ReturnOutcomeResolver``: the path a window minimum reads.
+        Opens are not part of it; a bar's open serves only as a start price.
+        """
+        key = (convention, instrument)
+        if key not in self._ends:
+            return []
+        ends = self._ends[key]
+        first = bisect_right(ends, start)
+        last = bisect_right(ends, min(end, as_of))
+        return list(zip(ends[first:last], self._closes[key][first:last]))
+
     def last(self, convention: str, instrument: InstrumentId, at: datetime) -> float | None:
         """The close of the last bar ending at or before ``at``; None when there is none."""
         key = (convention, instrument)
@@ -151,6 +183,23 @@ def score_view(view, outcome) -> dict:
             raise CapabilityError("The law states no quantile, cdf or density")
         return metrics
     return default_metrics(view, outcome)
+
+
+def target_family(target: Target) -> str:
+    """The quantity of a target and, for a pair, the instrument it is measured against.
+
+    ``"difference:IWC"`` for a return against IWC, ``"min_relative_return:IWM"`` for a
+    window minimum against IWM, the bare quantity (``"return"``) otherwise.
+    """
+    subject = target.subject
+    if (
+        target.quantity in PAIR_QUANTITIES
+        and isinstance(subject, tuple)
+        and len(subject) == 2
+        and isinstance(subject[1], InstrumentId)
+    ):
+        return f"{target.quantity}:{subject[1].value}"
+    return target.quantity
 
 
 def _leaves(target: Target):
@@ -279,6 +328,10 @@ def _counts(rows: list[EvaluationRow], prices: PriceTable) -> dict:
         "no_bar_at_end": 0,
     }
     # The first and last target end of each unscored status, to locate the views.
+    # Bars of one leg of a pair without a bar of the other, skipped by window minima.
+    counts["unmatched_bars"] = sum(
+        int(row.outcome.provenance.get("unmatched_bars", 0)) for row in rows
+    )
     for status, name in (("pending", "horizon_after_end"), ("unavailable", "no_bar")):
         ends = [_target_end(r.forecast.view.target) for r in rows if r.status == status]
         if ends:
@@ -301,11 +354,15 @@ def view_metrics(
 
     Returns ``{"as_of", "path_fractions", "counts", "by_node_counts", "kinds"}`` where
     ``kinds[kind]`` is ``{"pooled": summary, "by_node": {node: summary}}`` for each view
-    kind with scored views. Floats are rounded to six significant digits; an infinite
-    value is the string ``"inf"`` or ``"-inf"``, so the result is standard JSON.
+    kind with scored views; with more than one target family, ``kinds[kind]["by_family"]``
+    holds ``{family: summary}`` and ``by_family_counts`` the counts per family. Floats are
+    rounded to six significant digits; an infinite value is the string ``"inf"`` or
+    ``"-inf"``, so the result is standard JSON.
     """
     records = list(records)
-    resolver = ReturnOutcomeResolver(prices.anchor, provenance={"source": "bar closes"})
+    resolver = ReturnOutcomeResolver(
+        prices.anchor, series=prices.series, provenance={"source": "bar closes"}
+    )
     report = evaluate(records, resolver, as_of=as_of, metric_fn=score_view)
     rows = list(report.rows)
     paths = {
@@ -314,8 +371,11 @@ def view_metrics(
         if row.status == "scored"
     }
     by_node: dict[str, list[EvaluationRow]] = defaultdict(list)
+    by_family: dict[str, list[EvaluationRow]] = defaultdict(list)
     for row in rows:
         by_node[row.forecast.node_id].append(row)
+        by_family[target_family(row.forecast.view.target)].append(row)
+    families = len(by_family) > 1
     kinds: dict = {}
     for kind in KINDS:
         scored = [
@@ -330,7 +390,20 @@ def view_metrics(
             "pooled": _summary(kind, scored, paths),
             "by_node": {node: _summary(kind, members, paths) for node, members in nodes.items()},
         }
+        if families:
+            grouped: dict[str, list] = defaultdict(list)
+            for row in scored:
+                grouped[target_family(row.forecast.view.target)].append(row)
+            kinds[kind]["by_family"] = {
+                family: _summary(kind, members, paths)
+                for family, members in sorted(grouped.items())
+            }
     unsupported = Counter(r.reason for r in rows if r.status == "unsupported")
+    extra = {}
+    if families:
+        extra["by_family_counts"] = {
+            family: _counts(members, prices) for family, members in sorted(by_family.items())
+        }
     result = {
         "as_of": as_of.isoformat(),
         "path_fractions": [k / PATH_STEPS for k in range(1, PATH_STEPS + 1)],
@@ -338,6 +411,7 @@ def view_metrics(
         "by_node_counts": {node: _counts(members, prices) for node, members in by_node.items()},
         "kinds": kinds,
         "unsupported_reasons": dict(unsupported.most_common(5)),
+        **extra,
     }
     return compact(result)
 
@@ -362,8 +436,9 @@ def compact(value):
 def reduced(metrics: dict, level: int) -> dict:
     """``metrics`` with less detail, to fit a size budget.
 
-    Level 0 is everything. Level 1 drops the per-node groups (deciles, quintiles) and their
-    paths, keeping each node's headline numbers. Level 2 keeps pooled summaries only.
+    Level 0 is everything. Level 1 drops the per-node and per-family groups (deciles,
+    quintiles) and their paths, keeping each node's and family's headline numbers. Level 2
+    keeps pooled summaries only.
     """
     if level == 0:
         return metrics
@@ -380,9 +455,15 @@ def reduced(metrics: dict, level: int) -> dict:
                 for node, summary in parts["by_node"].items()
             },
         }
+        if "by_family" in parts:
+            kinds[kind]["by_family"] = {
+                family: {k: v for k, v in summary.items() if k not in ("deciles", "quintiles")}
+                for family, summary in parts["by_family"].items()
+            }
     result["kinds"] = kinds
     if level >= 2:
         result.pop("by_node_counts", None)
+        result.pop("by_family_counts", None)
     return result
 
 
