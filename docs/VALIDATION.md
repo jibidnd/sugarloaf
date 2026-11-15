@@ -125,12 +125,16 @@ daily window on named instruments warmed in `initialize`, `cancel_order`, and th
 `market_order` path over a 250-name universe. The strategy's first attempt stopped on a
 member LEAN had removed from `securities`; the adapter now skips such a symbol (`2ee2c5d`).
 
-Not yet exercised natively: `universe.etf`, `UniverseSettings.schedule.on` (both Lab
-universes refresh daily), `add_data(EODHDUpcomingEarnings)`, `security.fundamentals` and the
-shortable provider through `Custom`, `schedule.on` with `date_rules`/`time_rules`,
-`set_warm_up`, quote bars, `rsi`/`sma`/`dch`, `deregister_indicator`, and a refused ticket.
-The S-1 node's forecast run would exercise the earnings, fundamentals, borrow and schedule
-calls.
+The S-1 node's forecast run (project `38055078`, backtest `d8adb6353f6cccd0a3e9f65d8349df5c`,
+January 2 to March 28, 2024: 26,414 views over 61 sessions, 153 steps, no diagnostics) added
+`security.fundamentals` and the shortable provider's `fee_rate` and `shortable_quantity` read
+through `Custom("fundamentals")` and `Custom("borrow")`, and `schedule.on(date_rules.every_day(symbol),
+time_rules.after_market_open(symbol, 1), fn)` firing `on_scheduled` once a session.
+
+Not yet exercised natively: `universe.etf`, `UniverseSettings.schedule.on` (every Lab universe
+refreshes daily), `add_data(EODHDUpcomingEarnings)` and `slice.get` for it (no Lab node declares
+`Custom("earnings")`), `time_rules.at` with a NodaTime zone, `set_warm_up`, quote bars,
+`rsi`/`sma`/`dch`, `deregister_indicator`, and a refused ticket.
 
 ### Capability limits
 
