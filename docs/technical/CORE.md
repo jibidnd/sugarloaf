@@ -189,7 +189,7 @@ requires a scalar law to implement `cdf` and evaluates it at the support bounds,
 `CDF_TAIL_TOLERANCE` (1e-6) of 0 and of 1 at the outer probes. A calibration is a constant
 inside the cdf: `ScaledHalfT` has cdf(y) = 2 T_df(y / (c s)) - 1 for y >= 0, with
 T_df from `scipy.special.stdtr`, so calibrating the law changes c and keeps the family. A
-joint law (dimension > 1) implements `pdf` or `logpdf` instead, and a law of discrete
+joint law (dimension > 1) implements `pdf` or `logpdf`, and a law of discrete
 masses exposes `events` and `masses`; neither needs a cdf. The archive serializer
 (`sugarloaf/research/serialization.py`) encodes `QuantileDistribution` and `ScaledHalfT`
 field by field.
