@@ -54,7 +54,8 @@ failure behavior. Keep comments accurate as code evolves; avoid merely restating
 - Views have immutable identity and explicit target, horizon, units, and
   provenance. Raw scores are not calibrated returns or probabilities.
 - Research and trading use fresh node/run state. Predictive evaluation and
-  portfolio P&L answer different questions. Memory fixtures are not a simulator.
+  portfolio P&L answer different questions. The memory adapter fills every order at
+  the last price given, charges no fee or slippage, and has no data it was not handed.
 - A trading graph ends in one explicit PositionView. Withdrawal and missing input
   do not imply liquidation; explicit zero positions express exits.
 - Holdings, open orders, fills and cancellations are the platform's. The adapter
@@ -94,8 +95,8 @@ version-matched source; cite what was actually checked.
 ## Verification and evidence
 
 Add tests that establish consequential behavior or prevent likely regressions;
-avoid trivial implementation mirrors and unnecessary mocking. For relevant Python
-changes, run from this repository:
+avoid trivial implementation mirrors, and use a collaborator directly where a test
+can. For relevant Python changes, run from this repository:
 
 ```powershell
 uv run --cache-dir .uv-cache pytest
@@ -103,8 +104,10 @@ uv run --cache-dir .uv-cache ruff check .
 ```
 
 Use controlled timing cases for runtime changes, numerical cases for model changes,
-and fill/cancel sequences for execution changes. Native QC boundary changes also
-need suitable platform evidence: local fakes do not verify Python.NET overloads.
+and fill/cancel sequences for execution changes. The QuantConnect adapter has no
+local tests; it is verified by the backtests listed in docs/VALIDATION.md, run with
+`tools/native_checks.py`. A change to the adapter, the launcher or a LEAN call needs
+those checks to pass, and a new LEAN call needs a check that exercises it.
 Documentation-only changes need link and consistency checks.
 
 Record actual source/configuration identity, including local edits, when retaining

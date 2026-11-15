@@ -11,8 +11,9 @@ Source: [execution contracts](../../sugarloaf/execution/contracts.py),
 [QuantConnect `execute`](../../sugarloaf/adapters/quantconnect/adapter.py) and
 [memory `execute`](../../sugarloaf/adapters/memory/adapter.py).
 Tests: [memory adapter](../../tests/test_memory_adapter.py) (sizing, cancellation),
-[QuantConnect adapter](../../tests/test_quantconnect_adapter.py) (tagged orders, refusals,
-feedback), [runner](../../tests/test_runner.py) (rejected targets).
+[runner](../../tests/test_runner.py) (rejected targets). The QuantConnect `execute` has no
+local tests; it is verified by the backtests listed in
+[validation](../VALIDATION.md#native-checks), run with `tools/native_checks.py`.
 
 ## Path of a target
 

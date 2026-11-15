@@ -22,7 +22,7 @@ from .packaging import BundleSpec, build_bundle, read_spec
 
 
 def _client(client=None):
-    # Dependency injection lets local tests supply a fake API without network access.
+    # Local tests pass a client whose post returns the responses they list, without network access.
     # Real runs use the REST client with QC's documented authentication.
     if client is None:
         return qc_client.default_client()

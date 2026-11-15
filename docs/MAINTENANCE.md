@@ -11,17 +11,19 @@ contracts.
 | Declarations, records, slices | [Core](technical/CORE.md) | `tests/test_runner.py`, `tests/test_memory_adapter.py` |
 | Views, graph wiring | [Core](technical/CORE.md) | `tests/test_view_axes.py`, `tests/test_runner.py` |
 | Dispatch, view carriage, warm-up, terminal check | [Runtime](technical/RUNTIME.md) | `tests/test_runner.py` |
-| QuantConnect mapping | [Adapters](technical/ADAPTERS.md) | `tests/test_quantconnect_adapter.py` with `tests/fake_lean.py` |
+| QuantConnect mapping | [Adapters](technical/ADAPTERS.md) | No local tests; the backtests in [validation](VALIDATION.md#native-checks), run with `tools/native_checks.py` |
 | Memory adapter | [Adapters](technical/ADAPTERS.md#memory) | `tests/test_memory_adapter.py` |
 | Built-in nodes, allocation, constraints | [Portfolio](technical/PORTFOLIO.md) | `tests/test_nodes.py` |
-| Order sizing and policy | [Execution](technical/EXECUTION.md) | `tests/test_memory_adapter.py`, `tests/test_quantconnect_adapter.py` |
+| Order sizing and policy | [Execution](technical/EXECUTION.md) | `tests/test_memory_adapter.py`; on QuantConnect, the native checks |
 | Archive, outcomes, metrics | [Research](technical/RESEARCH.md) | `tests/test_research_evaluation.py`, `tests/test_research_inference.py` |
 | Examples and public deployments | [Examples](../examples/README.md) | `tests/test_examples.py` |
 | Packaging, cloud tooling, evidence | [Deployment](technical/DEPLOYMENT.md) | `tests/test_deployment_bundle.py`, `tests/test_deployment_evidence.py`, `tests/test_cloud_run.py`, `tests/test_qc_client.py`, `tests/test_qc_kernels.py`, `tests/test_cli.py` |
+| Native-check script | [Validation](VALIDATION.md#native-checks) | `tests/test_native_checks.py` |
 
 Write a regression that tells the intended behaviour from the failure: a numerical case for
 arithmetic, a sequence of `deliver`, `fire` and `set_members` calls on `MemoryAdapter` for
-dispatch, a fake LEAN call sequence for the QuantConnect adapter.
+dispatch. A change to the QuantConnect adapter is verified by a native backtest, not a local
+test.
 
 ## Verify a change
 
@@ -32,10 +34,26 @@ uv run --cache-dir .uv-cache pytest
 uv run --cache-dir .uv-cache ruff check .
 ```
 
-`tests/fake_lean.py` stands in for LEAN's Python surface. It establishes which calls the
-adapter makes and in what order, not LEAN's behaviour or Python.NET overload resolution. A
-change to a LEAN call needs a native backtest, recorded in [validation](VALIDATION.md) with
-the project, backtest id and source hash.
+The QuantConnect adapter has no local tests; it is verified by the backtests listed in
+[validation](VALIDATION.md#native-checks), run with `tools/native_checks.py`. After a change
+to the adapter, the launcher or a LEAN call, run the native checks:
+
+```powershell
+uv run --cache-dir .uv-cache python tools/native_checks.py deployments/quantconnect/native_checks.json --dry-run
+uv run --cache-dir .uv-cache python tools/native_checks.py deployments/quantconnect/native_checks.json
+```
+
+The first command lists what would run without contacting QuantConnect. The second runs
+each listed manifest as a QuantConnect backtest, one after another, compares `Total Orders`
+exactly and the monetary and percentage statistics within each check's tolerance, prints one
+line per check and writes the backtest ids and statistics to
+`artifacts/native_checks/<UTC time>.json`. It exits nonzero when a check fails or a run
+raises. `tests/test_native_checks.py` tests the script's comparison and file handling with a
+`run_backtest` replacement that returns the statistics each test lists. A failing check either reveals a regression or reflects an intended
+change; for an intended change, record the new backtest in [validation](VALIDATION.md) with
+its project, backtest id and source hash, and update the expectations in
+`deployments/quantconnect/native_checks.json`. A new LEAN call gets a check that exercises
+it.
 
 ## Diagnose missing output
 

@@ -1,19 +1,20 @@
 # Memory adapter
 
-`MemoryAdapter` implements the adapter interface over fixtures for tests and examples. The
+`MemoryAdapter` implements the adapter interface for tests and examples. The
 caller drives it: `deliver` hands it bars, quotes, custom records and lifecycle records at a
 time; `fire` fires a schedule; `set_members` and `refresh` change a universe's membership.
-The adapter consolidates, keeps windows, updates fixture indicators, reports the account and
-sizes and fills orders, and calls the runner as a platform would.
+The adapter consolidates, keeps windows, updates its indicators, reports the account,
+sizes orders and fills them at the price last given, and calls the runner as a platform
+would.
 
 ## Entry points
 
 - [`MemoryAdapter`](adapter.py): `attach(runner)`, `deliver(...)`, `fire(name, time)`,
   `set_members(universe, members)`, `refresh(universe, rows, at)`, `set_price(instrument,
   price)`, `fill(order_id)`; the adapter interface methods.
-- [`Sessions`](adapter.py): a fixture exchange calendar of `(open, close)` pairs.
-- [Indicator formulas](indicators.py): SMA, EMA, Wilder's RSI and Donchian, for tests of
-  node logic.
+- [`Sessions`](adapter.py): an exchange calendar given as a tuple of `(open, close)` pairs.
+- [Indicator formulas](indicators.py): SMA, EMA, Wilder's RSI and Donchian computed in Python
+  from the bars the adapter was handed; LEAN computes its own in a backtest.
 - [Complete example](../../../examples/memory.py).
 
 ```powershell

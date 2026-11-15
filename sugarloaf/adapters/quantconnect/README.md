@@ -32,8 +32,6 @@ US equities (ETFs included) and US indices; market, market-on-open and market-on
 orders, day or good-till-cancelled; native `sma`, `ema`, `rsi` and `dch` indicators. Other
 asset classes and indicator kinds raise `CapabilityError`.
 
-[Adapter tests](../../../tests/test_quantconnect_adapter.py) run the adapter against
-[a stand-in for LEAN](../../../tests/fake_lean.py); they establish the calls made, not LEAN's
-behaviour. Native evidence for the current adapter is pending; see
-[validation](../../../docs/VALIDATION.md#redesign-of-14-november-2026).
+The QuantConnect adapter has no local tests; it is verified by the backtests listed in
+[validation](../../../docs/VALIDATION.md#native-checks), run with `tools/native_checks.py`.
 Deployment commands: [deployment](../../../docs/technical/DEPLOYMENT.md).

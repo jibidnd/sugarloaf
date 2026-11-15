@@ -1,7 +1,7 @@
 # Getting started
 
 This path runs locally in a few minutes with no QuantConnect account. It runs a complete
-fixture strategy, writes a node, scores a forecast run, and points to the deployment
+strategy on prices written in the example, writes a node, scores a forecast run, and points to the deployment
 commands.
 
 ## 1. Run the memory example
@@ -84,7 +84,7 @@ class CloseOverSMA:
         return {"views": (view,)}
 
 
-asset = InstrumentId("fixture:equity:1")
+asset = InstrumentId("example:equity:1")
 graph = Graph().add_node("signal", CloseOverSMA(asset))
 graph.add_node("positions", PositiveSignalPositions((asset,), budget=0.5))
 graph.connect("signal", "views", "positions", "views")
@@ -143,7 +143,7 @@ from sugarloaf.research.anchors import anchor_from_closes
 from sugarloaf.research.serialization import decode_archive, encode_archive
 from sugarloaf.runtime import GraphRunner
 
-asset = InstrumentId("fixture:equity:1")
+asset = InstrumentId("example:equity:1")
 start = datetime(2025, 1, 6, 21, tzinfo=UTC)
 closes = [100.0, 101.0, 103.0, 102.0, 104.0, 105.0, 104.0]
 ends = [start + timedelta(days=k) for k in range(len(closes))]

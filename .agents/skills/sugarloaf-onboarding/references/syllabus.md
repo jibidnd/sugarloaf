@@ -102,13 +102,15 @@ Sources: [runtime](../../../../docs/technical/RUNTIME.md), `sugarloaf/runtime/ru
   consolidators, universes and the selector, custom data, indicator helpers, schedules,
   warm-up, `execute`, `on_data`, `on_securities_changed`, `on_order_event`; time zones; the
   mapping table.
-- **7.3 Memory adapter and the launcher:** `MemoryAdapter` driving methods and fixtures;
+- **7.3 Memory adapter and the launcher:** `MemoryAdapter` driving methods and the calendars,
+  histories and lot sizes the caller supplies;
   `SugarloafAlgorithm`, `launcher.load`, `launcher.start`, `launcher.finish`.
 
 Sources: [adapters](../../../../docs/technical/ADAPTERS.md),
 `sugarloaf/adapters/quantconnect/adapter.py`, `launcher.py`, `main.py`,
-`sugarloaf/adapters/memory/adapter.py`, `tests/test_quantconnect_adapter.py`,
-`tests/fake_lean.py`, `tests/test_memory_adapter.py`.
+`sugarloaf/adapters/memory/adapter.py`, `tests/test_memory_adapter.py`; the QuantConnect
+adapter has no local tests and is verified by the backtests listed in
+[validation](../../../../docs/VALIDATION.md#native-checks), run with `tools/native_checks.py`.
 
 ## 8 Portfolio composition
 
@@ -135,8 +137,8 @@ Sources: [built-in nodes](../../../../sugarloaf/nodes/README.md),
   the memory adapter's fills.
 
 Sources: [execution](../../../../docs/technical/EXECUTION.md),
-`sugarloaf/execution/contracts.py`, `tests/test_memory_adapter.py`,
-`tests/test_quantconnect_adapter.py`.
+`sugarloaf/execution/contracts.py`, `tests/test_memory_adapter.py`; on QuantConnect, the
+native checks in [validation](../../../../docs/VALIDATION.md#native-checks).
 
 ## 10 Predictive research and methodology
 
@@ -174,9 +176,10 @@ Sources: [external factories](../../../../docs/EXTERNAL_STRATEGIES.md),
 
 - **12.1 Tracing diagnostics:** `runner.diagnostics`, `NotReady` versus `CapabilityError`
   versus `ContractError`; the missing-output checklist.
-- **12.2 Local checks, CI and native validation:** pytest, Ruff, the docs build; the LEAN
-  stand-in versus native runs; compile success versus a completed backtest versus economic
-  validity; the pending native checks.
+- **12.2 Local checks, CI and native validation:** pytest, Ruff, the docs build; the
+  QuantConnect adapter verified only by native backtests, run with `tools/native_checks.py`;
+  compile success versus a completed backtest versus economic validity; the calls not yet
+  exercised natively.
 - **12.3 Where to change what and operational limits:** signal, allocation, order policy,
   constraints, adapter mapping; no restart or recovery; retention limits. Preserve
   dependency, commit/push, compute, release/live/capital and external-action gates.

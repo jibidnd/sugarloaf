@@ -5,14 +5,80 @@
 The current code (declarations in `sugarloaf.core.inputs`, `GraphRunner`, `QuantConnectAdapter`
 and `MemoryAdapter` as mappings, forecast runs saved to the Object Store) has local test
 coverage and the native checks below. On branch `redesign/push-model-2026-11-14`,
-`uv run --cache-dir .uv-cache pytest` passes 139 tests and `ruff check .` passes. The native
+`uv run --cache-dir .uv-cache pytest` passes 150 tests and `ruff check .` passes. The native
 evidence further down this page was recorded on the earlier design and applies to the source
 snapshots named there.
 
-`tests/test_quantconnect_adapter.py` runs the adapter against `tests/fake_lean.py`, a
-stand-in for LEAN's Python surface written for these tests. It establishes which calls the
-adapter makes. It does not establish that LEAN accepts them; the runs below do, for the calls
-they exercise.
+The QuantConnect adapter has no local tests; it is verified by the backtests listed below,
+run with `tools/native_checks.py`. Each backtest establishes that LEAN accepts the calls it
+exercises.
+
+### Native checks
+
+`deployments/quantconnect/native_checks.json` lists the native checks and their expected
+statistics. `tools/native_checks.py` runs them on QuantConnect and compares the results. From
+the repository root:
+
+```powershell
+uv run --cache-dir .uv-cache python tools/native_checks.py deployments/quantconnect/native_checks.json --dry-run
+uv run --cache-dir .uv-cache python tools/native_checks.py deployments/quantconnect/native_checks.json
+uv run --cache-dir .uv-cache python tools/native_checks.py deployments/quantconnect/native_checks.json --only ema --out artifacts/native_checks/ema-check.json
+```
+
+`--dry-run` lists each check's manifest, project, timeout and expectations and contacts no
+service. `--only NAME` (repeatable) runs the named checks. `--out` names the output file; the
+default is `artifacts/native_checks/<UTC time>.json`, and an existing file is refused so that
+earlier results are kept. Each run is a backtest on the account's backtest node, billed as
+any other; the three checks below take a few minutes in total.
+
+The script runs each manifest through `run_backtest` (upload, compile, backtest, status and
+logs, with evidence under `artifacts/<manifest stem>/`), one backtest after another; the three
+manifests share project `37377184`, and each upload replaces the project's files. A run needs
+a selected QuantConnect project: the manifest's `project_id`, or the `project_id` that
+`sugarloaf create --adapter quantconnect --manifest <manifest>` saved in
+`artifacts/<manifest stem>/cloud.json`. A check without one is refused before any backtest
+runs. Credentials come from `QC_USER_ID` and `QC_API_TOKEN` or the LEAN CLI's saved login; the
+script prints and saves neither, and error messages have both replaced by `[redacted]`.
+
+For each check it compares the backtest's `statistics` with the check's `expected` values:
+`Total Orders` exactly, as an integer; a statistic that reads as a number once `$`, `%` and
+thousands separators are removed (such as `Total Fees` "$6.00", `End Equity` "99665.11" or
+`Net Profit` "-0.335%") within the check's absolute `tolerance` for it, in the statistic's own
+unit (dollars, percentage points), zero when none is given; any other statistic as text. A
+check with no expected values reports its run as `recorded`. The script prints one line per
+check (name, manifest, backtest id, `pass`, `fail`, `recorded` or `error`, and each compared
+statistic as observed, expected, difference and tolerance), then a summary. It continues
+after a check that fails or raises. The output file holds, per check, the backtest id,
+project, compile id, source hash, parameters, comparisons and the full statistics; it is
+rewritten after every check, so an interrupted session keeps the checks already run. Exit
+status: 0 when every check passes or is recorded, 1 when a check fails or a run raises, 2 when
+the check file or the arguments are invalid (nothing has run), 130 on interruption.
+
+The check file is JSON:
+
+```json
+{
+  "checks": [
+    {
+      "name": "ema",
+      "manifest": "ema.toml",
+      "backtest_timeout": 1800,
+      "expected": {"Total Orders": 6, "Total Fees": "$6.00", "End Equity": "99665.11"},
+      "tolerance": {"End Equity": 50},
+      "recorded_backtest": "df71573d7e9f939d128ca43f74b2cefd"
+    }
+  ]
+}
+```
+
+`manifest` is a path relative to the check file's folder and must lie inside it. `name`
+(default: the manifest's stem) is what `--only` selects and part of the backtest's name.
+`backtest_timeout` (seconds, default 1800, at most 21600) bounds the wait for one backtest.
+`recorded_backtest` names the backtest whose statistics supplied the expectations, and
+`description` is a note; the script reports both and reads neither from QuantConnect. Any
+other key, a tolerance on `Total Orders`, a tolerance without an expectation, a negative
+tolerance or a duplicate name makes the file invalid. The expectations in the repository's
+file are the results of the 15 November runs below, with a tolerance of USD 50 on end equity.
 
 ### Native checks, 15 November 2026
 
@@ -73,14 +139,16 @@ calls.
 - Orders: market, market-on-open and market-on-close, day or good-till-cancelled, sized by
   `order_quantity`. Holdings, fills, partial fills and cancellations are LEAN's; the runner
   keeps the adapter's order records and LEAN's order feedback for the result file.
-- Native indicators: `sma`, `ema`, `rsi`, `donchian`. The memory adapter's formulas are
-  fixtures, not a parity claim.
+- Native indicators: `sma`, `ema`, `rsi`, `donchian`. The memory adapter computes SMA, EMA,
+  Wilder's RSI and Donchian in Python from the bars it was handed; LEAN computes its own in a
+  backtest, and the two are not compared.
 - A node runs when its declared data arrives, when an upstream output changes or when its
   schedule fires.
 - `ctx.history` reads at the feed resolution; a request with an `interval` raises
   `CapabilityError` on QuantConnect.
 - No restart or recovery of runner state; no live-trading evidence.
-- Memory fixtures are not a market simulator.
+- The memory adapter fills every order at the last price given, charges no fee or slippage,
+  and has no data it was not handed.
 - Overlapping forecast revisions are dependent observations; evaluation reports no
   independent-sample inference.
 
@@ -390,8 +458,8 @@ Observed:
   above; injected-boundary tests establish the additional local causal contracts.
 - The EMA run contains no partial fills or cancellations. Native cancellation
   rejection/retry and partial-fill sequences remain separate acceptance checks.
-- No live-deployment/restart recovery or durable state. Memory fixtures are not a
-  market simulator.
+- No live-deployment/restart recovery or durable state. The memory adapter fills every
+  order at the last price given, charges no fee or slippage, and has no data it was not handed.
 - Session-count horizons, the rebalance band, scoped lifecycle invalidation,
   partial-universe readiness and default-provider shorting each have one native
   backtest (see the 9 October 2026 acceptance above). That is acceptance of the

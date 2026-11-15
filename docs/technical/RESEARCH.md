@@ -120,5 +120,6 @@ horizons and revisions are dependent observations: the summaries carry no indepe
 p-values, and both inference tools describe predictive association before costs.
 
 Tests: [evaluation](../../tests/test_research_evaluation.py),
-[inference](../../tests/test_research_inference.py),
-[archive round trip through the launcher](../../tests/test_quantconnect_adapter.py).
+[inference](../../tests/test_research_inference.py). The archive round trip through the
+launcher is verified by the EMA forecast backtest in
+[validation](../VALIDATION.md#native-checks).

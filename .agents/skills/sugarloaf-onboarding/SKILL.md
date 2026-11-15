@@ -65,10 +65,10 @@ Give usable examples as part of the explanation: show local environment commands
 the memory example entry point, a minimal node and graph, predictive evaluation,
 and a public deployment manifest when their subsections arrive. Explain each
 example's prerequisites and expected behavior; do not require execution. Native
-QC features need the platform environment, while memory fixtures can demonstrate
-the local framework path. Independence from other strategy packages does not
-imply a built-in historical-data vendor, brokerage simulator, or QC-free native
-indicator implementation.
+QC features need the platform environment, while the memory adapter runs the
+local framework path on bars and prices the caller hands it. Independence from
+other strategy packages does not imply a built-in historical-data vendor, fill
+model with fees and slippage, or QC-free native indicator implementation.
 
 ## Track progress
 
@@ -100,8 +100,9 @@ section unless requested. The existing conversation's pacing and scope persist.
 - Holdings, open orders, fills and cancellations are the platform's; the adapter sizes
   each target against them with the shared `order_quantity` rule.
 - Explain current supported capabilities from validation and relevant source.
-  Memory fixtures are supplied observations and fills, not a market simulator;
-  local boundary tests do not establish native API or numerical parity.
+  The memory adapter fills every order at the last price given, charges no fee or
+  slippage, and has no data it was not handed. The QuantConnect adapter has no local
+  tests; only native backtests establish what LEAN accepts and computes.
 - Correct mechanics, successful compilation, and example P&L do not establish
   predictive skill or a profitable strategy. Separate forecast metrics from
   portfolio results and explain chronological evaluation and dependent forecasts.

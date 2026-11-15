@@ -27,7 +27,7 @@ order.
 | [`ema.EMAScore`](ema.py) | One `Bars` input and two native EMAs; `update` reads them and emits a `ScoreView` of fast / slow − 1 | Raw prices; the score is uncalibrated; the horizon is a parameter |
 | [`ema.LongWhenPositive`](ema.py) | Score to long/cash target | Fixed account-NAV weight |
 | [`ema.build_graph`](ema.py) / [`ema.build_forecast_graph`](ema.py) | The same node in a trading graph and in a forecast graph | |
-| [`memory.FixedContribution`](memory.py) | A schedule-driven node with no data inputs; branch netting | Synthetic mark and fills |
+| [`memory.FixedContribution`](memory.py) | A schedule-driven node with no data inputs; branch netting | A mark set in the code; fills at that mark, no fee or slippage |
 
 The [built-in nodes](../sugarloaf/nodes/README.md) hold reusable baseline rules.
 

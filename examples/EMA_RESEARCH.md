@@ -44,7 +44,7 @@ periods and unsuccessful results here before making a research claim. Overlappin
 are dependent observations.
 
 **Validation.** The node, both graphs and the public deployments have local tests in
-[tests/test_examples.py](../tests/test_examples.py); the archive round trip through the
-launcher is tested in [tests/test_quantconnect_adapter.py](../tests/test_quantconnect_adapter.py).
-The notebook ships without outputs. Native runs of the current code are listed as pending in
-[validation](../docs/VALIDATION.md#redesign-of-14-november-2026).
+[tests/test_examples.py](../tests/test_examples.py). The archive round trip through the
+launcher and both public deployments are verified by the backtests listed in
+[validation](../docs/VALIDATION.md#native-checks), run with `tools/native_checks.py`.
+The notebook ships without outputs.

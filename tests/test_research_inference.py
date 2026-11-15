@@ -89,7 +89,7 @@ def scored_rows(scores_by_day, returns_by_day, session_days):
             node = f"signal-{instrument.value}"
             view = ScoreView(
                 return_target(instrument, interval),
-                Score(score, "fixture"),
+                Score(score, "example"),
                 Metadata(f"{node}:{day}", node, at, interval.end),
             )
             archive.record(node, "views", (view,), at)

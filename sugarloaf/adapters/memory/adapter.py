@@ -1,12 +1,12 @@
-"""A fixture adapter: the same interface as a platform, driven by the test.
+"""An adapter driven by the caller, with the same interface as a platform.
 
 The test (or example) hands bars, quotes, custom records, membership changes and
 scheduled times to ``deliver``, ``set_members`` and ``fire``; the adapter does what
 a platform would (consolidates, keeps windows, updates indicators, reports the
-account, sizes orders) and forwards the callback to the runner. Fills are
-immediate at the current mark unless ``fills`` is False. It is a fixture, not a
-market simulator: there is no slippage, no session calendar unless one is given,
-and no data it was not handed.
+account, sizes orders) and forwards the callback to the runner. Unless ``fills``
+is False, it fills every order immediately at the last price given. It charges no
+fee or slippage, has no session calendar unless one is given, and has no data it
+was not handed.
 """
 
 from collections import deque
@@ -52,7 +52,7 @@ from sugarloaf.execution.contracts import (
 
 @dataclass(frozen=True)
 class Sessions:
-    """A fixture exchange calendar: regular (and optional extended) sessions."""
+    """An exchange calendar given as a tuple of (open, close) pairs; extended hours optional."""
 
     regular: tuple[tuple[datetime, datetime], ...]
     extended: tuple[tuple[datetime, datetime], ...] = ()
@@ -63,13 +63,13 @@ class Sessions:
     def next_close(self, after: datetime, count: int = 1) -> datetime:
         closes = sorted(end for _, end in self.regular if end > after)
         if len(closes) < count:
-            raise NotReady("Calendar fixture has no such later session")
+            raise NotReady("The given calendar has no such later session")
         return closes[count - 1]
 
     def next_open(self, after: datetime, count: int = 1) -> datetime:
         opens = sorted(start for start, _ in self.regular if start > after)
         if len(opens) < count:
-            raise NotReady("Calendar fixture has no such later session")
+            raise NotReady("The given calendar has no such later session")
         return opens[count - 1]
 
     def is_open(self, at: datetime, extended: bool = False) -> bool:
@@ -78,7 +78,7 @@ class Sessions:
     def session(self, at: datetime, extended: bool = False) -> tuple[datetime, datetime]:
         started = [(s, e) for s, e in self._sessions(extended) if s <= at]
         if not started:
-            raise NotReady("Calendar fixture has no session at or before this time")
+            raise NotReady("The given calendar has no session at or before this time")
         return max(started)
 
 
@@ -122,7 +122,8 @@ class _Consolidator:
 
 
 class MemoryAdapter:
-    """Fixture platform over the adapter interface.
+    """An adapter that replays the bars, membership changes and scheduled times the caller
+    hands it, keeps windows and indicators from them, and fills orders at the price last given.
 
     Args:
         start: The clock before the first delivery.
@@ -257,7 +258,7 @@ class MemoryAdapter:
         return result
 
     def refresh(self, universe: str, rows, at: datetime | None = None) -> None:
-        """Select members from fixture rows with the shared rule, then set them."""
+        """Select members from the given selection rows with the shared rule, then set them."""
         self.set_members(universe, select(self.universes[universe], rows, at or self.clock))
 
     def deliver(
@@ -280,7 +281,7 @@ class MemoryAdapter:
         """
         aware(time)
         if time < self.clock:
-            raise ContractError("The fixture clock does not run backwards")
+            raise ContractError("The memory adapter's clock does not run backwards")
         self.clock = time
         delivered_bars: dict[tuple, dict] = {}
         delivered_quotes: dict[tuple, dict] = {}
@@ -373,7 +374,7 @@ class MemoryAdapter:
         try:
             return self.calendars[instrument]
         except KeyError:
-            raise CapabilityError(f"No calendar fixture for {instrument.value}") from None
+            raise CapabilityError(f"No calendar was given for {instrument.value}") from None
 
     def portfolio(self) -> Portfolio:
         value = self.cash + sum(

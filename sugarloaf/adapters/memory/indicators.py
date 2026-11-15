@@ -1,9 +1,9 @@
 """Small indicator formulas for the memory adapter and tests.
 
 They follow LEAN's definitions (an EMA seeded by its first value, Wilder's RSI, a
-Donchian channel of the last ``period`` highs and lows) closely enough for tests of
-node logic. They are fixtures, not a parity promise: a native run reads the
-platform's own indicators.
+Donchian channel of the last ``period`` highs and lows). They compute SMA, EMA,
+Wilder's RSI and Donchian in Python from the bars the adapter was handed; LEAN
+computes its own in a backtest, and the two are not compared.
 """
 
 from collections import deque

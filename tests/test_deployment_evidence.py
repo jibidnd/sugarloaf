@@ -102,7 +102,8 @@ def test_log_retrieval_rejects_truncation_and_changing_lengths():
                       7, "x")
 
 
-def fake_client(monkeypatch, post):
+def scripted_client(monkeypatch, post):
+    """Make the cloud tooling use a client whose ``post`` returns what the test's ``post`` lists."""
     from sugarloaf.adapters.quantconnect.cloud import client
 
     monkeypatch.setattr(client, "default_client", lambda: SimpleNamespace(post=post))
@@ -119,7 +120,7 @@ def test_failed_submission_records_intent_before_network(tmp_path, monkeypatch, 
         assert read_snapshot(attempts[0])["request"] == request
         raise ConnectionError("Response lost after submission")
 
-    fake_client(monkeypatch, post)
+    scripted_client(monkeypatch, post)
     monkeypatch.setattr(sys, "argv", ["cloud", "--manifest", str(manifest), "backtest"])
     assert main() == 1
     assert "ConnectionError: Response lost" in capsys.readouterr().err
@@ -140,7 +141,7 @@ def test_status_uses_explicit_saved_project_and_retains_each_observation(tmp_pat
         assert request == {"projectId": 7, "backtestId": "old"}
         return {"backtest": {"backtestId": "old", "completed": next(observed)}}
 
-    fake_client(monkeypatch, post)
+    scripted_client(monkeypatch, post)
     monkeypatch.setattr(sys, "argv", ["cloud", "--manifest", str(manifest), "status",
                                      "--backtest-id", "old"])
     main()

@@ -258,9 +258,11 @@ of the same project; see [research](RESEARCH.md).
 
 [Bundle tests](../../tests/test_deployment_bundle.py) cover explicit inclusion,
 path containment and source shadowing; [example tests](../../tests/test_examples.py) build the public deployments;
-[adapter tests](../../tests/test_quantconnect_adapter.py) run `launcher.start` and
-`launcher.finish` against a stand-in for LEAN; [evidence tests](../../tests/test_deployment_evidence.py) cover
-snapshot checks, historical lookup, uncertain submissions and log pagination.
+[evidence tests](../../tests/test_deployment_evidence.py) cover
+snapshot checks, historical lookup, uncertain submissions and log pagination, with a REST
+client whose `post` returns the responses each test lists. The QuantConnect adapter and the
+launcher have no local tests; they are verified by the backtests listed in
+[validation](../VALIDATION.md#native-checks), run with `tools/native_checks.py`.
 [Validation](../VALIDATION.md) records completed platform checks and remaining limits.
 The public run orchestration and cloud-tool boundaries have local regression
 coverage. QC cloud evidence applies only to its retained source snapshots;

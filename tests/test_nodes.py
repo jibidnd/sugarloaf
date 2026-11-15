@@ -198,10 +198,10 @@ def test_positive_signal_positions_needs_every_instrument():
     from sugarloaf.core.node import NodeInputs
     from sugarloaf.runtime.runner import NodeContext
 
-    class Stub:
+    class RunnerAtStepOne:
         steps = 1
 
-    ctx = NodeContext(Stub(), "p", T0)
+    ctx = NodeContext(RunnerAtStepOne(), "p", T0)
     node = PositiveSignalPositions((SPY, QQQ), budget=1.0)
     view = ScoreView.__mro__  # noqa: F841  (ScoreView stays importable for the node)
     from sugarloaf.core.views import Score, return_target

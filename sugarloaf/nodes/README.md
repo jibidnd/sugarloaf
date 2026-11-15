@@ -45,7 +45,8 @@ assert compiled.emits_positions()
 ```
 
 Substitute `RSIReversion(asset)` or `SMATrend(asset)` to change the signal. Running the
-graph needs an adapter with the indicators (`MemoryAdapter` computes fixture versions) and,
+graph needs an adapter with the indicators (`MemoryAdapter` computes them in Python from the
+bars it was handed) and,
 for a session-count horizon, a calendar for the instrument.
 
 ## Mean aggregation

@@ -11,7 +11,8 @@ Sugarloaf has three parts, all platform-neutral in their interfaces:
   views along the graph edges and hands a changed terminal position target to the adapter
   for execution after a constraint check.
 - **Adapter.** Maps each declaration and each read to one platform call
-  (`QuantConnectAdapter` over `QCAlgorithm`; `MemoryAdapter` over fixtures), builds a
+  (`QuantConnectAdapter` over `QCAlgorithm`; `MemoryAdapter` over bars and prices the caller
+  hands it), builds a
   neutral slice from each platform callback and passes it to the runner.
 
 There is one clock: the platform's. Every callback runs at the platform's time and

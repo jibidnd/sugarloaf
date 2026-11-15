@@ -60,8 +60,9 @@ relevant source version; cite checked evidence and distinguish inference.
 Look for meaningful existing tests first. Where verification is needed, choose a
 small numerical, timing, lifecycle, or order sequence that discriminates correct
 behavior from the plausible failure. Run the applicable checks when permitted;
-do not submit cloud runs merely to complete a review. Native compatibility that
-local fakes cannot establish remains unverified until platform validation.
+do not submit cloud runs merely to complete a review. The QuantConnect adapter has
+no local tests; a change to it remains unverified until the native checks in
+docs/VALIDATION.md pass on it.
 
 Lead with actionable findings, each tied to a concrete trigger, consequence, and
 source location. Separate defects from design alternatives and evidence gaps. If

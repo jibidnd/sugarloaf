@@ -132,15 +132,15 @@ The adapter refuses other asset classes and indicator kinds with `CapabilityErro
 [validation record](../VALIDATION.md#redesign-of-14-november-2026) lists which rows of the
 mapping table have native evidence.
 
-[Adapter tests](../../tests/test_quantconnect_adapter.py) run the adapter against
-[a stand-in for LEAN's Python surface](../../tests/fake_lean.py). They establish the calls the
-adapter makes, not LEAN's behaviour or Python.NET overload resolution.
+The QuantConnect adapter has no local tests; it is verified by the backtests listed in
+[validation](../VALIDATION.md#native-checks), run with `tools/native_checks.py`.
 
 ## Memory
 
 `MemoryAdapter(start, *, account=100_000.0, calendars=None, histories=None, lot_sizes=None,
-fills=True)` implements the same interface over fixtures for tests and examples. The caller
-drives it:
+fills=True)` implements the same interface for tests and examples: it replays the bars,
+membership changes and scheduled times the caller hands it, keeps windows and indicators from
+them, and fills orders at the price last given. The caller drives it:
 
 | Method | Effect |
 | --- | --- |
@@ -152,8 +152,8 @@ drives it:
 | `set_price(instrument, price)` | Sets a mark (bars set marks too) |
 | `fill(order_id)` | Fills an open order at the current mark, for adapters built with `fills=False` |
 
-Fixtures: `calendars` maps instruments to `Sessions(regular, extended=())`, tuples of
-`(open, close)`; `histories` maps instruments to bars served by `history`; `lot_sizes`
+Inputs the caller supplies: `calendars` maps instruments to
+`Sessions(regular, extended=())`, tuples of `(open, close)`; `histories` maps instruments to bars served by `history`; `lot_sizes`
 defaults to one. With `fills=True`, `execute` fills each order immediately at the current
 mark and reports it through `runner.on_order_event`; `cancel_on_new_target` cancels every
 open order in the target's instruments first, whatever its tag. Sizing uses the account read

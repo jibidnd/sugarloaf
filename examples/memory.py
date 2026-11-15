@@ -1,4 +1,7 @@
-"""Run with python -m examples.memory. A fixture platform, not a market simulator."""
+"""Run with python -m examples.memory.
+
+The memory adapter fills every order at the price set here, with no fee or slippage.
+"""
 
 from datetime import UTC, datetime, time, timedelta
 
@@ -53,7 +56,7 @@ def build_graph(instrument):
 
 def run():
     now = datetime(2024, 1, 2, 15, tzinfo=UTC)
-    instrument = InstrumentId("fixture:equity:1")
+    instrument = InstrumentId("example:equity:1")
     # Flat USD10,000 account, USD100 mark: a 50% target means 50 shares.
     adapter = MemoryAdapter(now, account=10_000)
     adapter.set_price(instrument, 100.0)

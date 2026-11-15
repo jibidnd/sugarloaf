@@ -1,0 +1,30 @@
+{
+  "description": "Native checks of the QuantConnect adapter, run with tools/native_checks.py. Expectations are the results recorded on 15 November 2026 (docs/VALIDATION.md, Native checks).",
+  "checks": [
+    {
+      "name": "ema",
+      "manifest": "ema.toml",
+      "description": "EMA example, trading: January 6-10, 2025, USD 100,000, 5-minute bars.",
+      "recorded_backtest": "df71573d7e9f939d128ca43f74b2cefd",
+      "backtest_timeout": 1800,
+      "expected": {"Total Orders": 6, "Total Fees": "$6.00", "End Equity": "99665.11"},
+      "tolerance": {"End Equity": 50}
+    },
+    {
+      "name": "ema_forecasts",
+      "manifest": "ema_forecasts.toml",
+      "description": "EMA forecast run over the same window: views archived, no orders.",
+      "recorded_backtest": "382dd5c2cf7db09c0bdc4ea3d47371a2",
+      "backtest_timeout": 1800,
+      "expected": {"Total Orders": 0}
+    },
+    {
+      "name": "index_check",
+      "manifest": "index_check.toml",
+      "description": "Index data check (the VIX beside SPY), March 24 to April 17, 2025: no orders.",
+      "recorded_backtest": "4b9f5a3d9a149d06ef95df2d7ac6def1",
+      "backtest_timeout": 1800,
+      "expected": {"Total Orders": 0}
+    }
+  ]
+}
