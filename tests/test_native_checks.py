@@ -259,11 +259,11 @@ def test_the_repository_check_file_matches_the_recorded_backtests(monkeypatch):
     monkeypatch.setattr(native_checks, "_project", lambda manifest: "selected")
     checks = native_checks.load_checks(REPO / "deployments/quantconnect/native_checks.json")
     assert [(c.name, c.manifest.name, c.recorded_backtest) for c in checks] == [
-        ("ema", "ema.toml", "cc7a7dba9388a8a5b0cd70a284dcc6fc"),
-        ("ema_forecasts", "ema_forecasts.toml", "84a094e67e1a467c4de51e06fcd44607"),
-        ("index_check", "index_check.toml", "8e2a97ed460cdf6920f92d023b99cf9e"),
-        ("warm_up_check", "warm_up_check.toml", "6509e4ac1a1b6413d63519d1f063827f"),
-        ("coverage_check", "coverage_check.toml", "509b6e541c322cc055b12605afa2f78c"),
+        ("ema", "ema.toml", "1801f342ef56d480e8d840ba2c58feae"),
+        ("ema_forecasts", "ema_forecasts.toml", "be5fc4cc0c45989dbc14219166279b8f"),
+        ("index_check", "index_check.toml", "2ea3b35a05ee3dc159d76b55805354a6"),
+        ("warm_up_check", "warm_up_check.toml", "2c72893490e8cfb9c87c21228edcd4c8"),
+        ("coverage_check", "coverage_check.toml", "0ddb63439c5845e86a9f1dd8fa920a9e"),
     ]
     assert native_checks.evaluate(checks[0], EMA_STATISTICS)[0] == "pass"
     assert native_checks.evaluate(checks[1], NO_ORDERS)[0] == "pass"

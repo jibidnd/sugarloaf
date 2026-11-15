@@ -1,11 +1,11 @@
 {
-  "description": "Native checks of the QuantConnect adapter, run with tools/native_checks.py. Expectations are the results recorded on 15 November 2026; the recorded backtests are the runs on d38ed4c (docs/VALIDATION.md, Native checks).",
+  "description": "Native checks of the QuantConnect adapter, run with tools/native_checks.py. Expectations are the results recorded on 15 November 2026; the recorded backtests are the runs on 4754641 (docs/VALIDATION.md, Native checks on 4754641).",
   "checks": [
     {
       "name": "ema",
       "manifest": "ema.toml",
       "description": "EMA example, trading: January 6-10, 2025, USD 100,000, 5-minute bars.",
-      "recorded_backtest": "cc7a7dba9388a8a5b0cd70a284dcc6fc",
+      "recorded_backtest": "1801f342ef56d480e8d840ba2c58feae",
       "backtest_timeout": 1800,
       "expected": {
         "Total Orders": 6,
@@ -20,7 +20,7 @@
       "name": "ema_forecasts",
       "manifest": "ema_forecasts.toml",
       "description": "EMA forecast run over the same window: views archived, no orders.",
-      "recorded_backtest": "84a094e67e1a467c4de51e06fcd44607",
+      "recorded_backtest": "be5fc4cc0c45989dbc14219166279b8f",
       "backtest_timeout": 1800,
       "expected": {
         "Total Orders": 0
@@ -30,7 +30,7 @@
       "name": "index_check",
       "manifest": "index_check.toml",
       "description": "Index data check (the VIX beside SPY), March 24 to April 17, 2025: no orders.",
-      "recorded_backtest": "8e2a97ed460cdf6920f92d023b99cf9e",
+      "recorded_backtest": "2ea3b35a05ee3dc159d76b55805354a6",
       "backtest_timeout": 1800,
       "expected": {
         "Total Orders": 0
@@ -40,7 +40,7 @@
       "name": "warm_up_check",
       "manifest": "warm_up_check.toml",
       "description": "Windows and indicators under a 45-day WarmUp, January 6-10, 2025: no orders; the WARM_UP_CHECK and RUN_RECORD log lines hold each window's and indicator's count beside its distinct end times.",
-      "recorded_backtest": "6509e4ac1a1b6413d63519d1f063827f",
+      "recorded_backtest": "2c72893490e8cfb9c87c21228edcd4c8",
       "backtest_timeout": 1800,
       "expected": {
         "Total Orders": 0
@@ -50,7 +50,7 @@
       "name": "coverage_check",
       "manifest": "coverage_check.toml",
       "description": "Adapter paths the other checks leave out, declared together, July 21 to August 1, 2025, with a 10-day WarmUp: no orders; the COVERAGE_CHECK and RUN_RECORD log lines hold each declaration's arrivals and distinct times, and the report asserts every declaration delivered at least one arrival.",
-      "recorded_backtest": "509b6e541c322cc055b12605afa2f78c",
+      "recorded_backtest": "0ddb63439c5845e86a9f1dd8fa920a9e",
       "backtest_timeout": 3600,
       "expected": {
         "Total Orders": 0

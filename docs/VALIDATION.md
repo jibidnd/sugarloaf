@@ -3,7 +3,8 @@
 ## Redesign of 14 November 2026
 
 The current code (declarations in `sugarloaf.core.inputs`, `GraphRunner`, `QuantConnectAdapter`
-and `MemoryAdapter` as mappings, forecast runs saved to the Object Store) has local test
+and `MemoryAdapter` as mappings, forecast runs scored in the backtest with their metrics in
+the backtest log) has local test
 coverage and the native checks below. On branch `redesign/push-model-2026-11-14`,
 `uv run --cache-dir .uv-cache pytest` passes 150 tests and `ruff check .` passes.
 
@@ -98,8 +99,8 @@ run also saves `forecasts.json`.
 The five native checks on commit `d38ed4c` (branch `core/universe-exclusions-2026-11-15`:
 `LiquidityUniverse.exclude_sectors`, and `QuantConnectAdapter.on_securities_changed`
 delivering a joining member's borrow terms), run with `tools/native_checks.py` in project
-`37377184`; each passes its expectations, and these are the `recorded_backtest` values of
-`native_checks.json`:
+`37377184`; each passes its expectations (the `recorded_backtest` values are the
+[runs on 4754641](#native-checks-on-4754641-run-output-and-view-metrics)):
 
 | Check | Backtest | Source hash | Observed |
 | --- | --- | --- | --- |
@@ -160,6 +161,52 @@ time_rules.after_market_open(symbol, 1), fn)` firing `on_scheduled` once a sessi
 Not yet exercised natively: a refused ticket. The [coverage check](#coverage-check) exercises
 the other paths no check above reaches.
 
+### Native checks on 4754641: run output and view metrics
+
+The five native checks on commit `4754641` (branch `launcher/view-metrics-2026-11-15`:
+`launcher.finish` writing `RUN_SUMMARY`, `VIEW_METRICS`, `VIEW_SAMPLE` and `RUN_RECORD` log
+lines and runtime statistics, with nothing written to the Object Store; view metrics computed
+in the run by `sugarloaf.research.view_metrics`; `QuantConnectAdapter._deliver_borrow`), run
+with `tools/native_checks.py` in project `37377184`; each passes its expectations, and these
+are the `recorded_backtest` values of `native_checks.json`. `run_backtest` saved each run's
+parsed output as `artifacts/<manifest stem>/<backtest id>-output.json`; every one parses with
+no error and its `RUN_SUMMARY` error list is empty.
+
+| Check | Backtest | Source hash | Observed |
+| --- | --- | --- | --- |
+| `ema` | `1801f342ef56d480e8d840ba2c58feae` | `149178a6…7620d7` | 6 orders, USD 6.00 fees, end equity USD 99,652.57; `VIEW_METRICS` counts 0 views (a trading run archives none) |
+| `ema_forecasts` | `be5fc4cc0c45989dbc14219166279b8f` | `bc81d3d2…f56e0d` | No orders, 1,560 steps; the view metrics below |
+| `index_check` | `2ea3b35a05ee3dc159d76b55805354a6` | `6fa7d541…11dcf6` | No orders; the `index_check` report record arrives as a `RUN_RECORD` line |
+| `warm_up_check` | `2c72893490e8cfb9c87c21228edcd4c8` | `efb799e2…25eea6` | No orders, 12,122 steps; `WARM_UP_CHECK` and the `warm_up_check` `RUN_RECORD` line |
+| `coverage_check` | `0ddb63439c5845e86a9f1dd8fa920a9e` | `c01315cf…7bdd61` | No orders, 6,294 steps (6,278 plus one borrow arrival per session); every assertion holds, borrow included |
+
+`VIEW_METRICS` of `ema_forecasts`, the record of this launcher (SPY, 5-minute EMA(20)/EMA(50)
+spread score, target the price return from the bar's close to `ctx.time + 1 day`, January
+6–10, 2025, outcomes from split-adjusted minute closes read with `adapter.history` in
+`on_end_of_algorithm`): 312 views issued, 156 scored, 78 with the horizon after the backtest
+end (target ends 11 January, a Saturday), 78 with no bar at the target end (target ends 9
+January, when the market was closed). Of the 156 scored: hit rate 0.6026 (156 rows with a
+nonzero score and return), 54 predicted up, 10 realized up, precision 0.0185, recall 0.1,
+F1 0.0312; mean realized return by score decile from -0.00432 in the lowest to -0.0107 in the
+highest, top-minus-bottom decile spread -0.00635. The runtime statistics carry the same
+numbers (`Views issued` 312, `Views scored` 156, `Score hit rate` 0.6026, `Score F1` 0.03125,
+`Score decile spread` -0.006353). Two sessions of a falling market and one score make this a
+check of the mechanics, not evidence about the score. The run's log is 28 lines and 22,332
+characters, under the 102,400-byte quota per backtest; the longest line, the one
+`VIEW_METRICS` part, has 8,009 characters with its timestamp, under the 8,192 QuantConnect
+keeps.
+
+In `coverage_check` the `Custom("borrow")` declaration on the three energy members, with
+Interactive Brokers borrow data, receives 48 records over 16 sessions (3 members × 16), first
+at 04:00 UTC on 11 July, the members' join, 18 of them in the warm-up replay; every record has
+a quantity, none repeats a member within a session, none is stamped outside the session it
+arrives in, and no scheduled call runs before its session's terms. The run exercises
+`algorithm.log`, `algorithm.set_runtime_statistic`, `history[TradeBar](symbols, start, end,
+resolution, ..., data_normalization_mode=SPLIT_ADJUSTED)` in `on_end_of_algorithm`, the
+shortable provider's `shortable_quantity` and `fee_rate` per session, and
+`exchange.hours.get_next_market_open` from local midnight. A Saturday join is covered by
+`tests/test_qc_borrow.py`, not by a native run.
+
 ### Windows and indicators under warm-up
 
 A window or indicator holds each bar period once, newest first, and no value ending after the
@@ -181,9 +228,8 @@ The native check is [warm_up_check.py](../deployments/quantconnect/warm_up_check
 at minute, consolidated to the exchange session). At every evaluation the node counts each
 window's bars and each indicator's values beside the distinct end times among them, and
 whether the newest end time is later than `ctx.time`, and the adapter records the callback
-that performs each fill; the report saves the counts in the
-result record (`sugarloaf/results/37377184/<backtest id>/result.json`, record
-`warm_up_check`) and writes them to the backtest log as `WARM_UP_CHECK`.
+that performs each fill; the report writes the counts to the backtest log as `WARM_UP_CHECK`
+and as the report record `warm_up_check` (a `RUN_RECORD` line).
 
 | Source | Backtest | SPY window: bars / distinct | SPY indicator: values / distinct | QQQ window | QQQ indicator | Evaluations with a value after `ctx.time` |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -220,9 +266,9 @@ The native check is [coverage_check.py](../deployments/quantconnect/coverage_che
 whose replay starts at 04:00 UTC on 11 July. One node declares every path below. At each
 callback it counts, per declaration, the arrivals (records delivered to it) and the distinct
 bar end times or record times among them, and per indicator the distinct value end times it
-reads and whether it becomes ready. `_report`, which `launcher.finish` calls, saves the counts
-in the result record (`sugarloaf/results/37377184/<backtest id>/result.json`, record
-`coverage_check`), writes them to the backtest log as one `COVERAGE_CHECK` line, and raises
+reads and whether it becomes ready. `_report`, which `launcher.finish` calls, writes the counts
+to the backtest log as the report record `coverage_check` (a `RUN_RECORD` line) and as one
+`COVERAGE_CHECK` line, and raises
 `AssertionError` naming each declaration with no arrival; the assertion message carries the
 same line, because LEAN keeps no log message of the final step when `on_end_of_algorithm`
 raises.
@@ -291,7 +337,7 @@ subscribes it), and an order skipped during warm-up.
   `CapabilityError`.
 - Orders: market, market-on-open and market-on-close, day or good-till-cancelled, sized by
   `order_quantity`. Holdings, fills, partial fills and cancellations are LEAN's; the runner
-  keeps the adapter's order records and LEAN's order feedback for the result file.
+  keeps the adapter's order records and LEAN's order feedback; the run summary counts them.
 - Native indicators: `sma`, `ema`, `rsi`, `donchian`. The memory adapter computes SMA, EMA,
   Wilder's RSI and Donchian in Python from the bars it was handed; LEAN computes its own in a
   backtest, and the two are not compared.
