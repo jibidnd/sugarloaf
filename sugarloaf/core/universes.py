@@ -4,6 +4,7 @@ The rule is neutral; the adapter owns the platform's refresh callback and conver
 its rows. Selection never fetches data and never guesses a missing field.
 """
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from math import isfinite
@@ -42,7 +43,9 @@ def _first_distinct(rows, count):
     return tuple(members)[:count]
 
 
-def select(definition: Universe, rows, at: datetime | None = None) -> tuple[InstrumentId, ...]:
+def select(
+    definition: Universe, rows: Iterable, at: datetime | None = None
+) -> tuple[InstrumentId, ...]:
     """Select members for one refresh.
 
     Args:

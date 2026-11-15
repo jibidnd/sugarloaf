@@ -47,7 +47,7 @@ def load(factory, algorithm):
     return factory(algorithm.get_parameter, **extra)
 
 
-def start(algorithm, deployment):
+def start(algorithm: object, deployment: object) -> QuantConnectAdapter:
     """Apply deployment settings, build the adapter and the runner, set up declarations.
 
     Returns:

@@ -106,8 +106,16 @@ class EMASpread(_IndicatorScore):
             or a count of trading sessions (see ``horizon_end``).
     """
 
-    def __init__(self, instrument, fast=20, slow=50, *, resolution="daily", interval=None,
-                 horizon=1):
+    def __init__(
+        self,
+        instrument: InstrumentId,
+        fast: int = 20,
+        slow: int = 50,
+        *,
+        resolution: str = "daily",
+        interval: timedelta | None = None,
+        horizon: Horizon = 1,
+    ):
         if _period(fast) >= _period(slow):
             raise ContractError("EMA fast period must be below slow period")
         super().__init__(instrument, resolution, interval, horizon)

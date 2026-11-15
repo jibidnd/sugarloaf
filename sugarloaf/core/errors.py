@@ -23,17 +23,6 @@ class NotReady(SugarloafError):
     code = "DATA_NOT_READY"
 
 
-class SnapshotError(SugarloafError):
-    # A Context read after release or provider mutation is unsafe even if the
-    # underlying Python service object is still reachable.
-    code = "SNAPSHOT_INVALID"
-
-
-class OrderRefused(SugarloafError):
-    # The platform definitely declined to create an order: nothing is outstanding
-    # and no exposure needs reserving. This differs from a submission whose
-    # outcome is unknown, which must keep its reservation.
-    code = "ORDER_REFUSED"
 
 
 class NumericalError(SugarloafError):

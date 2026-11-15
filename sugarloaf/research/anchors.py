@@ -6,7 +6,7 @@ such a read into an anchor without any look-ahead rule beyond "the price at that
 time, known when its bar ended".
 """
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import datetime
 
 from sugarloaf.core.data import Observation
@@ -31,7 +31,7 @@ def anchor_from_closes(closes: Mapping[InstrumentId, Mapping[datetime, float]]):
     return anchor
 
 
-def closes_from_frame(frame, instrument_of, time_of) -> dict:
+def closes_from_frame(frame: object, instrument_of: Callable, time_of: Callable) -> dict:
     """Build the ``anchor_from_closes`` table from a history DataFrame.
 
     Args:

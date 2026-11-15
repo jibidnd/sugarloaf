@@ -179,13 +179,13 @@ class QuantConnectAdapter:
 
     def __init__(
         self,
-        algorithm,
+        algorithm: object,
         tickers: Mapping[InstrumentId, str | Ticker] | None = None,
         *,
         slippage: float = 0.0005,
         leverage: float = 1.0,
         borrow_data: str | None = None,
-        lean=None,
+        lean: object | None = None,
     ):
         if lean is None:
             import AlgorithmImports as lean

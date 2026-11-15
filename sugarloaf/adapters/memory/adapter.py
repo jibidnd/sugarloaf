@@ -389,9 +389,11 @@ class MemoryAdapter:
         records = []
         target_id = target.metadata.view_id
         if policy.cancel_on_new_target:
+            # Open orders of an older target in the target's instruments are cancelled;
+            # this target's own open orders stay and count as pending below.
             kept = []
             for order in self.open_orders:
-                if order.instrument in target.positions:
+                if order.instrument in target.positions and order.tag != target_id:
                     self._report(order, "canceled")
                 else:
                     kept.append(order)
@@ -405,8 +407,10 @@ class MemoryAdapter:
             whole, exact = desired_quantity(
                 amount, target.units, price, account.nav, self.lot_sizes.get(instrument, 1.0)
             )
+            # Pending is read after the cancellations above, from what is still open.
+            pending = sum(o.remaining for o in self.open_orders if o.instrument == instrument)
             quantity = order_quantity(
-                whole, exact, self.holdings.get(instrument, 0.0), account.pending(instrument),
+                whole, exact, self.holdings.get(instrument, 0.0), pending,
                 price, account.nav, target.units, policy,
             )
             if quantity == 0:
