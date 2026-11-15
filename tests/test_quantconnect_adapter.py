@@ -303,3 +303,41 @@ def test_launcher_saves_results_and_forecasts_to_the_object_store():
     assert forecasts[0]["node_id"] == "source"
     assert algorithm.messages[0].startswith("SUGARLOAF_RUN ")
     assert "SUGARLOAF_RESULT" in algorithm.messages[-1]
+
+
+def test_explicit_windows_are_warmed_from_history_at_subscription():
+    history = {"SPY": [daily_bar(Symbol("SPY"), date(2024, 12, 30) + k * DAY, 10.0 + k)
+                       for k in range(5)]}
+    algorithm = FakeAlgorithm(start=datetime(2025, 1, 6, 0, 0), history=history)
+    bars = Bars(Selection((SPY,)), "daily", window=3)
+    source = Source(bars)
+    algorithm, adapter, runner = build(source, algorithm=algorithm)
+    # Before any slice, the window holds the three newest history bars.
+    assert [b.close for b in adapter.window(bars, SPY)] == [14.0, 13.0, 12.0]
+
+
+def test_daily_declaration_on_a_minute_security_is_consolidated_from_minutes():
+    minute = Bars(Selection((SPY,)), "minute", window=2)
+    daily = Bars(Selection((SPY,)), "daily", window=2)
+
+    class Both(Source):
+        pass
+
+    source = Both(daily, minute)
+    algorithm, adapter, runner = build(source)
+    spy = adapter.symbols[SPY]
+    # The security was subscribed at minute (finest first), and the daily declaration
+    # consolidates that feed over the session instead of taking minute bars.
+    assert algorithm.securities[spy].resolution == LEAN.Resolution.MINUTE
+    assert SPY in adapter.consolidators[daily.key]
+    start = datetime(2025, 1, 6, 9, 30)
+    for k in range(390):
+        algorithm.push(start + (k + 1) * timedelta(minutes=1),
+                       Slice([minute_bar(spy, start + k * timedelta(minutes=1), 100.0 + k)]))
+    # Next session's first minute completes the daily bar.
+    nxt = datetime(2025, 1, 7, 9, 30)
+    algorithm.push(nxt + timedelta(minutes=1), Slice([minute_bar(spy, nxt, 50.0)]))
+    window = adapter.window(daily, SPY)
+    assert len(window) == 1 and window[0].open == 100.0 and window[0].close == 489.0
+    assert window[0].end == datetime(2025, 1, 6, 21, tzinfo=UTC)
+    assert len(adapter.window(minute, SPY)) == 2

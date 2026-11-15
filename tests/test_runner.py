@@ -397,3 +397,32 @@ def test_calendar_and_history_reads_go_through_the_adapter():
     adapter.attach(runner)
     adapter.deliver(T0, [bar(SPY, T0)])
     assert node.result == ([97.0, 98.0, 99.0], T0 + 2 * DAY)
+
+
+def test_restated_expired_views_drop_out_and_warm_up_records_no_diagnostics():
+    class Restater:
+        ports = {}
+        outputs = {"views": OutputSpec((ScoreView,))}
+        inputs = (Bars(Selection((SPY,))),)
+
+        def __init__(self):
+            self.current = None
+
+        def update(self, ctx, data, views):
+            if ctx.warming_up:
+                raise NotReady("still warming")
+            if self.current is None:
+                self.current = {"views": (score(ctx.node_id, SPY, ctx.time, 1.0, "fixed"),)}
+            return self.current
+
+    graph = Graph().add_node("r", Restater()).set_output("r", "views").compile()
+    adapter = MemoryAdapter(T0 - DAY)
+    runner = GraphRunner(graph, adapter)
+    adapter.attach(runner)
+    adapter.deliver(T0 - DAY, [bar(SPY, T0 - DAY)], warming_up=True)
+    assert runner.diagnostic_count == 0
+    adapter.deliver(T0, [bar(SPY, T0)])
+    assert len(runner.outputs("r", "views")) == 1
+    # Two days later the day-long view has expired; restating it withdraws, no error.
+    adapter.deliver(T0 + 2 * DAY, [bar(SPY, T0 + 2 * DAY)])
+    assert runner.outputs("r", "views") == ()

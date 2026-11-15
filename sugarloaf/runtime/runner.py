@@ -14,7 +14,7 @@ predictive view instead.
 from collections import OrderedDict, deque
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sugarloaf.adapters.protocol import Adapter, Arrival
 from sugarloaf.core.data import Slice
@@ -201,7 +201,11 @@ class GraphRunner:
                     feeds.setdefault(item.key, {}).setdefault(item.selection.universe, []).append(
                         item
                     )
-        for key, groups in feeds.items():
+        # Finest feeds first: a platform gives a security one subscription, and a coarser
+        # declaration on the same security is consolidated from it.
+        order = {"minute": 0, "hour": 1, "daily": 2}
+        for key in sorted(feeds, key=lambda k: (order[k[1]], k[2] or timedelta(0))):
+            groups = feeds[key]
             for group, items in groups.items():
                 if group != "explicit":
                     continue
@@ -402,10 +406,18 @@ class GraphRunner:
                 spec.validate(inputs.by_port[port])
             result = method(ctx, argument, inputs)
             views = outputs_of(node, result)
+            # A view restated after its expiry is no longer evidence: it drops out, as it
+            # would from a consumer's inputs, rather than ending the run.
+            views = {
+                port: tuple(v for v in port_views if v.metadata.expires_at > time)
+                for port, port_views in views.items()
+            }
             self._check(node_id, views, time)
         except (NotReady, NumericalError) as error:
-            self.diagnostic_count += 1
-            self.diagnostics.append(Diagnostic(error.code, node_id, time, str(error)))
+            if not warming_up:
+                # Warm-up replays history to fill state; "not ready" there is expected.
+                self.diagnostic_count += 1
+                self.diagnostics.append(Diagnostic(error.code, node_id, time, str(error)))
             views = {}
         if warming_up:
             # Warm-up fills windows and node state; nothing it produces is kept.
@@ -430,8 +442,6 @@ class GraphRunner:
                 seen.add(metadata.view_id)
                 if metadata.source != node_id or metadata.cutoff > time:
                     raise ContractError("Output source or cutoff is invalid")
-                if metadata.expires_at <= time:
-                    raise ContractError("Output expires at or before its issue")
                 known = self._identities.get(metadata.view_id)
                 if known is not None and known is not _RETIRED and known != view:
                     raise ContractError("View identity reused with different contents")

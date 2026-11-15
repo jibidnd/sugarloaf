@@ -198,6 +198,8 @@ class QuantConnectAdapter:
         self.instruments: dict[str, InstrumentId] = {}
         self._zones: dict[str, ZoneInfo] = {}
         self.feeds: dict[tuple, Bars | Quotes] = {}
+        # The period of each security's one subscription: the finest any declaration asked.
+        self.periods: dict[InstrumentId, timedelta] = {}
         self.windows: dict[tuple, dict[InstrumentId, object]] = {}
         self.consolidators: dict[tuple, dict[InstrumentId, object]] = {}
         self._completed: dict[tuple, dict[InstrumentId, object]] = {}
@@ -270,10 +272,25 @@ class QuantConnectAdapter:
         current = self.feeds.get(key)
         if current is None or current.window < declaration.window:
             self.feeds[key] = declaration
+        new = []
         for instrument in instruments:
             if instrument not in self.symbols:
                 self._add_security(instrument, declaration)
+                self.periods[instrument] = RESOLUTION_PERIODS[declaration.resolution]
+            elif self.periods.get(instrument, timedelta(0)) > RESOLUTION_PERIODS[
+                declaration.resolution
+            ]:
+                raise CapabilityError(
+                    f"{instrument.value} is already subscribed at a coarser resolution; declare "
+                    "the finest resolution first"
+                )
+            if instrument not in self.windows.get(key, {}):
+                new.append(instrument)
             self._track(key, instrument)
+        if new:
+            # Named instruments are subscribed before the clock starts; fill their windows
+            # from history now so the first callback sees a full window, as members get.
+            self._warm((declaration,), new)
 
     def _add_security(self, instrument: InstrumentId, declaration) -> None:
         ticker = self.tickers.get(instrument)
@@ -307,9 +324,10 @@ class QuantConnectAdapter:
         bar_type = self.lean.QuoteBar if quotes else self.lean.TradeBar
         window = self.lean.RollingWindow[bar_type](feed.window)
         windows[instrument] = window
-        if feed.interval is None:
+        interval = self._effective_interval(feed, instrument)
+        if interval is None:
             return
-        consolidator = self._consolidator(feed, symbol, quotes)
+        consolidator = self._consolidator(feed, symbol, quotes, interval)
 
         def completed(sender, bar, key=key, instrument=instrument, window=window):
             window.add(bar)
@@ -319,10 +337,28 @@ class QuantConnectAdapter:
         self.algorithm.subscription_manager.add_consolidator(symbol, consolidator)
         self.consolidators.setdefault(key, {})[instrument] = consolidator
 
-    def _consolidator(self, feed, symbol, quotes: bool):
+    def _effective_interval(self, feed, instrument: InstrumentId) -> timedelta | None:
+        """The period to consolidate the security's feed to, or None to take its bars as they are.
+
+        A declaration coarser than the security's subscription (a daily declaration on a
+        security another node subscribed at minute) is consolidated from that feed; LEAN
+        delivers one subscription's bars per security.
+        """
+        subscribed = self.periods.get(instrument, RESOLUTION_PERIODS[feed.resolution])
+        wanted = feed.period
+        if wanted == subscribed:
+            return None
+        if wanted < subscribed:
+            raise CapabilityError(
+                f"{instrument.value} is subscribed at {subscribed}; a {wanted} declaration "
+                "needs the finer resolution declared first"
+            )
+        return wanted
+
+    def _consolidator(self, feed, symbol, quotes: bool, interval: timedelta):
         cls = self.lean.QuoteBarConsolidator if quotes else self.lean.TradeBarConsolidator
-        if feed.interval != timedelta(days=1):
-            return cls(feed.interval)
+        if interval != timedelta(days=1):
+            return cls(interval)
         # Daily means the exchange session, not a 24-hour bucket: the calendar
         # function gives LEAN each session's open and length.
         security = self.algorithm.securities[symbol]
@@ -665,28 +701,24 @@ class QuantConnectAdapter:
             windows = self.windows.get(key)
             if not windows:
                 continue
-            if feed.interval is not None:
-                completed = self._completed.pop(key, None)
-                if completed:
-                    target = quotes if isinstance(feed, Quotes) else bars
-                    convert = self._quote if isinstance(feed, Quotes) else self._bar
-                    target[key] = {
-                        instrument: convert(instrument, self.symbols[instrument], bar)
-                        for instrument, bar in completed.items()
-                    }
-                continue
-            source = data.quote_bars if isinstance(feed, Quotes) else data.bars
+            target = quotes if isinstance(feed, Quotes) else bars
             convert = self._quote if isinstance(feed, Quotes) else self._bar
+            consolidated = self.consolidators.get(key, {})
             delivered = {}
+            # Bars a consolidator completed since the last slice.
+            for instrument, bar in self._completed.pop(key, {}).items():
+                delivered[instrument] = convert(instrument, self.symbols[instrument], bar)
+            # Bars of the security's own subscription, for instruments read as they are.
+            source = data.quote_bars if isinstance(feed, Quotes) else data.bars
             for symbol, bar in source.items():
                 instrument = self.instruments.get(str(symbol.id))
                 window = windows.get(instrument)
-                if window is None:
+                if window is None or instrument in consolidated:
                     continue
                 window.add(bar)
                 delivered[instrument] = convert(instrument, symbol, bar)
             if delivered:
-                (quotes if isinstance(feed, Quotes) else bars)[key] = delivered
+                target[key] = delivered
         custom = self._custom(data, time)
         lifecycle = self._lifecycle(data, time)
         arrival = Arrival(
@@ -791,6 +823,9 @@ class QuantConnectAdapter:
         added = {self.bind(s.symbol) for s in changes.added_securities}
         removed = {self.bind(s.symbol) for s in changes.removed_securities}
         for name, (definition, feeds, _) in self.universes.items():
+            finest = min(
+                (RESOLUTION_PERIODS[f.resolution] for f in feeds), default=timedelta(days=1)
+            )
             selected = set(self._selected.get(name, ()))
             before = set(self.memberships.get(name, ()))
             joined = tuple(
@@ -820,42 +855,55 @@ class QuantConnectAdapter:
                     native = self.indicators.pop((declaration, instrument), None)
                     if native is not None:
                         self.algorithm.deregister_indicator(native)
+            for instrument in joined:
+                self.periods.setdefault(instrument, finest)
             if joined:
-                self._warm_members(feeds, joined)
+                self._warm(feeds, joined)
             self.memberships[name] = tuple(
                 i for i in self._selected.get(name, ()) if i in before - set(left) or i in joined
             )
             self.runner.on_securities_changed(name, joined, left)
 
-    def _warm_members(self, feeds, instruments) -> None:
-        """Fill new members' windows from history, through their consolidators."""
+    def _warm(self, feeds, instruments) -> None:
+        """Fill windows from one history call per feed, through the consolidators.
+
+        History is read at each security's subscribed resolution, so a daily declaration
+        on a minute-subscribed security is warmed from minute bars through its
+        consolidator, as it will be fed live.
+        """
         for feed in feeds:
             if not isinstance(feed, Bars) or feed.window <= 1 and feed.interval is None:
                 continue
-            symbols = [self.symbols[i] for i in instruments]
-            count = feed.window * (
-                1
-                if feed.interval is None
-                else int(feed.interval / RESOLUTION_PERIODS[feed.resolution])
-            )
-            slices = self.algorithm.history[self.lean.TradeBar](
-                symbols, count, self._resolution(feed.resolution), fill_forward=feed.fill_forward,
-                extended_market_hours=feed.extended_hours,
-                data_normalization_mode=self._normalization(feed.normalization),
-            )
-            windows = self.windows[feed.key]
-            consolidators = self.consolidators.get(feed.key, {})
-            for data in slices:
-                for symbol, bar in data.items():
-                    instrument = self.instruments.get(str(symbol.id))
-                    if instrument not in windows:
-                        continue
-                    if instrument in consolidators:
-                        consolidators[instrument].update(bar)
-                    else:
-                        windows[instrument].add(bar)
-            # Bars consolidated from history are warm-up, not this slice's news.
-            self._completed.pop(feed.key, None)
+            by_period: dict[timedelta, list] = {}
+            for instrument in instruments:
+                by_period.setdefault(
+                    self.periods.get(instrument, RESOLUTION_PERIODS[feed.resolution]), []
+                ).append(instrument)
+            for period, group in by_period.items():
+                self._warm_group(feed, group, period)
+
+    def _warm_group(self, feed, instruments, period: timedelta) -> None:
+        symbols = [self.symbols[i] for i in instruments]
+        resolution = next(r for r, p in RESOLUTION_PERIODS.items() if p == period)
+        count = feed.window * max(1, int(feed.period / period))
+        slices = self.algorithm.history[self.lean.TradeBar](
+            symbols, count, self._resolution(resolution), fill_forward=feed.fill_forward,
+            extended_market_hours=feed.extended_hours,
+            data_normalization_mode=self._normalization(feed.normalization),
+        )
+        windows = self.windows[feed.key]
+        consolidators = self.consolidators.get(feed.key, {})
+        for data in slices:
+            for symbol, bar in data.items():
+                instrument = self.instruments.get(str(symbol.id))
+                if instrument not in windows:
+                    continue
+                if instrument in consolidators:
+                    consolidators[instrument].update(bar)
+                else:
+                    windows[instrument].add(bar)
+        # Bars consolidated from history are warm-up, not this slice's news.
+        self._completed.pop(feed.key, None)
 
     def on_order_event(self, event) -> None:
         ticket = self.algorithm.transactions.get_order_ticket(event.order_id)

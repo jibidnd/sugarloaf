@@ -33,7 +33,8 @@ setup methods in this order:
 
 1. `adapter.subscribe(declaration, instruments)` once per feed key, for the union of the
    explicit instruments of every node declaring that key, with the declaration of the
-   largest `window`.
+   largest `window`. Feeds are set up finest resolution first, because a platform gives a
+   security one subscription and a coarser declaration on it is consolidated from that.
 2. `adapter.add_universe(definition, feeds)` per universe, with the feeds (largest window
    per key) of the declarations that select it.
 3. `adapter.add_custom(declaration)` per distinct `Custom` declaration.
@@ -74,13 +75,16 @@ node's `OutputSpec`s and these rules (`_check`):
 
 - each `view_id` appears once in an emission;
 - `metadata.source` is the node id and `metadata.cutoff` is at most the callback time;
-- `metadata.expires_at` is after the callback time;
 - a `view_id` seen earlier in the run carries the same contents.
 
+A view whose `expires_at` is at or before the callback time is dropped from the output
+before these checks: a node restating an old view after it expired withdraws it, as the
+view would already have dropped out of a consumer's inputs.
+
 `NotReady` and `NumericalError` from a callback or from port validation replace the node's
-outputs with nothing and append a `Diagnostic(code, node, time, message)` to
-`runner.diagnostics` (last 2,000; `runner.diagnostic_count` counts all). Any other exception
-propagates to the adapter and from there to the platform.
+outputs with nothing and, outside warm-up, append a `Diagnostic(code, node, time, message)`
+to `runner.diagnostics` (last 2,000; `runner.diagnostic_count` counts all). Any other
+exception propagates to the adapter and from there to the platform.
 
 The returned outputs replace the node's previous outputs entirely. The node's consumers run
 in the same callback when the new outputs differ from the old.
