@@ -17,7 +17,7 @@ they exercise.
 ### Native checks, 15 November 2026
 
 Project `37377184`, LEAN as deployed by QuantConnect on that day, source at commit `7105f38`
-(the indicator change below) plus the manifests' parameters. Result records are in the Object
+(the indicator change below) plus the manifests' parameters; the Lab runs below used `2ee2c5d`. Result records are in the Object
 Store under `sugarloaf/results/37377184/<backtest id>/result.json`; the forecast run also
 saved `forecasts.json` (202,138 bytes, 313 views). Local evidence (bundles, status, logs) is in
 the git-ignored `artifacts/<manifest>/` folders.
@@ -46,13 +46,25 @@ asynchronous=True, tag=..., order_properties=...)`, `transactions.get_open_order
 `get_order_ticket`, `object_store.save`, and the `on_data`, `on_order_event` and
 `on_end_of_algorithm` callbacks.
 
-Not yet exercised natively: universes (`FundamentalUniverse.usa`, `universe.etf`,
-`UniverseSettings.schedule.on`, `on_securities_changed` with member warming),
-`add_data(EODHDUpcomingEarnings)`, `security.fundamentals` and the shortable provider,
-`schedule.on` with `date_rules`/`time_rules`, `set_warm_up`, quote bars, `rsi`/`sma`/`dch`,
-`deregister_indicator`, `remove_consolidator`, `cancel_order`, and a refused ticket. The
-Lab's momentum-view forecast run and short-reversal strategy exercise the universe,
-schedule and warming calls and are recorded in the Lab.
+Lab runs of the same day, recorded in the Lab repository (branch `port/push-model-2026-11-14`):
+the momentum-view forecast run (project `38086843`, backtest `f439134103069902cfda206714196677`,
+January 2 to March 28, 2024: a 500-stock `LiquidityUniverse`, members' windows warmed on
+joining, 30,268 views archived over 61 sessions, no diagnostics, three minutes from upload to
+result) and the short-reversal strategy (project `37695106`, backtest
+`2cd3bd4fd968429406f205059daa029a`, January 2 to February 29, 2024: 597 orders and +2.917%
+against 598 orders and +2.83% recorded for the earlier design and 587 and +2.86% for the
+plain LEAN algorithm). They exercised `FundamentalUniverse.usa` with `UniverseSettings`,
+`on_securities_changed` with member warming and `remove_consolidator`, a 253- and 782-bar
+daily window on named instruments warmed in `initialize`, `cancel_order`, and the
+`market_order` path over a 250-name universe. The strategy's first attempt stopped on a
+member LEAN had removed from `securities`; the adapter now skips such a symbol (`2ee2c5d`).
+
+Not yet exercised natively: `universe.etf`, `UniverseSettings.schedule.on` (both Lab
+universes refresh daily), `add_data(EODHDUpcomingEarnings)`, `security.fundamentals` and the
+shortable provider through `Custom`, `schedule.on` with `date_rules`/`time_rules`,
+`set_warm_up`, quote bars, `rsi`/`sma`/`dch`, `deregister_indicator`, and a refused ticket.
+The S-1 node's forecast run would exercise the earnings, fundamentals, borrow and schedule
+calls.
 
 ### Capability limits
 
