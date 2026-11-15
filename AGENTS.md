@@ -29,10 +29,6 @@ scope. Ask when ambiguity affects the outcome; continue useful independent work.
 
 ## Design and Python
 
-A history request never ticks the clock. Its bars are data that prime rolling
-windows, indicators and node memory; they never advance a node's time, produce an
-arrival or trigger an evaluation.
-
 Follow the spirit of the Zen of Python: explicit behavior, readable code, simple
 designs, and visible failures. Prefer clear names and straightforward control flow
 over cleverness. Use an abstraction when it makes a concrete use case simpler;
