@@ -87,7 +87,7 @@ SugarloafAlgorithm.initialize
 ```text
 LEAN on_data(slice)
   -> SugarloafAlgorithm.on_data -> QuantConnectAdapter.on_data
-       first callback only: setup's history fills and warm_up_indicator calls, ending at the clock
+       pending history fills and warm_up_indicator calls, on first touch, ending before the bar or clock
        bars of feeds without an interval: from slice.bars, added to their windows
        bars of feeds with an interval: completed by consolidator handlers since the last slice
        earnings, fundamentals, borrow; dividends, splits, delistings, symbol changes
@@ -100,6 +100,19 @@ LEAN on_data(slice)
        if the terminal PositionView changed: constraints -> adapter.execute(target, policy)
   -> market_order(symbol, quantity, tag=target id)
 ```
+
+The node's clock, `ctx.time`, advances only on event streams: LEAN's callbacks `on_data`,
+`on_order_event`, `on_securities_changed` and scheduled functions, as QuantConnect's own
+algorithm clock advances only with the [time frontier](https://www.quantconnect.com/docs/v2/writing-algorithms/key-concepts/time-modeling/timeslices#02-Time-Frontier)
+and its [warm-up](https://www.quantconnect.com/docs/v2/writing-algorithms/historical-data/warm-up-periods)
+replay. `QuantConnectAdapter.on_data`, `on_order_event`, `on_securities_changed` and the
+scheduled function built in `schedule` forward those events to the runner, and
+`QuantConnectAdapter.time` reads LEAN's clock. A history request is not an event stream: its
+bars prime rolling windows, indicators and node memory and advance nothing. The fill helper
+`_fill` (with `_fill_group` and `fill_before`) passes them to `add_in_order` or to a
+consolidator whose bars are not marked for the next slice, `add_in_order` stores a bar in a
+window, `update_in_order` updates an indicator, and `history` returns bars to the requesting
+node only.
 
 A scheduled function calls `runner.on_scheduled(name)`; the owning node's `on_scheduled`
 runs, then its dependents. A universe change calls `runner.on_securities_changed(universe,

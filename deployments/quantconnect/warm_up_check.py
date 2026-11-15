@@ -3,13 +3,13 @@
 The node declares daily windows of SPY (the security's own daily feed) and QQQ (a minute
 feed consolidated to the exchange session), an EMA on each, and a WarmUp of 45 calendar
 days. The adapter fills each window from one history call and warms each indicator with
-``warm_up_indicator``, both ending at the clock of LEAN's first callback, the start of the
-warm-up replay; the replay then delivers the sessions up to the start date.
+``warm_up_indicator`` on first touch, ending before the bar or clock in hand at the start
+of the warm-up replay; the replay then delivers the sessions up to the start date.
 
 The report counts, for every window and indicator, the values held and the distinct end
 times among them: equal counts mean each bar period is held once. It counts the evaluations
 at which a window's or indicator's newest end time is later than ``ctx.time`` (zero means
-no value from the future), records when the adapter ran its history fills, and records the
+no value from the future), records each fill with the callback that performed it, and the
 first bar delivered after warm-up and whether it heads its window.
 The graph's output port emits views, so this is a forecast run: nothing is traded.
 
@@ -136,9 +136,8 @@ def _report(context):
         for label, parts in probe.latest.items()
     }
     adapter = context.runner.adapter
-    first_fill = getattr(adapter, "first_fill", None)
-    summary["first_fill"] = None if first_fill is None else [first_fill[0].isoformat(),
-                                                              first_fill[1]]
+    # Each history fill and indicator warm-up: what, the clock, the cutoff, the callback.
+    summary["fills"] = list(getattr(adapter, "fills", ()))
     algorithm = getattr(adapter, "algorithm", None)
     if algorithm is not None:
         algorithm.log("WARM_UP_CHECK " + json.dumps({
@@ -146,7 +145,7 @@ def _report(context):
             "evaluations_with_repeated_end_times": probe.unequal,
             "evaluations_with_end_time_after_ctx_time": probe.ahead,
             "evaluations": probe.evaluations,
-            "first_fill": summary["first_fill"],
+            "fills": summary["fills"],
             "bars_delivered_while_warming_up": probe.replayed,
             "first_live_bar": probe.first_live,
         }, sort_keys=True))

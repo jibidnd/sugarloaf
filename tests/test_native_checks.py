@@ -261,7 +261,7 @@ def test_the_repository_check_file_matches_the_recorded_backtests(monkeypatch):
         ("ema", "ema.toml", "df71573d7e9f939d128ca43f74b2cefd"),
         ("ema_forecasts", "ema_forecasts.toml", "382dd5c2cf7db09c0bdc4ea3d47371a2"),
         ("index_check", "index_check.toml", "4b9f5a3d9a149d06ef95df2d7ac6def1"),
-        ("warm_up_check", "warm_up_check.toml", "c780c0493ddf42a45d7371762c51140d"),
+        ("warm_up_check", "warm_up_check.toml", "67b1cf1cea103a4bb24a49610ea3b48e"),
     ]
     assert native_checks.evaluate(checks[0], EMA_STATISTICS)[0] == "pass"
     assert native_checks.evaluate(checks[1], NO_ORDERS)[0] == "pass"

@@ -9,7 +9,13 @@ from collections import deque
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
-from sugarloaf.adapters.quantconnect.adapter import add_in_order, fill_before, update_in_order
+from sugarloaf.adapters.quantconnect.adapter import (
+    PendingFills,
+    add_in_order,
+    fill_before,
+    touch_window,
+    update_in_order,
+)
 
 DAY = timedelta(days=1)
 CLOSE = datetime(2025, 1, 2, 16)  # exchange-local, as LEAN stamps bars
@@ -121,3 +127,41 @@ def test_a_history_fill_ends_before_the_clock():
     assert ends(window) == [session(k).end_time for k in range(4, -1, -1)]
     assert add_in_order(window, session(5))  # the slice's own bar follows the fill
     assert all(end <= now for end in ends(window))
+
+
+def pending_fill(window, history, performed):
+    """A queued window fill: history bars ending before the cutoff go to the window."""
+    pending = PendingFills()
+
+    def fill(cutoff, source):
+        performed.append(source)
+        fill_before(history, cutoff, lambda bar: bar.end_time,
+                    lambda bar: add_in_order(window, bar))
+
+    pending.add("daily", fill)
+    return pending
+
+
+def test_a_handler_firing_before_the_fill_leaves_a_complete_window_in_order():
+    # LEAN's handler delivers session 10 before any other callback has run the fill, whose
+    # history reaches session 10 and beyond (the clock has moved past it).
+    window, performed = DequeWindow(8), []
+    pending = pending_fill(window, [session(k) for k in range(12)], performed)
+    live = session(10)
+    assert touch_window(pending, "daily", window, live, live.end_time, "consolidator")
+    assert performed == ["consolidator"]
+    assert ends(window) == [session(k).end_time for k in range(10, 2, -1)]
+    assert window[0] is live
+    # Later touches find nothing pending; the next session follows in order.
+    assert touch_window(pending, "daily", window, session(11), session(11).end_time, "on_data")
+    assert performed == ["consolidator"]
+    assert window.count == 8 and len(set(ends(window))) == 8
+
+
+def test_run_all_performs_every_pending_fill_once():
+    window, performed = DequeWindow(5), []
+    pending = pending_fill(window, [session(k) for k in range(5)], performed)
+    pending.run_all(session(3).end_time, "on_securities_changed")
+    pending.run_all(session(9).end_time, "on_data")
+    assert performed == ["on_securities_changed"]
+    assert ends(window) == [session(k).end_time for k in (2, 1, 0)]

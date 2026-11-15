@@ -31,15 +31,34 @@ Scheduled functions call `runner.on_scheduled(name)`. `on_end_of_algorithm` call
 A window or indicator never holds a value ending after the adapter's clock, and holds each
 bar period once, newest first.
 
+**Clock.** The node's clock, `ctx.time`, advances only on event streams: LEAN's callbacks `on_data`,
+`on_order_event`, `on_securities_changed` and scheduled functions, as QuantConnect's own
+algorithm clock advances only with the [time frontier](https://www.quantconnect.com/docs/v2/writing-algorithms/key-concepts/time-modeling/timeslices#02-Time-Frontier)
+and its [warm-up](https://www.quantconnect.com/docs/v2/writing-algorithms/historical-data/warm-up-periods)
+replay. `QuantConnectAdapter.on_data`, `on_order_event`, `on_securities_changed` and the
+scheduled function built in `schedule` forward those events to the runner, and
+`QuantConnectAdapter.time` reads LEAN's clock. A history request is not an event stream: its
+bars prime rolling windows, indicators and node memory and advance nothing. The fill helper
+`_fill` (with `_fill_group` and `fill_before`) passes them to `add_in_order` or to a
+consolidator whose bars are not marked for the next slice, `add_in_order` stores a bar in a
+window, `update_in_order` updates an indicator, and `history` returns bars to the requesting
+node only.
+
 **Fill.** `subscribe` creates a named instrument's `RollingWindow`; `add_indicator` builds
-its indicators. The window's one `history` call and the indicator's `warm_up_indicator` run
-at LEAN's first callback after `initialize` (`on_securities_changed`, `on_data` or a
-scheduled function, whichever comes first), when LEAN has moved the clock to the start of
-the warm-up replay: the start date minus the span of a declared `WarmUp`, or the start date
-without one. The fill takes the history bars ending before the clock (`fill_before`); the
-bar ending at the clock arrives in the slice being delivered. A member's window and
-indicators are filled the same way when it joins, at that callback's clock. The replay then
-delivers the bars from the fill's end up to the start date, in order.
+its indicators. The window's one `history` call and the indicator's `warm_up_indicator` are
+queued in `PendingFills` and performed on first touch: whichever path reaches the window or
+indicator first (its consolidator handler, `on_data`, a `ctx.window` or `ctx.indicator`
+read, `on_securities_changed` or a scheduled function) performs the pending fill, then
+applies its own bar. LEAN runs these only after `initialize`, when it has moved the clock to
+the start of the warm-up replay: the start date minus the span of a declared `WarmUp`, or
+the start date without one. A window's fill takes the history bars ending before the bar in
+hand, or before the clock for a path without a bar (`fill_before`, `touch_window`), so the
+bar follows the history in order; `warm_up_indicator` reads history ending at the clock, and
+`update_in_order` drops a later bar for a period it read. A consolidated window is filled
+through its live consolidator while that holds no data, and otherwise through a consolidator
+of its own, which passes only completed periods. A member's window and indicators are filled
+in `on_securities_changed` when it joins, at that callback's clock. The replay then delivers
+the bars from the fill's end up to the start date, in order.
 
 **Window rule.** Every bar reaches a window through `add_in_order`: it is added only when
 its end time is later than that of the window's newest bar (`window[0]`).
@@ -56,11 +75,13 @@ only when it ends after `indicator.current.end_time`. LEAN's indicators drop an 
 before the previous one but accept a different bar object ending at the same time; the rule
 leaves such a bar out. The window keeps the warmed values, up to its size.
 
-`add_in_order`, `fill_before` and `update_in_order` are module functions, tested without
-LEAN in [tests/test_qc_window_order.py](../../../tests/test_qc_window_order.py). The native
+`add_in_order`, `fill_before`, `touch_window`, `PendingFills` and `update_in_order` are
+module-level, tested without LEAN in
+[tests/test_qc_window_order.py](../../../tests/test_qc_window_order.py), including a handler
+that fires before the fill. The native
 [warm-up check](../../../deployments/quantconnect/warm_up_check.py) counts each window's and
-indicator's values beside their distinct end times, and the evaluations at which either
-holds a value ending after `ctx.time`.
+indicator's values beside their distinct end times and the evaluations at which either holds
+a value ending after `ctx.time`, and records the callback that performed each fill.
 
 ## Scope
 

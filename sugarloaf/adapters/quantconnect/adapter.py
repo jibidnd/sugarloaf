@@ -92,6 +92,9 @@ ORDER_STATUSES = {
 def add_in_order(window, bar) -> bool:
     """Add ``bar`` to a rolling window when it ends after the newest bar the window holds.
 
+    It only stores the bar: it never advances the clock or produces an Arrival, whether the
+    bar comes from history or from LEAN's live feed.
+
     ``window`` is newest first, as LEAN's ``RollingWindow``: ``count``, ``[0]`` and ``add``.
     A bar ending at or before ``window[0]`` is a period the window holds or has passed; it is
     left out and False returned, so the window holds each bar period once, in time order.
@@ -119,8 +122,45 @@ def fill_before(bars, now: datetime, end_utc, take) -> int:
     return taken
 
 
+class PendingFills:
+    """History fills and warm-ups requested before the clock runs, performed on first touch.
+
+    ``add(key, fill)`` queues ``fill(cutoff, source)`` under a key (a feed key for windows,
+    an indicator and instrument for indicators). ``run(key, cutoff, source)`` performs and
+    removes the key's fills; ``run_all`` every key's. ``cutoff`` is the UTC time the fill's
+    bars must end before; ``source`` names the callback that performs it.
+    """
+
+    def __init__(self):
+        self._items: dict = {}
+
+    def add(self, key, fill) -> None:
+        self._items.setdefault(key, []).append(fill)
+
+    def run(self, key, cutoff: datetime, source: str) -> None:
+        for fill in self._items.pop(key, ()):
+            fill(cutoff, source)
+
+    def run_all(self, cutoff: datetime, source: str) -> None:
+        for key in list(self._items):
+            self.run(key, cutoff, source)
+
+
+def touch_window(pending: PendingFills, key, window, bar, end_utc: datetime, source: str) -> bool:
+    """Perform the window's pending fill, ending before ``bar``, then offer ``bar`` to it.
+
+    Whichever path reaches a window first (a consolidator handler, a slice, a read) fills
+    it with history ending before the bar in hand, so the history bars precede the bar and
+    ``add_in_order`` keeps both.
+    """
+    pending.run(key, end_utc, source)
+    return add_in_order(window, bar)
+
+
 def update_in_order(indicator, bar, field: str | None = None) -> bool:
     """Feed ``bar`` to a native indicator when it ends after the indicator's current value.
+
+    It only updates the indicator: it never advances the clock or produces an Arrival.
 
     ``field`` names the bar attribute a scalar indicator reads (``close``, ``volume``, ...);
     None passes the whole bar, as Donchian reads it. A bar ending at or before
@@ -262,12 +302,15 @@ class QuantConnectAdapter:
         self.tags: dict[str, str] = {}
         self._last_daily_custom = None
         self._earnings_symbol = None
-        # History fills and indicator warm-ups requested during setup, run at LEAN's first
-        # callback, when the clock stands at the start of the warm-up replay (or at the start
-        # date without one); None once run. See _flush.
-        self._pending: list | None = []
-        # (clock time, number of fills) when the setup's fills ran; read by native checks.
-        self.first_fill = None
+        # History fills and indicator warm-ups requested during setup, performed on first
+        # touch, when the clock stands at or after the start of the warm-up replay. See _fill.
+        self.pending = PendingFills()
+        # One record per performed fill: what, the clock, the cutoff, the callback; read by
+        # native checks.
+        self.fills: list[dict] = []
+        # True while a history fill feeds a live consolidator: its bars prime the window
+        # and are not this slice's news (see _fill_group).
+        self._filling = False
         algorithm.settings.daily_precise_end_time = True
 
         def initialize_security(security):
@@ -344,9 +387,11 @@ class QuantConnectAdapter:
                 new.append(instrument)
             self._track(key, instrument)
         if new:
-            # Filled at the first callback, so the fill ends at the replay's start under a
-            # WarmUp and the window never holds a bar ending after the clock.
-            self._defer(lambda: self._warm((declaration,), new))
+            # Filled on first touch, after LEAN has moved the clock to the start of a
+            # warm-up replay, so the window never holds a bar ending after the clock.
+            self.pending.add(
+                key, lambda cutoff, source: self._fill((declaration,), new, cutoff, source)
+            )
 
     def _add_security(self, instrument: InstrumentId, declaration) -> None:
         ticker = self.tickers.get(instrument)
@@ -386,7 +431,10 @@ class QuantConnectAdapter:
         consolidator = self._consolidator(feed, symbol, quotes, interval)
 
         def completed(sender, bar, key=key, instrument=instrument, window=window):
-            add_in_order(window, bar)
+            touch_window(self.pending, key, window, bar, self._utc(symbol, bar.end_time),
+                         "consolidator")
+            if self._filling:
+                return  # a bar consolidated from history primes the window only
             # The arrival carries the bar either way, as LEAN delivered it (see on_data).
             self._completed.setdefault(key, {})[instrument] = bar
 
@@ -562,7 +610,8 @@ class QuantConnectAdapter:
             consolidator = self._consolidator(declaration.bars, symbol, False, interval)
             period = interval
 
-        def feed(sender, bar, native=native, field=field):
+        def feed(sender, bar, native=native, field=field, item=(declaration, instrument)):
+            self.pending.run(item, self._utc(symbol, bar.end_time), "consolidator")
             update_in_order(native, bar, field)
 
         consolidator.data_consolidated += feed
@@ -572,9 +621,15 @@ class QuantConnectAdapter:
         arguments = (symbol, native, period)
         if field is not None and field != "close":
             arguments += (getattr(lean.Field, field.capitalize()),)
-        # Warmed at the first callback, as windows are filled: the indicator then holds no
-        # value ending after the clock while LEAN replays a WarmUp.
-        self._defer(lambda: algorithm.warm_up_indicator(*arguments))
+        # Warmed on first touch, as windows are filled: the indicator then holds no value
+        # ending after the clock while LEAN replays a WarmUp. warm_up_indicator reads history
+        # ending at the clock; update_in_order drops a later bar for a period it read.
+
+        def warm(cutoff, source, name=declaration.name, instrument=instrument):
+            algorithm.warm_up_indicator(*arguments)
+            self._record(f"indicator {name} {instrument.value}", cutoff, source)
+
+        self.pending.add((declaration, instrument), warm)
         self.indicators[(declaration, instrument)] = native
         self._indicator_consolidators[(declaration, instrument)] = consolidator
 
@@ -597,7 +652,7 @@ class QuantConnectAdapter:
             )
         name = declaration.name
         def fire():
-            self._flush()
+            self.pending.run_all(self.time, "scheduled")
             self.runner.on_scheduled(name)
 
         algorithm.schedule.on(date_rule, time_rule, fire)
@@ -619,6 +674,7 @@ class QuantConnectAdapter:
         window = self.windows.get(declaration.key, {}).get(instrument)
         if window is None:
             raise CapabilityError(f"{instrument.value} is not subscribed for this feed")
+        self.pending.run(declaration.key, self.time, "window")
         symbol = self._symbol(instrument)
         convert = (
             (lambda bar: self._quote(instrument, symbol, bar))
@@ -631,6 +687,7 @@ class QuantConnectAdapter:
         native = self.indicators.get((declaration, instrument))
         if native is None:
             raise CapabilityError(f"No {declaration.name} indicator for {instrument.value}")
+        self.pending.run((declaration, instrument), self.time, "indicator")
         symbol = self._symbol(instrument)
         current = native.current
         values = tuple(
@@ -793,33 +850,15 @@ class QuantConnectAdapter:
 
     # ------------------------------------------------------------ callbacks
 
-    def _defer(self, fill) -> None:
-        """Run a history fill or warm-up at the first callback, or now once the clock runs."""
-        if self._pending is None:
-            fill()
-        else:
-            self._pending.append(fill)
-
-    def _flush(self) -> None:
-        """Run the setup's fills at LEAN's first callback.
-
-        ``initialize`` runs with the clock at the start date; LEAN then moves it to the start
-        of a declared warm-up replay. History read in ``initialize`` would hold bars the
-        replay delivers later, ending after the clock. Read here, it ends at the clock.
-        ``on_securities_changed`` precedes consolidator updates and ``on_data`` within a
-        LEAN time step, so the fill usually runs before the step's bars reach consolidators.
-        """
-        if self._pending is None:
-            return
-        pending, self._pending = self._pending, None
-        self.first_fill = (self.time, len(pending))
-        for fill in pending:
-            fill()
+    def _record(self, what: str, cutoff: datetime, source: str) -> None:
+        self.fills.append({"what": what, "clock": self.time.isoformat(),
+                           "cutoff": cutoff.isoformat(), "callback": source})
 
     def on_data(self, data) -> None:
         """Build one arrival from a LEAN slice and this slice's consolidated bars."""
-        self._flush()
         time = self.time
+        # The slice's own bars end at the clock; pending fills end before them.
+        self.pending.run_all(time, "on_data")
         bars: dict = {}
         quotes: dict = {}
         for key, feed in self.feeds.items():
@@ -951,7 +990,7 @@ class QuantConnectAdapter:
 
     def on_securities_changed(self, changes) -> None:
         """Bind new securities, create members' windows and indicators, notify the runner."""
-        self._flush()
+        self.pending.run_all(self.time, "on_securities_changed")
         added = {self.bind(s.symbol) for s in changes.added_securities}
         removed = {self.bind(s.symbol) for s in changes.removed_securities}
         for name, (definition, feeds, _) in self.universes.items():
@@ -995,18 +1034,26 @@ class QuantConnectAdapter:
             for instrument in joined:
                 self.periods.setdefault(instrument, finest)
             if joined:
-                self._warm(feeds, joined)
+                self._fill(feeds, joined, self.time, "on_securities_changed")
             self.memberships[name] = tuple(
                 i for i in self._selected.get(name, ()) if i in before - set(left) or i in joined
             )
+            # Joined members' indicators warm now, ending at this callback's clock.
+            self.pending.run_all(self.time, "on_securities_changed")
             self.runner.on_securities_changed(name, joined, left)
 
-    def _warm(self, feeds, instruments) -> None:
-        """Fill windows from one history call per feed, through the consolidators.
+    def _fill(self, feeds, instruments, cutoff: datetime, source: str) -> None:
+        """Fill windows from one history call per feed, with bars ending before ``cutoff``.
+
+        History never ticks the clock: the bars only prime windows, through ``add_in_order``;
+        they produce no Arrival, run no node and leave ``ctx.time`` where LEAN has it.
 
         History is read at each security's subscribed resolution, so a daily declaration
-        on a minute-subscribed security is warmed from minute bars through its
-        consolidator, as it will be fed live.
+        on a minute-subscribed security is filled from minute bars through a consolidator of
+        the declared period. That is the live consolidator while it holds no data (a fill at
+        setup's first touch or at a member's join), so the period in progress continues from
+        history; once LEAN has fed it, the history goes through a consolidator of its own and
+        only completed periods reach the window.
         """
         for feed in feeds:
             if not isinstance(feed, Bars) or feed.window <= 1 and feed.interval is None:
@@ -1017,9 +1064,9 @@ class QuantConnectAdapter:
                     self.periods.get(instrument, RESOLUTION_PERIODS[feed.resolution]), []
                 ).append(instrument)
             for period, group in by_period.items():
-                self._warm_group(feed, group, period)
+                self._fill_group(feed, group, period, cutoff, source)
 
-    def _warm_group(self, feed, instruments, period: timedelta) -> None:
+    def _fill_group(self, feed, instruments, period: timedelta, cutoff, source: str) -> None:
         symbols = [self.symbols[i] for i in instruments]
         resolution = next(r for r, p in RESOLUTION_PERIODS.items() if p == period)
         count = feed.window * max(1, int(feed.period / period))
@@ -1030,29 +1077,44 @@ class QuantConnectAdapter:
         )
         windows = self.windows[feed.key]
         consolidators = self.consolidators.get(feed.key, {})
-        now = self.time
-        # Bars this step's consolidators completed before the fill stay this step's news.
-        completed = self._completed.pop(feed.key, None)
+        targets = {}
+        for instrument in instruments:
+            live = consolidators.get(instrument)
+            if live is None:
+                window = windows[instrument]
+                targets[instrument] = lambda bar, window=window: add_in_order(window, bar)
+            elif source != "consolidator" and getattr(live, "working_data", None) is None:
+                targets[instrument] = live.update
+            else:
+                own = self._consolidator(
+                    feed, self.symbols[instrument], False, self._effective_interval(
+                        feed, instrument
+                    )
+                )
+                own.data_consolidated += (
+                    lambda sender, bar, window=windows[instrument]: add_in_order(window, bar)
+                )
+                targets[instrument] = own.update
 
         def history_bars():
             for data in slices:
                 for symbol, bar in data.items():
                     instrument = self.instruments.get(str(symbol.id))
-                    if instrument in windows:
+                    if instrument in targets:
                         yield instrument, symbol, bar
 
-        def take(item):
-            instrument, _, bar = item
-            if instrument in consolidators:
-                consolidators[instrument].update(bar)
-            else:
-                add_in_order(windows[instrument], bar)
-
-        fill_before(history_bars(), now, lambda item: self._utc(item[1], item[2].end_time), take)
-        # Bars consolidated from history are warm-up, not this slice's news.
-        self._completed.pop(feed.key, None)
-        if completed:
-            self._completed[feed.key] = completed
+        # History never ticks the clock: its bars reach windows (directly or through a
+        # consolidator) and nothing else: no Arrival, no evaluation, no change to ctx.time.
+        self._filling = True
+        try:
+            fill_before(
+                history_bars(), cutoff, lambda item: self._utc(item[1], item[2].end_time),
+                lambda item: targets[item[0]](item[2]),
+            )
+        finally:
+            self._filling = False
+        for instrument in instruments:
+            self._record(f"window {feed.resolution} {instrument.value}", cutoff, source)
 
     def on_order_event(self, event) -> None:
         ticket = self.algorithm.transactions.get_order_ticket(event.order_id)
