@@ -164,8 +164,8 @@ the other paths no check above reaches.
 ### Native checks on 4754641: run output and view metrics
 
 The five native checks on commit `4754641` (branch `launcher/view-metrics-2026-11-15`:
-`launcher.finish` writing `RUN_SUMMARY`, `VIEW_METRICS`, `VIEW_SAMPLE` and `RUN_RECORD` log
-lines and runtime statistics, with nothing written to the Object Store; view metrics computed
+`launcher.finish` writing `RUN_SUMMARY` and `VIEW_METRICS` log
+lines (that commit also wrote `VIEW_SAMPLE` and `RUN_RECORD` lines) and runtime statistics, with nothing written to the Object Store; view metrics computed
 in the run by `sugarloaf.research.view_metrics`; `QuantConnectAdapter._deliver_borrow`), run
 with `tools/native_checks.py` in project `37377184`; each passes its expectations, and these
 are the `recorded_backtest` values of `native_checks.json`. `run_backtest` saved each run's
@@ -176,8 +176,8 @@ no error and its `RUN_SUMMARY` error list is empty.
 | --- | --- | --- | --- |
 | `ema` | `1801f342ef56d480e8d840ba2c58feae` | `149178a6…7620d7` | 6 orders, USD 6.00 fees, end equity USD 99,652.57; `VIEW_METRICS` counts 0 views (a trading run archives none) |
 | `ema_forecasts` | `be5fc4cc0c45989dbc14219166279b8f` | `bc81d3d2…f56e0d` | No orders, 1,560 steps; the view metrics below |
-| `index_check` | `2ea3b35a05ee3dc159d76b55805354a6` | `6fa7d541…11dcf6` | No orders; the `index_check` report record arrives as a `RUN_RECORD` line |
-| `warm_up_check` | `2c72893490e8cfb9c87c21228edcd4c8` | `efb799e2…25eea6` | No orders, 12,122 steps; `WARM_UP_CHECK` and the `warm_up_check` `RUN_RECORD` line |
+| `index_check` | `2ea3b35a05ee3dc159d76b55805354a6` | `6fa7d541…11dcf6` | No orders; the `index_check` report record arrives in `RUN_SUMMARY` |
+| `warm_up_check` | `2c72893490e8cfb9c87c21228edcd4c8` | `efb799e2…25eea6` | No orders, 12,122 steps; `WARM_UP_CHECK` and the `warm_up_check` report record |
 | `coverage_check` | `0ddb63439c5845e86a9f1dd8fa920a9e` | `c01315cf…7bdd61` | No orders, 6,294 steps (6,278 plus one borrow arrival per session); every assertion holds, borrow included |
 
 `VIEW_METRICS` of `ema_forecasts`, the record of this launcher (SPY, 5-minute EMA(20)/EMA(50)
@@ -229,7 +229,7 @@ at minute, consolidated to the exchange session). At every evaluation the node c
 window's bars and each indicator's values beside the distinct end times among them, and
 whether the newest end time is later than `ctx.time`, and the adapter records the callback
 that performs each fill; the report writes the counts to the backtest log as `WARM_UP_CHECK`
-and as the report record `warm_up_check` (a `RUN_RECORD` line).
+and as the report record `warm_up_check` in `RUN_SUMMARY`.
 
 | Source | Backtest | SPY window: bars / distinct | SPY indicator: values / distinct | QQQ window | QQQ indicator | Evaluations with a value after `ctx.time` |
 | --- | --- | --- | --- | --- | --- | --- |

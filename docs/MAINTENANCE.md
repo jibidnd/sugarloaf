@@ -89,8 +89,8 @@ no order usually means `order_quantity` returned zero: check `min_trade_value`,
 `rebalance_band` and pending open orders against the [sizing rule](technical/EXECUTION.md#sizing).
 
 For a QuantConnect run, read `SUGARLOAF_RUN`, the backtest's errors and the run output
-(`artifacts/<manifest stem>/<backtest id>-output.json`: `RUN_SUMMARY`, `VIEW_METRICS`,
-`VIEW_SAMPLE`), and keep the source identity tied to the run.
+(`artifacts/<manifest stem>/<backtest id>-output.json`: `RUN_SUMMARY` and
+`VIEW_METRICS`), and keep the source identity tied to the run.
 
 ## Maintain documentation
 

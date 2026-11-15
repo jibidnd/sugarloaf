@@ -11,13 +11,10 @@ longer than one line is split across consecutive lines, because QuantConnect kee
 
 * ``RUN_SUMMARY``: name, mode, environment, execution policy, ``runner.finish()``, member
   counts per universe, order and update counts, node configs, the strategy report's return
-  value, the labels of its records, and the error list.
+  value and its records (``ReportContext.record(label, value)``), and the error list.
 * ``VIEW_METRICS``: ``sugarloaf.research.view_metrics.view_metrics`` of the forecast archive.
-* ``VIEW_SAMPLE``: the first ``SAMPLES_PER_NODE`` archived views of each node, one per value,
-  encoded as ``sugarloaf.research.serialization.encode_archive`` encodes a record.
-* ``RUN_RECORD``: each ``ReportContext.record(label, value)`` of the strategy report.
 
-The character budgets below keep one run's lines well under the organization's log quota
+The two character budgets below keep one run's lines well under the organization's log quota
 per backtest (100 KB on the Quant Researcher tier; see docs/technical/RUNTIME.md). Raise
 them for a tier with a larger quota.
 """
@@ -34,7 +31,6 @@ from sugarloaf import __version__
 from sugarloaf.adapters.quantconnect.adapter import QuantConnectAdapter, Ticker
 from sugarloaf.core.inputs import RESOLUTION_PERIODS, HistoryRequest
 from sugarloaf.deployment.reporting import ReportContext, serialize
-from sugarloaf.research.serialization import encode_archive
 from sugarloaf.research.view_metrics import (
     PriceTable,
     compact,
@@ -51,9 +47,6 @@ LINE_CHARACTERS = 8000
 # Character budgets of each kind of line, summed over its parts and values.
 SUMMARY_BUDGET = 10_000
 METRICS_BUDGET = 32_000
-SAMPLE_BUDGET = 16_000
-RECORD_BUDGET = 12_000
-SAMPLES_PER_NODE = 20
 # The price series an outcome reads: a price return from split-adjusted closes, a total
 # return from closes adjusted for splits and dividends.
 CONVENTION_NORMALIZATION = {"price_return": "split_adjusted", "total_return": "adjusted"}
@@ -205,30 +198,6 @@ def run_view_metrics(adapter, runner, errors: list[str]) -> dict:
                 "kinds": {}}
 
 
-def _samples(runner) -> list[dict]:
-    """The first ``SAMPLES_PER_NODE`` archived views of each node, in issue order."""
-    taken: dict[str, int] = defaultdict(int)
-    samples = []
-    for record in runner.archive:
-        if taken[record.node_id] < SAMPLES_PER_NODE:
-            taken[record.node_id] += 1
-            samples.append(encode_archive([record])[0])
-    return samples
-
-
-def _within(tag: str, values: list, budget: int, errors: list[str]) -> list[str]:
-    """Lines of each value in turn while their total stays within ``budget``."""
-    lines: list[str] = []
-    for index, value in enumerate(values):
-        more = log_lines(tag, value)
-        if _size(lines) + _size(more) > budget:
-            errors.append(f"{tag}: {len(values) - index} of {len(values)} values omitted "
-                          f"beyond the {budget}-character budget")
-            break
-        lines.extend(more)
-    return lines
-
-
 def output_lines(algorithm, deployment, adapter, *, strategy, records, errors) -> tuple:
     """Build every output line of the run; returns ``(lines, metrics)``."""
     runner = adapter.runner
@@ -245,8 +214,6 @@ def output_lines(algorithm, deployment, adapter, *, strategy, records, errors) -
         errors.append("VIEW_METRICS: pooled metrics exceed the budget; counts only")
         metric_lines = log_lines("VIEW_METRICS", {"as_of": metrics.get("as_of"),
                                                   "counts": metrics.get("counts")})
-    sample_lines = _within("VIEW_SAMPLE", _samples(runner), SAMPLE_BUDGET, errors)
-    record_lines = _within("RUN_RECORD", records, RECORD_BUDGET, errors)
     summary = {
         "name": deployment.name,
         "mode": "trading" if runner.trading else "forecast",
@@ -263,9 +230,7 @@ def output_lines(algorithm, deployment, adapter, *, strategy, records, errors) -
             for node_id, node in runner.graph.nodes.items()
         },
         "strategy": serialize(strategy),
-        "records": [r["label"] for r in records],
-        "output": {"VIEW_METRICS": len(metric_lines), "VIEW_SAMPLE": len(sample_lines),
-                   "RUN_RECORD": len(record_lines)},
+        "records": {r["label"]: r["value"] for r in records},
         "errors": errors,
     }
     summary = compact(json.loads(json.dumps(summary, default=str)))
@@ -277,7 +242,7 @@ def output_lines(algorithm, deployment, adapter, *, strategy, records, errors) -
         summary[key] = None
         summary["errors"] = [*summary["errors"], f"RUN_SUMMARY: {key} omitted for size"]
         summary_lines = log_lines("RUN_SUMMARY", summary)
-    return summary_lines + metric_lines + sample_lines + record_lines, metrics
+    return summary_lines + metric_lines, metrics
 
 
 def finish(algorithm, deployment, adapter):

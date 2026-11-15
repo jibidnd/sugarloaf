@@ -95,8 +95,6 @@ def test_finish_writes_log_lines_that_read_back_and_no_object_store():
                                                                      {"top": 1})
     assert summary["errors"] == [] and summary["nodes"] == {"node0": {"node": "node0"}}
     assert metrics["counts"]["issued"] == 30 and metrics["counts"]["scored"] == 30
-    assert len(output["samples"]) == launcher.SAMPLES_PER_NODE
-    assert output["samples"][0]["view"]["metadata"]["view_id"] == "node0:0"
     assert algorithm.statistics["Views issued"] == "30"
     assert algorithm.statistics["Views scored"] == "30"
     assert "Score hit rate" in algorithm.statistics
@@ -108,14 +106,12 @@ def test_finish_writes_log_lines_that_read_back_and_no_object_store():
 def test_a_heavy_run_stays_within_the_log_budget():
     algorithm = Algorithm()
     launcher.finish(algorithm, _deployment(), Adapter(_archive(nodes=60, per_node=400)))
-    budget = (launcher.SUMMARY_BUDGET + launcher.METRICS_BUDGET + launcher.SAMPLE_BUDGET
-              + launcher.RECORD_BUDGET)
+    budget = launcher.SUMMARY_BUDGET + launcher.METRICS_BUDGET
     written = sum(len(line) - len(LEAN_PREFIX) for line in algorithm.lines)
     assert written <= budget < 100_000
     output = parse_run_output(algorithm.lines)
     assert output["metrics"]["counts"]["issued"] == 24_000
     assert output["metrics"]["detail"] in {"by_node_headline", "pooled"}
-    assert any("VIEW_SAMPLE" in error for error in output["summary"]["errors"])
 
 
 def test_a_history_failure_is_reported_and_the_views_stay_counted():
@@ -137,15 +133,15 @@ def test_a_failing_report_is_raised_after_the_output_is_written():
     with pytest.raises(AssertionError, match="without arrivals"):
         launcher.finish(algorithm, _deployment(report), Adapter(_archive()))
     output = parse_run_output(algorithm.lines)
-    assert output["records"] == [{"label": "probe", "value": {"arrivals": 0}}]
+    assert output["summary"]["records"] == {"probe": {"arrivals": 0}}
     assert output["summary"]["errors"][0].startswith("report: AssertionError")
 
 
 def test_a_value_longer_than_a_line_is_split_and_joined():
     value = {"text": "x" * 20_000}
-    lines = launcher.log_lines("RUN_RECORD", value)
+    lines = launcher.log_lines("VIEW_METRICS", value)
     assert len(lines) == 3 and all(len(line) <= launcher.LINE_CHARACTERS for line in lines)
-    assert parse_run_output([LEAN_PREFIX + line for line in lines])["records"] == [value]
+    assert parse_run_output([LEAN_PREFIX + line for line in lines])["metrics"] == value
 
 
 def test_broken_or_repeated_line_groups_are_reported():

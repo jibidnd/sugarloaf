@@ -286,10 +286,7 @@ def read_all_logs(client, project_id: int, backtest_id: str) -> dict:
 
 
 # Tags of the lines ``launcher.finish`` writes, and the key each takes in the run output.
-OUTPUT_TAGS = {"RUN_SUMMARY": "summary", "VIEW_METRICS": "metrics",
-               "VIEW_SAMPLE": "samples", "RUN_RECORD": "records"}
-# Tags with one value per run; the others carry one value per line group.
-SINGLE_TAGS = ("RUN_SUMMARY", "VIEW_METRICS")
+OUTPUT_TAGS = {"RUN_SUMMARY": "summary", "VIEW_METRICS": "metrics"}
 _OUTPUT_LINE = re.compile(
     r"(?:^|\s)(" + "|".join(OUTPUT_TAGS) + r") (\d+)/(\d+) (.*)$"
 )
@@ -300,14 +297,12 @@ def parse_run_output(lines: Sequence[str]) -> dict:
 
     Each value is written as ``<TAG> <part>/<parts> <json text>`` on consecutive lines
     (a log line keeps at most 8,192 characters). Returns ``{"summary", "metrics",
-    "samples", "records", "errors"}``: the run summary and the view metrics (None when
-    absent), the view samples and report records in log order, and a description of each
-    line group that could not be joined or decoded. A run summary or view metrics line
-    group seen more than once keeps the last and lists the repeat as an error.
+    "errors"}``: the run summary and the view metrics (None when absent) and a description
+    of each line group that could not be joined or decoded. A value seen more than once
+    keeps the last and lists the repeat as an error.
     """
-    output: dict = {"summary": None, "metrics": None, "samples": [], "records": [],
-                    "errors": []}
-    seen = {tag: 0 for tag in SINGLE_TAGS}
+    output: dict = {"summary": None, "metrics": None, "errors": []}
+    seen = {tag: 0 for tag in OUTPUT_TAGS}
     pending: dict | None = None
 
     def close(reason: str) -> None:
@@ -342,14 +337,10 @@ def parse_run_output(lines: Sequence[str]) -> dict:
         except json.JSONDecodeError as error:
             output["errors"].append(f"{tag}: undecodable JSON ({error.msg})")
             continue
-        key = OUTPUT_TAGS[tag]
-        if tag in SINGLE_TAGS:
-            seen[tag] += 1
-            if seen[tag] > 1:
-                output["errors"].append(f"{tag}: value {seen[tag]} replaces an earlier one")
-            output[key] = value
-        else:
-            output[key].append(value)
+        seen[tag] += 1
+        if seen[tag] > 1:
+            output["errors"].append(f"{tag}: value {seen[tag]} replaces an earlier one")
+        output[OUTPUT_TAGS[tag]] = value
     close("at the end of the log")
     return output
 

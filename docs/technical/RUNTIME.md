@@ -141,10 +141,8 @@ report, computes the view metrics and writes:
 
 | Log line | Content | Character budget |
 | --- | --- | --- |
-| `RUN_SUMMARY` | Deployment name, mode, environment, execution policy, `runner.finish()`, member counts per universe, order and update counts, node configs, the report's return value, its record labels, the error list | 10,000 (`SUMMARY_BUDGET`) |
+| `RUN_SUMMARY` | Deployment name, mode, environment, execution policy, `runner.finish()`, member counts per universe, order and update counts, node configs, the report's return value and its records (`ReportContext.record`), the error list | 10,000 (`SUMMARY_BUDGET`) |
 | `VIEW_METRICS` | `view_metrics(archive, prices, clock)` from [`sugarloaf.research.view_metrics`](../../sugarloaf/research/view_metrics.py) | 32,000 (`METRICS_BUDGET`) |
-| `VIEW_SAMPLE` | The first 20 archived views of each node, one per value, as `encode_archive` encodes a record | 16,000 (`SAMPLE_BUDGET`) |
-| `RUN_RECORD` | Each `ReportContext.record(label, value)` | 12,000 (`RECORD_BUDGET`) |
 
 Each value is JSON written as `<TAG> <part>/<parts> <text>` over as many consecutive lines as
 it needs, at most 8,000 characters each: QuantConnect keeps 8,192 characters of a log line,
@@ -163,14 +161,14 @@ read 15 November 2026): 10 KB per backtest and 3 MB per day on the Free tier, 10
 on Quant Researcher, 1 MB and 10 MB on Team, 5 MB and 50 MB on Trading Firm. Reading or
 downloading logs counts toward the daily quota. The organization that runs the native checks
 is on Quant Researcher (`organizations/read` reports a 102,400-byte limit per backtest), so the
-four budgets sum to 70,000 characters, and a one-node forecast run such as `ema_forecasts`
+two budgets sum to 42,000 characters, and a one-node forecast run such as `ema_forecasts`
 writes about 22,000. Lines a node or report logs itself count toward the same quota and come
 earlier in the log. On a tier with a larger quota, raise the budgets in
 [launcher.py](../../sugarloaf/adapters/quantconnect/launcher.py).
 
 `cloud.backtests.read_run_output(client, project_id, backtest_id)` reads a finished backtest's
 log through `read_all_logs`, joins and decodes the lines (`parse_run_output`) and returns
-`{"summary", "metrics", "samples", "records", "errors"}` with the project, backtest id and the
+`{"summary", "metrics", "errors"}` with the project, backtest id and the
 number of log lines read; `save_run_output(output, path)` writes it as JSON and refuses to
 replace a file with different contents unless `overwrite=True`. `run_backtest` saves the output
 of each run it completes as `artifacts/<manifest stem>/<backtest id>-output.json`, and

@@ -156,7 +156,7 @@ adapter.attach(runner)
 for end, close in zip(ends, closes):
     adapter.deliver(end, [Bar(asset, end - timedelta(days=1), end, close, close, close, close, 1e6)])
 
-# The archive's JSON form (encode_archive), decoded as a reader of VIEW_SAMPLE lines would.
+# The archive's JSON form (encode_archive), decoded as a saved copy would be.
 archive = decode_archive(json.loads(json.dumps(encode_archive(runner.archive))))
 resolver = ReturnOutcomeResolver(anchor_from_closes({asset: dict(zip(ends, closes))}))
 report = evaluate(archive, resolver, as_of=ends[-1])
@@ -191,7 +191,7 @@ credentials and a project selected in the manifest or saved state,
 `sugarloaf run --adapter quantconnect --manifest deployments/quantconnect/ema.toml` uploads,
 compiles, backtests and retrieves results and logs; `sugarloaf create` with the same
 arguments provisions a project once. In the logs, `SUGARLOAF_RUN` records the mode and
-versions, and `RUN_SUMMARY`, `VIEW_METRICS` and `VIEW_SAMPLE` carry the run's output, which
+versions, and `RUN_SUMMARY` and `VIEW_METRICS` carry the run's output, which
 `run` saves as `artifacts/<manifest stem>/<backtest id>-output.json`
 ([run output](technical/RUNTIME.md#run-output)).
 [Deployment](technical/DEPLOYMENT.md) documents the commands and the evidence kept.
