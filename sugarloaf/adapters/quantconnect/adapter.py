@@ -560,6 +560,7 @@ class QuantConnectAdapter:
                             float(item.volume),
                             float(item.dollar_volume),
                             has_fundamentals=getattr(item, "has_fundamental_data", None),
+                            sector=_sector(item) if definition.exclude_sectors else None,
                         )
                     )
                 else:
@@ -1238,16 +1239,21 @@ def _number(value):
     return value if value == value and value not in (float("inf"), float("-inf")) else None
 
 
+def _sector(item) -> int | None:
+    """The Morningstar sector code of a fundamental item; None for 0 or no classification."""
+    classification = getattr(item, "asset_classification", None)
+    sector = getattr(classification, "morningstar_sector_code", None) if classification else None
+    try:
+        return int(sector) or None if sector is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
 def _fundamental_record(instrument, item, at) -> FundamentalRecord:
     reference = getattr(item, "company_reference", None)
     cik = getattr(reference, "cik", None) if reference is not None else None
     cik = (str(cik).strip().lstrip("0") or None) if cik is not None else None
-    classification = getattr(item, "asset_classification", None)
-    sector = getattr(classification, "morningstar_sector_code", None) if classification else None
-    try:
-        sector = int(sector) or None if sector is not None else None
-    except (TypeError, ValueError):
-        sector = None
+    sector = _sector(item)
     return FundamentalRecord(
         instrument,
         at,

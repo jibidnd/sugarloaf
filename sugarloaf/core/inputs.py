@@ -211,6 +211,15 @@ class Universe(Input):
         return _PERIODS[self.cadence](at.date())
 
 
+# Morningstar sector codes, as FundamentalRecord.sector and the platform's asset
+# classification report them.
+MORNINGSTAR_SECTORS = {
+    101: "basic materials", 102: "consumer cyclical", 103: "financial services",
+    104: "real estate", 205: "consumer defensive", 206: "healthcare", 207: "utilities",
+    308: "communication services", 309: "energy", 310: "industrials", 311: "technology",
+}
+
+
 @dataclass(frozen=True)
 class LiquidityUniverse(Universe):
     """The ``count`` securities with the largest dollar volume that pass the filters."""
@@ -221,12 +230,28 @@ class LiquidityUniverse(Universe):
     # Keep only securities the platform has company fundamentals for, which
     # drops funds and notes from a list of the most liquid "stocks".
     require_fundamentals: bool = False
+    # Morningstar sector codes (integers, as FundamentalRecord.sector holds them, for
+    # example 104 for real estate) whose securities are removed before ranking, so an
+    # excluded security never takes one of the ``count`` places. A security the
+    # platform gives no sector code is kept.
+    exclude_sectors: tuple[int, ...] = ()
 
     def __post_init__(self):
         super().__post_init__()
         finite(self.min_price, self.min_volume)
         if self.count < 0 or min(self.min_price, self.min_volume) < 0:
             raise ContractError("Invalid liquidity selection")
+        codes = self.exclude_sectors
+        codes = tuple(codes) if isinstance(codes, (tuple, list, set, frozenset)) else (codes,)
+        # A sector name or an unknown code would match nothing and exclude nothing,
+        # so it is refused rather than ignored.
+        if any(type(code) is not int or code not in MORNINGSTAR_SECTORS for code in codes):
+            raise ContractError(
+                "exclude_sectors takes Morningstar sector codes: "
+                + ", ".join(f"{code} {name}" for code, name in MORNINGSTAR_SECTORS.items())
+            )
+        # Sorted and without repeats, so two declarations of the same exclusion compare equal.
+        object.__setattr__(self, "exclude_sectors", tuple(sorted(set(codes))))
 
 
 @dataclass(frozen=True)

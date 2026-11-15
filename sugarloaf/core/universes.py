@@ -31,6 +31,8 @@ class SelectionRow:
     # Whether the platform has company fundamentals for the security; None when
     # the platform cannot say.
     has_fundamentals: bool | None = None
+    # Morningstar sector code; None when the platform gives none.
+    sector: int | None = None
 
 
 def _first_distinct(rows, count):
@@ -75,6 +77,8 @@ def select(
             and r.price >= definition.min_price
             and r.volume >= definition.min_volume
             and (r.has_fundamentals or not definition.require_fundamentals)
+            # Excluded sectors leave before ranking and never occupy a place.
+            and r.sector not in definition.exclude_sectors
         ]
         rows.sort(key=lambda r: (-r.dollar_volume, r.instrument.value))
         return _first_distinct(rows, definition.count)
